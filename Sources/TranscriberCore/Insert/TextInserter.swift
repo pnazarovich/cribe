@@ -36,10 +36,7 @@ public enum TextInserter {
             return .clipboardOnly(reason: "no accessibility")
         }
 
-        // Даём приложению-приёмнику увидеть новое содержимое буфера. 20 мс — запас
-        // над одним тиком системного пастборд-нотификатора; 50 мс были взяты с потолка
-        // и стоили лишние 30 мс на каждой вставке.
-        Thread.sleep(forTimeInterval: 0.02)
+        Thread.sleep(forTimeInterval: pasteboardSettleDelay)
 
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyV, keyDown: true),
@@ -53,6 +50,13 @@ public enum TextInserter {
         keyUp.post(tap: .cghidEventTap)
         return .pasted
     }
+
+    /// Пауза между записью в пастборд и синтетическим Cmd-V: приложение-приёмник должно
+    /// успеть увидеть новое содержимое. 20 мс с запасом хватает нативным приложениям
+    /// (это больше одного тика системного нотификатора пастборда). Мосты буфера обмена
+    /// виртуальных машин (Parallels, VMware, UTM) ходят заметно медленнее — если вставка
+    /// в гостевую систему начнёт промахиваться, поднимать здесь до 40 мс.
+    private static let pasteboardSettleDelay: TimeInterval = 0.02
 
     /// Виртуальный код клавиши V (0x09).
     private static let keyV = CGKeyCode(kVK_ANSI_V)

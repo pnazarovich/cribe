@@ -49,6 +49,17 @@ final class StreamingMergeTests: XCTestCase {
         )
     }
 
+    /// Повтор одного слова — худший случай для поиска стыка: «настоящим» выглядит любая длина.
+    /// Потолок в 4 слова (в нахлёст 0.5 c больше и не влезает) ограничивает потерю: из 10 + 10
+    /// слов остаётся 16, а не 10, как было бы с потолком в 12.
+    func testRepeatedWordsCollapseNoFurtherThanTheCap() {
+        let run = Array(repeating: "да", count: 10).joined(separator: " ")
+
+        let merged = StreamingMerge.merge(confirmed: run, tail: run)
+
+        XCTAssertEqual(ShortDictation.wordCount(merged), 16)
+    }
+
     func testEmptySides() {
         XCTAssertEqual(StreamingMerge.merge(confirmed: "", tail: "раз два"), "раз два")
         XCTAssertEqual(StreamingMerge.merge(confirmed: "раз два", tail: ""), "раз два")
@@ -82,5 +93,39 @@ final class StreamingMergeTests: XCTestCase {
     func testConfirmedNeedsTwoSegments() {
         XCTAssertNil(StreamingMerge.confirmed(from: []))
         XCTAssertNil(StreamingMerge.confirmed(from: [ASRSegment(text: "раз", start: 0, end: 1)]))
+    }
+
+    /// Проход без текста не подтверждает ничего. Иначе он поднял бы границу подтверждённого,
+    /// а она монотонна — следующий, уже осмысленный проход не смог бы её сдвинуть, и потоковый
+    /// путь молча умер бы на всю сессию.
+    func testConfirmedIgnoresPassWithoutText() {
+        XCTAssertNil(StreamingMerge.confirmed(from: [
+            ASRSegment(text: "", start: 0, end: 3),
+            ASRSegment(text: "", start: 3, end: 6),
+        ]))
+    }
+
+    /// Хвостовые пустые сегменты границу не двигают: она встаёт по последнему сегменту с текстом.
+    func testConfirmedDropsTrailingEmptySegments() {
+        let pass = StreamingMerge.confirmed(from: [
+            ASRSegment(text: "раз два", start: 0, end: 2),
+            ASRSegment(text: "", start: 2, end: 5),
+            ASRSegment(text: "три", start: 5, end: 7),
+        ])
+
+        XCTAssertEqual(pass?.text, "раз два")
+        XCTAssertEqual(pass?.endSample, 2 * 16_000)
+    }
+
+    /// Битый таймкод из модели не должен дойти до `Int(_:)` — на NaN и бесконечности он падает.
+    func testConfirmedRejectsBrokenTimestamp() {
+        XCTAssertNil(StreamingMerge.confirmed(from: [
+            ASRSegment(text: "раз", start: 0, end: .nan),
+            ASRSegment(text: "два", start: 1, end: 2),
+        ]))
+        XCTAssertNil(StreamingMerge.confirmed(from: [
+            ASRSegment(text: "раз", start: 0, end: .infinity),
+            ASRSegment(text: "два", start: 1, end: 2),
+        ]))
     }
 }

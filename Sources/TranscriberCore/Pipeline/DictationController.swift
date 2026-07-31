@@ -89,19 +89,28 @@ actor EngineGate {
 /// Хвост берётся с нахлёстом назад, поэтому на стыке почти всегда есть общие слова —
 /// их надо схлопнуть, а не продублировать.
 enum StreamingMerge {
-    /// Сколько слов на стыке максимум ищем: полсекунды речи — это 1–3 слова, запас с лихвой.
-    private static let maxOverlapWords = 12
+    /// Потолок стыка. В нахлёст 0.5 c физически помещается 1–3 слова, поэтому длиннее искать
+    /// нечего — а вредно: на повторах («да да да да») длинный «стык» съел бы настоящий повтор.
+    /// Четыре слова — это верхняя граница возможной потери, а не рабочая длина.
+    private static let maxOverlapWords = 4
 
     /// Что из прохода можно считать устоявшимся: все сегменты, кроме последнего — его Whisper
     /// почти всегда переписывает на следующем проходе, когда слышит конец фразы.
-    /// `nil` — подтверждать нечего (сегментов меньше двух).
+    /// `nil` — подтверждать нечего.
     static func confirmed(from segments: [ASRSegment]) -> (text: String, endSample: Int)? {
-        let stable = segments.dropLast()
-        guard let last = stable.last else { return nil }
-        return (
-            stable.map(\.text).filter { !$0.isEmpty }.joined(separator: " "),
-            Int(last.end * AudioRecorder.sampleRate)
-        )
+        // Хвостовые пустые сегменты текста не дают, но подняли бы границу подтверждённого —
+        // и следующий, уже осмысленный проход не смог бы её сдвинуть (граница монотонна).
+        var stable = segments.dropLast()
+        while let last = stable.last, last.text.isEmpty {
+            stable = stable.dropLast()
+        }
+        // Таймкод считаем индексом, а `Int(_:)` падает на NaN и бесконечности — проверяем
+        // диапазоном: он же отсекает отрицательные и заведомо абсурдные значения.
+        guard let last = stable.last, (0..<Double(24 * 3600)).contains(last.end) else { return nil }
+
+        let text = stable.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        return (text, Int(last.end * AudioRecorder.sampleRate))
     }
 
     static func merge(confirmed: String, tail: String) -> String {
@@ -193,6 +202,10 @@ public final class DictationController: ObservableObject {
     /// Короче этого потоковый путь не включаем: полный проход и так быстрый,
     /// а лишний риск на коротких диктовках не окупается.
     private static let streamingMinSamples = Int(AudioRecorder.sampleRate * 6)
+    /// Дальше этого новые проходы не стартуют. Каждый проход переписывает весь буфер, а буфер
+    /// только растёт — на длинной записи это квадратичное сжигание ANE, и вдобавок стоп ждал бы
+    /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
+    private static let rollingMaxSamples = Int(AudioRecorder.sampleRate * 50)
 
     /// Сколько держим финальное состояние перед возвратом в `.idle`.
     private static let insertedLinger: TimeInterval = 1.5
@@ -250,6 +263,9 @@ public final class DictationController: ObservableObject {
     private var languageSwitchedDuringSession = false
     /// Длина буфера на момент запуска последнего фонового прохода.
     private var rollingPassSamples = 0
+    /// Номер сессии: проход, посчитанный до старта новой записи, к ней не относится —
+    /// тот же приём, что `generation` в `VadGate`.
+    private var sessionGeneration = 0
     /// Промпт сессии: фоновые проходы и финал обязаны идти с одним биасингом, иначе
     /// подтверждённая часть и хвост распознаны по-разному и склейка врёт.
     private var sessionPrompt = ""
@@ -382,6 +398,7 @@ public final class DictationController: ObservableObject {
         rollingPassSamples = 0
         rollingFailed = false
         languageSwitchedDuringSession = false
+        sessionGeneration += 1
         sessionPrompt = PromptBuilder.initialPrompt(
             entries: dictionary.entries,
             language: sessionLanguage
@@ -429,20 +446,31 @@ public final class DictationController: ObservableObject {
     /// хвост всё равно дождётся идущего прохода. Никакого состояния UI цикл не трогает.
     private func startRollingLoop(language: Language) {
         let prompt = sessionPrompt
+        let generation = sessionGeneration
         rollingTask = Task { [weak self] in
             while true {
-                guard let self, case .recording = self.state else { return }
+                // Потоковый путь уже снят (упавший проход, переключённый язык) — жечь на него
+                // ANE до конца записи незачем.
+                guard let self, case .recording = self.state,
+                      generation == self.sessionGeneration,
+                      !self.rollingFailed, !self.languageSwitchedDuringSession
+                else { return }
 
+                // Опрашиваем длину, а не сам буфер: снимок массива стоит копии по записи
+                // на аудиопотоке. Дальше потолка новые проходы не стартуют вовсе.
+                let captured = self.recorder.capturedSampleCount
+                guard captured <= Self.rollingMaxSamples else { return }
                 // До порога потокового пути проходы бессмысленны и вредны: короткая диктовка
                 // всё равно пойдёт полным проходом, а идущий проход стоп обязан дождаться —
                 // это была бы чистая потеря там, где скорость важнее всего.
-                let samples = self.recorder.capturedSamples
-                guard samples.count >= Self.streamingMinSamples,
-                      samples.count - self.rollingPassSamples >= Self.rollingGrowth
+                guard captured >= Self.streamingMinSamples,
+                      captured - self.rollingPassSamples >= Self.rollingGrowth
                 else {
                     try? await Task.sleep(nanoseconds: UInt64(Self.rollingPoll * 1_000_000_000))
                     continue
                 }
+
+                let samples = self.recorder.capturedSamples
                 self.rollingPassSamples = samples.count
 
                 do {
@@ -451,7 +479,7 @@ public final class DictationController: ObservableObject {
                         language: language,
                         prompt: prompt
                     )
-                    self.confirm(segments)
+                    self.confirm(segments, generation: generation)
                 } catch {
                     // Один упавший проход — и весь потоковый путь снят: финал пойдёт полным
                     // проходом, как раньше. Оптимизация не имеет права быть риском.
@@ -470,10 +498,12 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    private func confirm(_ segments: [ASRSegment]) {
-        // Назад не сдаём: перестройка сегментов может дать более короткий подтверждённый
-        // префикс, и тогда честнее оставить прошлый результат — хвост всё равно длиннее.
-        guard let pass = StreamingMerge.confirmed(from: segments),
+    private func confirm(_ segments: [ASRSegment], generation: Int) {
+        // Пока проход считался, могла начаться новая запись — её подтверждать чужим текстом
+        // нельзя. Назад тоже не сдаём: перестройка сегментов может дать более короткий
+        // подтверждённый префикс, и тогда честнее оставить прошлый — хвост всё равно длиннее.
+        guard generation == sessionGeneration,
+              let pass = StreamingMerge.confirmed(from: segments),
               pass.endSample > confirmedEndSample
         else { return }
         confirmedEndSample = pass.endSample
@@ -788,18 +818,22 @@ public final class DictationController: ObservableObject {
 
     /// Кодирование и запись WAV — вне главного потока и вне критического пути. `samples`
     /// уезжает в задачу значением (массив уже никто не меняет), поэтому снимок консистентен.
-    private func startBackup(_ samples: [Float]) -> Task<String?, Never> {
+    /// О сбое задача сообщает сама: её результата может никто не прочитать — при сбое
+    /// конвейера до `finishBackup` дело не доходит вовсе.
+    private func startBackup(_ samples: [Float]) -> Task<Void, Never> {
         let url = Self.backupURL
-        return Task.detached(priority: .utility) { () -> String? in
+        let logger = self.logger
+        return Task.detached(priority: .utility) {
             do {
                 try FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
                 try WavEncoder.encode(samples).write(to: url, options: .atomic)
-                return nil
             } catch {
-                return error.localizedDescription
+                let message = "Бэкап записи не сохранён: \(error.localizedDescription)"
+                logger.error("\(message, privacy: .public)")
+                FileHandle.standardError.write(Data((message + "\n").utf8))
             }
         }
     }
@@ -807,10 +841,8 @@ public final class DictationController: ObservableObject {
     /// Вставка дошла до приложения — бэкап больше не нужен. Ждём саму запись: без этого
     /// припозднившийся `write` положил бы WAV обратно уже после удаления, и в следующей
     /// сессии на диске лежал бы чужой файл.
-    private func finishBackup(_ backup: Task<String?, Never>) async {
-        if let failure = await backup.value {
-            logger.error("Бэкап записи не сохранён: \(failure, privacy: .public)")
-        }
+    private func finishBackup(_ backup: Task<Void, Never>) async {
+        await backup.value
         try? FileManager.default.removeItem(at: Self.backupURL)
     }
 }
