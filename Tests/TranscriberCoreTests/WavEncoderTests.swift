@@ -32,6 +32,36 @@ final class WavEncoderTests: XCTestCase {
         XCTAssertEqual(Int16(bitPattern: le16(data, 52)), -32_767)
     }
 
+    // MARK: - Чаймы SoundPlayer (проверить на слух агент не может — проверяем данные)
+
+    func testChimesAreValidWavWithExpectedDuration() {
+        for (name, data) in [("старт", SoundPlayer.startWav), ("стоп", SoundPlayer.stopWav)] {
+            XCTAssertEqual(String(decoding: data[0..<4], as: UTF8.self), "RIFF", name)
+            XCTAssertEqual(String(decoding: data[8..<12], as: UTF8.self), "WAVE", name)
+            XCTAssertEqual(le32(data, 4), UInt32(data.count - 8), name)     // размер RIFF
+            XCTAssertEqual(le16(data, 20), 1, name)                         // PCM
+            XCTAssertEqual(le16(data, 22), 1, name)                         // моно
+            XCTAssertEqual(le32(data, 24), 44_100, name)                    // частота
+            XCTAssertEqual(le16(data, 34), 16, name)                        // бит на сэмпл
+
+            let dataSize = Int(le32(data, 40))
+            XCTAssertEqual(dataSize, data.count - 44, name)
+            let duration = Double(dataSize) / 2 / 44_100
+            XCTAssertGreaterThan(duration, 0.1, "чайм \(name) слишком короткий: \(duration) с")
+            XCTAssertLessThan(duration, 1.0, "чайм \(name) слишком длинный: \(duration) с")
+        }
+    }
+
+    func testChimesAreAudibleAndNotClipped() {
+        for (name, data) in [("старт", SoundPlayer.startWav), ("стоп", SoundPlayer.stopWav)] {
+            let peak = stride(from: 44, to: data.count, by: 2)
+                .map { abs(Int(Int16(bitPattern: le16(data, $0)))) }
+                .max() ?? 0
+            XCTAssertGreaterThan(peak, 16_000, "чайм \(name) почти тишина")
+            XCTAssertLessThan(peak, 32_767, "чайм \(name) упёрся в клиппинг")
+        }
+    }
+
     private func le16(_ data: Data, _ offset: Int) -> UInt16 {
         UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
     }

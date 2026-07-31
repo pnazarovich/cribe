@@ -246,4 +246,30 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertTrue(uk.contains("GitHub"))
         XCTAssertNotEqual(uk, prompt)
     }
+
+    func testTranslatePromptAsksForEnglishAndKeepsCleanupRules() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let plain = PostProcessor.systemPrompt(entries: entries, language: .ru)
+        let translating = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: true)
+
+        XCTAssertFalse(plain.lowercased().contains("англи"), "обычный промпт не должен просить перевод")
+        XCTAssertTrue(translating.lowercased().contains("англи"))
+        XCTAssertTrue(translating.lowercased().contains("только"), "перевод возвращается без оригинала")
+        // Правила чистки и словарь никуда не делись.
+        XCTAssertTrue(translating.contains("гитхаб"))
+        XCTAssertTrue(translating.contains("GitHub"))
+        XCTAssertTrue(translating.lowercased().contains("никогда"))
+        XCTAssertTrue(translating.contains("филлер"))
+    }
+
+    func testTranslatePromptUkrainian() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гітхаб"])]
+        let plain = PostProcessor.systemPrompt(entries: entries, language: .uk)
+        let translating = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: true)
+
+        XCTAssertFalse(plain.lowercased().contains("англі"))
+        XCTAssertTrue(translating.lowercased().contains("англі"))
+        XCTAssertTrue(translating.contains("GitHub"))
+        XCTAssertNotEqual(translating, plain)
+    }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import OSLog
@@ -100,6 +101,8 @@ public final class DictationController: ObservableObject {
     private static let insertedLinger: TimeInterval = 1.5
     private static let degradedLinger: TimeInterval = 2.5
     private static let errorLinger: TimeInterval = 2
+    /// Сообщение действий меню (перевод последней диктовки) поверх простоя.
+    private static let flashLinger: TimeInterval = 2
     /// Через столько простоя отпускаем микрофон (гаснет индикатор записи).
     private static let micReleaseDelay: TimeInterval = 60
 
@@ -109,6 +112,10 @@ public final class DictationController: ObservableObject {
         .appendingPathComponent("Transcriber/last-recording.wav")
 
     @Published public private(set) var state: DictationState = .idle
+    /// Последняя диктовка после слоя 2 и GPT-чистки, до перевода (для действий меню).
+    @Published public private(set) var lastOriginal: String?
+    /// Английский перевод последней диктовки: вставленный или сделанный по запросу из меню.
+    @Published public private(set) var lastTranslation: String?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -131,12 +138,22 @@ public final class DictationController: ObservableObject {
     private var previewTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
+    private var deviceSubscription: AnyCancellable?
 
     public init(engine: TranscriptionEngine, dictionary: UserDictionary, settings: AppSettings) {
         self.gate = EngineGate(engine)
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
+
+        recorder.setInputDevice(uid: settings.inputDeviceUID)
+        // Текущее значение уже применено выше — подписка нужна только на последующие смены.
+        deviceSubscription = settings.$inputDeviceUID
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] uid in
+                MainActor.assumeIsolated { self?.recorder.setInputDevice(uid: uid) }
+            }
     }
 
     // MARK: - Вход хоткеев
@@ -195,6 +212,8 @@ public final class DictationController: ObservableObject {
         idleTask = nil
         micReleaseTask?.cancel()
         micReleaseTask = nil
+        // Дёшево и идемпотентно: если UID не менялся, вызов ничего не делает.
+        recorder.setInputDevice(uid: settings.inputDeviceUID)
         recorder.prepare()  // движок поднимается заранее, чтобы старт записи был мгновенным
 
         let language = settings.language
@@ -235,6 +254,8 @@ public final class DictationController: ObservableObject {
 
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
         state = .recording(live: "", level: 0)
+        // Хвост чайма попадает в запись — VAD обрезает не-речь.
+        if settings.soundsEnabled { SoundPlayer.shared.playStart() }
         do {
             try recorder.start { [weak self] chunk in
                 Task { @MainActor in self?.append(chunk) }
@@ -323,6 +344,7 @@ public final class DictationController: ObservableObject {
         recorder.onLevel = nil
 
         let samples = recorder.stop()
+        if settings.soundsEnabled { SoundPlayer.shared.playStop() }
         buffer.removeAll(keepingCapacity: false)
         let language = sessionLanguage
         state = .transcribing
@@ -351,29 +373,47 @@ public final class DictationController: ObservableObject {
             )
             var text = ReplacementEngine.apply(raw, entries: entries)
             var degradations: [String] = []
+            let wantsTranslation = settings.translateToEnglish
+            var translation: String?
 
             if settings.gptEnabled {
                 state = .cleaning
                 do {
-                    text = try await PostProcessor.cleanup(
+                    // Перевод делает тот же вызов: GPT чистит текст и сразу отдаёт английский.
+                    let processed = try await PostProcessor.cleanup(
                         text: text,
                         entries: entries,
                         language: language,
-                        config: settings.gptConfig
+                        config: settings.gptConfig,
+                        translateToEnglish: wantsTranslation
                     )
+                    if wantsTranslation {
+                        translation = processed
+                    } else {
+                        text = processed
+                    }
                 } catch {
                     // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
-                    degradations.append("без AI-чистки: \(error.localizedDescription)")
-                    logger.error("GPT-чистка не удалась: \(error.localizedDescription, privacy: .public)")
+                    degradations.append(
+                        wantsTranslation
+                            ? "без перевода: \(error.localizedDescription)"
+                            : "без AI-чистки: \(error.localizedDescription)"
+                    )
+                    logger.error("GPT-слой не отработал: \(error.localizedDescription, privacy: .public)")
                 }
+            } else if wantsTranslation {
+                degradations.append("без перевода")
             }
 
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw DictationError.noSpeech
             }
+            lastOriginal = text
+            lastTranslation = translation
 
-            let outcome = await insert(text)
-            history.add(text, language: language)
+            let output = translation ?? text
+            let outcome = await insert(output)
+            history.add(output, language: language)
             removeBackup()
 
             if case .clipboardOnly(let reason) = outcome {
@@ -388,6 +428,54 @@ public final class DictationController: ObservableObject {
             }
         } catch {
             fail(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Последняя диктовка (действия меню)
+
+    /// Кладёт последнюю диктовку (текст до перевода) в буфер обмена. Без вставки в приложение.
+    public func copyLastOriginal() {
+        guard let lastOriginal else { return }
+        copyToClipboard(lastOriginal)
+    }
+
+    /// Кладёт в буфер английский перевод последней диктовки; готовый перевод берём из кэша.
+    public func translateLastAndCopy() async {
+        guard let original = lastOriginal else { return }
+        if let lastTranslation {
+            copyToClipboard(lastTranslation)
+            return
+        }
+        do {
+            let translated = try await PostProcessor.cleanup(
+                text: original,
+                entries: dictionary.entries,
+                language: sessionLanguage,
+                config: settings.gptConfig,
+                translateToEnglish: true
+            )
+            lastTranslation = translated
+            copyToClipboard(translated)
+        } catch {
+            logger.error("Перевод последней диктовки не удался: \(error.localizedDescription, privacy: .public)")
+            flash("перевод не удался")
+        }
+    }
+
+    private func copyToClipboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// Короткое сообщение поверх простоя: работающий конвейер не перебиваем.
+    private func flash(_ message: String) {
+        switch state {
+        case .idle, .inserted, .degraded, .error:
+            state = .degraded(message)
+            scheduleIdle(after: Self.flashLinger)
+        case .preparingModel, .recording, .transcribing, .cleaning:
+            break
         }
     }
 
