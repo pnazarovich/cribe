@@ -60,6 +60,14 @@ public final class AudioRecorder {
     private var configObserver: NSObjectProtocol?
     /// UID выбранного микрофона; nil — системный по умолчанию. Применяется при каждой сборке tap-а.
     private var inputDeviceUID: String?
+    /// Мы держим входной юнит на конкретном устройстве — значит, при возврате к «системному
+    /// по умолчанию» пин надо снять, иначе движок останется на старом микрофоне.
+    private var isPinned = false
+    /// Момент нашей записи `kAudioOutputUnitProperty_CurrentDevice`: движок отвечает на неё
+    /// уведомлением `AVAudioEngineConfigurationChange`, которое надо погасить (см. `handleConfigurationChange`).
+    private var lastDeviceWrite: Date?
+    /// Окно, внутри которого уведомление о смене конфигурации считается эхом нашей записи.
+    private static let deviceWriteEcho: TimeInterval = 0.2
 
     /// Только аудиопоток: гасит повтор лога о сбоях конвертации.
     private var conversionFailureLogged = false
@@ -159,8 +167,9 @@ public final class AudioRecorder {
 
     private func startEngine() throws {
         if !tapInstalled {
-            // Устройство ввода меняется только на остановленном движке (аудиоюнит должен быть
-            // неинициализирован), поэтому любая пересборка tap-а идёт через stop().
+            // Свойство CurrentDevice пишется и на работающем движке (возвращает noErr), но после
+            // такой замены «на ходу» tap замолкает. Поэтому устройство меняем только на
+            // остановленном движке и следом пересобираем tap.
             if engine.isRunning {
                 engine.stop()
             }
@@ -176,8 +185,20 @@ public final class AudioRecorder {
     /// Ставит выбранный микрофон на аудиоюнит входного узла. Только при остановленном движке.
     private func applyInputDevice() {
         guard let audioUnit = engine.inputNode.audioUnit else { return }
-        let resolved = inputDeviceUID.flatMap { AudioDeviceList.device(uid: $0)?.id }
-        guard var deviceID = resolved ?? AudioDeviceList.defaultInputDeviceID() else { return }
+        let explicit = inputDeviceUID.flatMap { AudioDeviceList.device(uid: $0)?.id }
+        // Пин ставим только под явно выбранный и живой микрофон. Нет выбора (или UID больше не
+        // резолвится) — свойство не трогаем вовсе: движок остаётся на своём агрегате и сам следует
+        // за системным устройством по умолчанию (подключились AirPods — переехали на них).
+        // Единственное исключение — снять наш же прежний пин, вернув системный дефолт.
+        guard let target = explicit ?? (isPinned ? AudioDeviceList.defaultInputDeviceID() : nil) else { return }
+        // Запись того же самого устройства всё равно порождает AVAudioEngineConfigurationChange,
+        // а он — новую пересборку tap-а. Поэтому сначала читаем, что уже стоит на юните.
+        guard currentDeviceID(of: audioUnit) != target else {
+            isPinned = explicit != nil
+            return
+        }
+
+        var deviceID = target
         let status = AudioUnitSetProperty(
             audioUnit,
             kAudioOutputUnitProperty_CurrentDevice,
@@ -186,9 +207,31 @@ public final class AudioRecorder {
             &deviceID,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
-        if status != noErr {
+        guard status == noErr else {
+            // Провалившаяся запись оставляет юнит на устройстве 0 (без входа) до следующей смены
+            // конфигурации или повторного выбора микрофона. Состояние известное — пишем в лог.
             logger.error("Не удалось выбрать микрофон \(deviceID, privacy: .public): статус \(status, privacy: .public)")
+            return
         }
+        isPinned = explicit != nil
+        // Своя же запись сейчас вернётся уведомлением о смене конфигурации — гасим его один раз,
+        // иначе получится цикл «запись → уведомление → пересборка → запись».
+        lastDeviceWrite = Date()
+    }
+
+    /// Устройство, которое сейчас стоит на входном аудиоюните.
+    private func currentDeviceID(of audioUnit: AudioUnit) -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioUnitGetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            &size
+        )
+        return status == noErr ? deviceID : nil
     }
 
     private func installTap() throws {
@@ -208,7 +251,15 @@ public final class AudioRecorder {
     }
 
     /// Смена устройства ввода (AirPods и т.п.) — пересобираем tap под новый формат.
+    /// Наша собственная запись `CurrentDevice` шлёт это же уведомление, поэтому одно уведомление
+    /// сразу после записи гасим: движок уже пересобран под новое устройство, а повторная
+    /// пересборка закрутила бы цикл. Само переприкрепление к выбранному микрофону делает
+    /// `applyInputDevice()` — и только если микрофон выбран и отличается от текущего.
     private func handleConfigurationChange() {
+        let isEcho = lastDeviceWrite.map { Date().timeIntervalSince($0) < Self.deviceWriteEcho } ?? false
+        lastDeviceWrite = nil
+        if isEcho { return }
+
         if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
