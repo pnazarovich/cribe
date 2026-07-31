@@ -1,5 +1,7 @@
 import Accelerate
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 import OSLog
 
@@ -56,6 +58,8 @@ public final class AudioRecorder {
     private var converter: AVAudioConverter?
     private var tapInstalled = false
     private var configObserver: NSObjectProtocol?
+    /// UID выбранного микрофона; nil — системный по умолчанию. Применяется при каждой сборке tap-а.
+    private var inputDeviceUID: String?
 
     /// Только аудиопоток: гасит повтор лога о сбоях конвертации.
     private var conversionFailureLogged = false
@@ -73,6 +77,25 @@ public final class AudioRecorder {
     deinit {
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
+        }
+    }
+
+    /// Выбирает микрофон по UID (`nil` или неизвестный UID — системный по умолчанию).
+    /// Устройство применяется до старта движка; если движок уже прогрет, он пересобирается,
+    /// поэтому вызывать нужно вне записи — перед `prepare()`/`start()`.
+    public func setInputDevice(uid: String?) {
+        guard uid != inputDeviceUID else { return }
+        inputDeviceUID = uid
+        guard tapInstalled || engine.isRunning else { return }  // применится при следующем старте
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+            converter = nil
+        }
+        do {
+            try startEngine()
+        } catch {
+            logger.error("Переключение микрофона не удалось: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -136,11 +159,35 @@ public final class AudioRecorder {
 
     private func startEngine() throws {
         if !tapInstalled {
+            // Устройство ввода меняется только на остановленном движке (аудиоюнит должен быть
+            // неинициализирован), поэтому любая пересборка tap-а идёт через stop().
+            if engine.isRunning {
+                engine.stop()
+            }
+            applyInputDevice()
             try installTap()
         }
         if !engine.isRunning {
             engine.prepare()
             try engine.start()
+        }
+    }
+
+    /// Ставит выбранный микрофон на аудиоюнит входного узла. Только при остановленном движке.
+    private func applyInputDevice() {
+        guard let audioUnit = engine.inputNode.audioUnit else { return }
+        let resolved = inputDeviceUID.flatMap { AudioDeviceList.device(uid: $0)?.id }
+        guard var deviceID = resolved ?? AudioDeviceList.defaultInputDeviceID() else { return }
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status != noErr {
+            logger.error("Не удалось выбрать микрофон \(deviceID, privacy: .public): статус \(status, privacy: .public)")
         }
     }
 
