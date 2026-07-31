@@ -47,15 +47,18 @@ struct PanelView: View {
             }
 
         case .recording(let live, let level):
-            HStack(spacing: 10) {
-                PulsingDot()
-                // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
-                Text(Self.flag(controller.activeSessionLanguage ?? settings.language))
-                if settings.translateToEnglish {
-                    TranslationBadge()
+            // Волна занимает верхнюю строку целиком, превью идёт под ней.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    PulsingDot()
+                    // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
+                    Text(Self.flag(controller.activeSessionLanguage ?? settings.language))
+                    if settings.translateToEnglish {
+                        TranslationBadge()
+                    }
+                    WaveformView(level: level)
                 }
                 liveText(live)
-                LevelBar(level: level)
             }
 
         case .transcribing:
@@ -158,17 +161,55 @@ private struct PulsingDot: View {
     }
 }
 
-/// Индикатор громкости. RMS речи обычно 0.02…0.2 — растягиваем диапазон, иначе полоска не шевелится.
-private struct LevelBar: View {
+/// Бегущая волна голоса: столбики уровня растут от средней линии в обе стороны,
+/// новый уровень дописывается справа, самый старый уезжает влево.
+/// Историю держит у себя (как PulsingDot — свою анимацию): пересборка панели её не сбрасывает.
+private struct WaveformView: View {
     let level: Float
 
-    private static let width: CGFloat = 44
+    private static let barCount = 48
+    private static let barWidth: CGFloat = 3
+    /// Минимальный зазор: при широкой капсуле столбики расходятся, ширина остаётся прежней.
+    private static let spacing: CGFloat = 2
+    private static let maxBar: CGFloat = 32
+    /// Столбик тишины — короткий штрих, а не пустое место.
+    private static let minBar: CGFloat = 2
+    /// Сколько последних столбиков подсвечены ярче — «голова» волны.
+    private static let freshCount = 4
+
+    @State private var history = [Float](repeating: 0, count: WaveformView.barCount)
 
     var body: some View {
-        let filled = Self.width * CGFloat(min(max(level * 4, 0), 1))
-        ZStack(alignment: .leading) {
-            Capsule().fill(.quaternary).frame(width: Self.width, height: 4)
-            Capsule().fill(.secondary).frame(width: filled, height: 4)
+        HStack(spacing: 0) {
+            ForEach(history.indices, id: \.self) { index in
+                Capsule()
+                    .fill(Self.fill)
+                    .frame(width: Self.barWidth, height: Self.barHeight(history[index]))
+                    .opacity(index >= Self.barCount - Self.freshCount ? 1 : 0.65)
+                if index < Self.barCount - 1 {
+                    Spacer(minLength: Self.spacing)
+                }
+            }
+        }
+        .frame(height: Self.maxBar)
+        .animation(.easeOut(duration: 0.08), value: history)
+        // Именно на смену уровня: обновление одного live-текста волну сдвигать не должно.
+        .onChange(of: level) { _, new in
+            history.removeFirst()
+            history.append(new)
         }
     }
+
+    /// RMS речи обычно 0.02…0.2 — тянем перцептивно: тихая речь всё равно шевелит волну,
+    /// а громкая не упирается в полку.
+    private static func barHeight(_ level: Float) -> CGFloat {
+        let norm = min(1, pow(max(level, 0) * 6, 0.7))
+        return minBar + CGFloat(norm) * (maxBar - minBar)
+    }
+
+    private static let fill = LinearGradient(
+        colors: [Color.accentColor, Color.accentColor.opacity(0.5)],
+        startPoint: .top,
+        endPoint: .bottom
+    )
 }
