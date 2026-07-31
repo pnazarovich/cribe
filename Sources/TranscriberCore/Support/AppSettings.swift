@@ -23,6 +23,8 @@ public final class AppSettings: ObservableObject {
         static let soundsEnabled = "soundsEnabled"
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
+        static let skipGPTForShort = "skipGPTForShort"
+        static let shortDictationWordLimit = "shortDictationWordLimit"
     }
 
     private let defaults: UserDefaults
@@ -64,6 +66,17 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(autoStopEnabled, forKey: Key.autoStopEnabled) }
     }
 
+    /// Короткая диктовка идёт мимо GPT-слоя: на «ок» или «да, давай» чистка ничего не меняет,
+    /// зато стоит целый круг к модели. Перевода это не касается — он делается тем же вызовом.
+    @Published public var skipGPTForShort: Bool {
+        didSet { defaults.set(skipGPTForShort, forKey: Key.skipGPTForShort) }
+    }
+
+    /// Граница «короткой» диктовки в словах.
+    @Published public var shortDictationWordLimit: Int {
+        didSet { defaults.set(shortDictationWordLimit, forKey: Key.shortDictationWordLimit) }
+    }
+
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
     @Published public var dictationHotkeyMode: HotkeyMode {
         didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
@@ -89,6 +102,8 @@ public final class AppSettings: ObservableObject {
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
+        skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
+        shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

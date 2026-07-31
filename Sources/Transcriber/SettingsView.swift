@@ -121,6 +121,14 @@ private struct AITab: View {
     var body: some View {
         Form {
             Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
+            Toggle("Короткие диктовки — без GPT", isOn: $settings.skipGPTForShort)
+            if settings.skipGPTForShort {
+                Stepper(
+                    "до \(settings.shortDictationWordLimit) слов",
+                    value: $settings.shortDictationWordLimit,
+                    in: 1...30
+                )
+            }
             Toggle("Перевод на английский", isOn: $settings.translateToEnglish)
 
             Picker("Доступ:", selection: $settings.gptMode) {

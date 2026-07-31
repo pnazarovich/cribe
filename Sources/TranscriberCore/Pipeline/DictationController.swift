@@ -60,6 +60,21 @@ actor EngineGate {
     }
 }
 
+/// Гейт коротких диктовок. На «ок» или «да, давай» GPT-чистка не меняет ничего, но стоит
+/// целого круга к модели — а именно короткие команды и диктуют, когда важна скорость.
+/// Перевод исключение: его делает тот же вызов, поэтому с включённым переводом слой 3
+/// обязателен всегда.
+enum ShortDictation {
+    static func skipsGPT(text: String, enabled: Bool, wordLimit: Int, translating: Bool) -> Bool {
+        guard enabled, !translating else { return false }
+        return wordCount(text) <= wordLimit
+    }
+
+    static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
+    }
+}
+
 /// Минимальный WAV: 16-bit PCM mono. Нужен только для бэкапа последней записи.
 public enum WavEncoder {
     public static func encode(_ samples: [Float], sampleRate: Int = Int(AudioRecorder.sampleRate)) -> Data {
@@ -356,8 +371,14 @@ public final class DictationController: ObservableObject {
             var degradations: [String] = []
             let wantsTranslation = settings.translateToEnglish
             var translation: String?
+            let skipsGPT = ShortDictation.skipsGPT(
+                text: text,
+                enabled: settings.skipGPTForShort,
+                wordLimit: settings.shortDictationWordLimit,
+                translating: wantsTranslation
+            )
 
-            if settings.gptEnabled {
+            if settings.gptEnabled, !skipsGPT {
                 state = .cleaning
                 do {
                     // Перевод делает тот же вызов: GPT чистит текст и сразу отдаёт английский.
