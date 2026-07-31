@@ -29,7 +29,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Настройка Transcriber")
                 .font(.title2.weight(.semibold))
-            Text("Диктовка по ⌥` — три шага, и можно начинать. Четвёртый — по желанию.")
+            Text("Диктовка по правому ⌘ — три шага, и можно начинать. Четвёртый — по желанию.")
                 .foregroundStyle(.secondary)
 
             micCard
@@ -73,7 +73,7 @@ struct OnboardingView: View {
 
     private var accessibilityCard: some View {
         card(number: 2, title: "Универсальный доступ", done: accessibilityGranted) {
-            Text("Без него текст останется в буфере обмена: ⌘V придётся нажимать вручную.")
+            Text("Без него не работает правый ⌘, а текст останется в буфере обмена: ⌘V вручную.")
                 .foregroundStyle(.secondary)
             if !accessibilityGranted {
                 HStack {

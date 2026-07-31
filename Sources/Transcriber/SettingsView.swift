@@ -28,10 +28,26 @@ private struct GeneralTab: View {
 
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchNote: String?
+    @State private var accessibilityGranted = TextInserter.hasAccessibility
 
     var body: some View {
         Form {
-            KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
+            Picker("Кнопка записи:", selection: $settings.dictationHotkeyMode) {
+                Text("Правый ⌘").tag(HotkeyMode.rightCommand)
+                Text("Свой шорткат").tag(HotkeyMode.custom)
+            }
+
+            switch settings.dictationHotkeyMode {
+            case .rightCommand:
+                if !accessibilityGranted {
+                    Text("Нужно разрешение Accessibility")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .custom:
+                KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
+            }
+
             KeyboardShortcuts.Recorder("Сменить язык:", name: .switchLanguage)
 
             Picker("Язык:", selection: $settings.language) {
@@ -56,7 +72,11 @@ private struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { syncLaunchState() }
+        .onAppear {
+            syncLaunchState()
+            // Разрешение выдают в системном окне — при возврате в настройки перечитываем.
+            accessibilityGranted = TextInserter.hasAccessibility
+        }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
