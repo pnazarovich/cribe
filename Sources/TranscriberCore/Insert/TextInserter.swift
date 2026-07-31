@@ -36,8 +36,10 @@ public enum TextInserter {
             return .clipboardOnly(reason: "no accessibility")
         }
 
-        // Даём приложению-приёмнику увидеть новое содержимое буфера.
-        Thread.sleep(forTimeInterval: 0.05)
+        // Даём приложению-приёмнику увидеть новое содержимое буфера. 20 мс — запас
+        // над одним тиком системного пастборд-нотификатора; 50 мс были взяты с потолка
+        // и стоили лишние 30 мс на каждой вставке.
+        Thread.sleep(forTimeInterval: 0.02)
 
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyV, keyDown: true),

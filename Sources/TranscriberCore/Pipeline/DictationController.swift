@@ -467,7 +467,7 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// `TextInserter.insert` синхронно спит 50 мс — уводим с главного потока.
+    /// `TextInserter.insert` синхронно спит 20 мс — уводим с главного потока.
     private func insert(_ text: String) async -> InsertOutcome {
         await Task.detached(priority: .userInitiated) { TextInserter.insert(text) }.value
     }
