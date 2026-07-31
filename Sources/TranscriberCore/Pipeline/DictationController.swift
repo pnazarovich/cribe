@@ -127,10 +127,10 @@ public final class DictationController: ObservableObject {
     private static let errorLinger: TimeInterval = 2
     /// Сообщение действий меню (перевод последней диктовки) поверх простоя.
     private static let flashLinger: TimeInterval = 2
-    /// Через столько простоя отпускаем микрофон (гаснет индикатор записи). Держать вход
-    /// прогретым дольше нет смысла: пересборка движка стоит ~150 мс, а горящий индикатор
-    /// читается как «микрофон не выключается».
-    private static let micReleaseDelay: TimeInterval = 10
+    /// Через столько простоя отпускаем микрофон (гаснет индикатор записи). Пересборка
+    /// движка стоит ~150 мс — это дешевле, чем оранжевая точка, висящая после вставки:
+    /// горящий индикатор читается как «микрофон не выключается».
+    private static let micReleaseDelay: TimeInterval = 0.5
 
     /// Бэкап последней записи — на случай, если вставка не дошла до приложения.
     private static let backupURL: URL = FileManager.default
@@ -313,6 +313,13 @@ public final class DictationController: ObservableObject {
         chunks = nil
 
         let vad = try await ensureVad()
+        // Первый за запуск подъём VAD (CoreML/ANE) занимает секунды и снова показывает
+        // `.preparingModel` — уже после того, как `begin()` проверил отмену. Хоткей,
+        // нажатый в это окно, терять нельзя: иначе запись стартует вопреки отмене.
+        if pendingCancel {
+            cancelSession()
+            return
+        }
         await vad.resetStream()
 
         buffer.removeAll(keepingCapacity: true)
@@ -656,14 +663,15 @@ public final class DictationController: ObservableObject {
         scheduleIdle(after: Self.errorLinger)
     }
 
-    /// Сессию отменили хоткеем на загрузке модели: записи не было, поэтому тихо возвращаемся
-    /// в простой — без сообщения об ошибке.
+    /// Сессию отменили хоткеем на загрузке модели (Whisper или VAD): записи не было,
+    /// поэтому тихо возвращаемся в простой — без сообщения об ошибке.
     private func cancelSession() {
         pendingCancel = false
         state = .idle
         activeSessionLanguage = nil
-        // Микрофон в этой сессии не поднимали, но `begin()` снял таймер отпускания — возвращаем
-        // его, иначе вход, прогретый прошлой диктовкой, останется включённым навсегда.
+        // Микрофон к этому моменту мог быть уже прогрет (отмена на подъёме VAD идёт после
+        // `recorder.prepare()`), а `begin()` снял таймер отпускания — возвращаем его,
+        // иначе индикатор записи останется гореть.
         scheduleMicRelease()
     }
 
@@ -678,8 +686,8 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Микрофон держим прогретым сразу после диктовки (следующая обычно рядом),
-    /// но через 10 с простоя отпускаем — индикатор записи не должен гореть вечно.
+    /// Микрофон отпускаем почти сразу после возврата в простой: индикатор записи не должен
+    /// гореть после вставки. Задержка в 0.5 c только склеивает диктовки, идущие подряд.
     private func scheduleMicRelease() {
         micReleaseTask?.cancel()
         micReleaseTask = Task { [weak self] in
