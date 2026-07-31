@@ -186,7 +186,8 @@ public actor CodexAuth {
             )
 
             if CodexProtocol.isPending(status: status) {
-                try await Task.sleep(nanoseconds: UInt64(session.interval * 1_000_000_000))
+                let seconds = min(max(0, session.interval), 60)
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 continue
             }
             guard status == 200, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -195,7 +196,10 @@ public actor CodexAuth {
                 throw CodexAuthError.server("Подтверждение не получено (HTTP \(status)): \(preview(data))")
             }
 
-            try await exchange(code: code, verifier: json["code_verifier"] as? String)
+            guard let verifier = json["code_verifier"] as? String else {
+                throw CodexAuthError.server("В ответе нет code_verifier — обмен кода невозможен.")
+            }
+            try await exchange(code: code, verifier: verifier)
             return
         }
         throw CodexAuthError.timedOut
@@ -213,21 +217,22 @@ public actor CodexAuth {
 
     // MARK: - Внутреннее
 
-    private func exchange(code: String, verifier: String?) async throws {
-        var form = [
+    private func exchange(code: String, verifier: String) async throws {
+        let form = [
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": CodexProtocol.redirectURI,
             "client_id": CodexProtocol.clientId,
+            "code_verifier": verifier,
         ]
-        if let verifier { form["code_verifier"] = verifier }
 
         let (data, status) = try await postForm(CodexProtocol.oauthTokenURL, form: form)
+        // Тело ответа этого эндпоинта содержит токены — в текст ошибки его не пускаем.
         guard status == 200, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = json["access_token"] as? String,
               let refreshToken = json["refresh_token"] as? String
         else {
-            throw CodexAuthError.server("Обмен кода на токены не удался (HTTP \(status)): \(preview(data))")
+            throw CodexAuthError.server("Обмен кода на токены не удался (HTTP \(status)).")
         }
         guard let accountId = CodexProtocol.accountId(fromAccessToken: access) else {
             throw CodexAuthError.server("В токене нет chatgpt_account_id.")
@@ -238,6 +243,10 @@ public actor CodexAuth {
             idToken: json["id_token"] as? String,
             accountId: accountId
         ))
+        // SecItemAdd может молча не сработать — убеждаемся, что токены реально легли в Keychain.
+        guard loadTokens() != nil else {
+            throw CodexAuthError.server("Токены не сохранились в Keychain — авторизация не завершена.")
+        }
     }
 
     private func refresh(_ tokens: CodexTokens) async throws -> CodexTokens {
@@ -273,7 +282,8 @@ public actor CodexAuth {
             }
             break
         }
-        throw CodexAuthError.server("Не удалось обновить токен (HTTP \(lastStatus)): \(lastBody.prefix(200))")
+        // Тело содержит токен-материал при частичном успехе — наружу отдаём только статус.
+        throw CodexAuthError.server("Не удалось обновить токен (HTTP \(lastStatus)).")
     }
 
     private func loadTokens() -> CodexTokens? {

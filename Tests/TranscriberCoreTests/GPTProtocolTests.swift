@@ -174,6 +174,39 @@ final class GPTProtocolTests: XCTestCase {
         }
     }
 
+    func testSSETopLevelErrorFrameThrows() {
+        var accumulator = SSEAccumulator()
+        let line = #"data: {"type":"error","message":"You've hit your usage limit"}"#
+        XCTAssertThrowsError(try accumulator.consume(line)) { error in
+            XCTAssertTrue("\(error)".contains("usage limit"), "ожидали причину лимита, получили \(error)")
+        }
+    }
+
+    func testSSEUnknownErrorLikeFrameThrowsWithTypeAndMessage() {
+        var accumulator = SSEAccumulator()
+        let line = #"data: {"type":"response.output_item.error","error":{"message":"tool crashed"}}"#
+        XCTAssertThrowsError(try accumulator.consume(line)) { error in
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("response.output_item.error"), text)
+            XCTAssertTrue(text.contains("tool crashed"), text)
+        }
+    }
+
+    func testSSEUnknownErrorLikeFrameWithoutMessageThrowsWithType() {
+        var accumulator = SSEAccumulator()
+        XCTAssertThrowsError(try accumulator.consume(#"data: {"type":"stream.error"}"#)) { error in
+            XCTAssertTrue("\(error)".contains("stream.error"), "\(error)")
+        }
+    }
+
+    func testSSEUnknownNonErrorFramesStillIgnored() throws {
+        var accumulator = SSEAccumulator()
+        try accumulator.consume(#"data: {"type":"response.in_progress"}"#)
+        try accumulator.consume(#"data: {"type":"response.output_item.added","item":{"id":"1"}}"#)
+        XCTAssertEqual(accumulator.text, "")
+        XCTAssertFalse(accumulator.isCompleted)
+    }
+
     // MARK: - Разбор списка моделей
 
     func testCodexModelsFilteredByVisibility() throws {
