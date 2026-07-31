@@ -12,6 +12,7 @@ public final class AppSettings: ObservableObject {
         static let gptMode = "gptMode"
         static let gptModel = "gptModel"
         static let gptEffort = "gptEffort"
+        static let inputDeviceUID = "inputDeviceUID"
     }
 
     private let defaults: UserDefaults
@@ -37,6 +38,11 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(gptEffort, forKey: Key.gptEffort) }
     }
 
+    /// UID выбранного микрофона; nil — системный по умолчанию (nil стирает ключ).
+    @Published public var inputDeviceUID: String? {
+        didSet { defaults.set(inputDeviceUID, forKey: Key.inputDeviceUID) }
+    }
+
     public var gptConfig: GPTConfig {
         GPTConfig(mode: gptMode, model: gptModel, effort: gptEffort)
     }
@@ -49,5 +55,6 @@ public final class AppSettings: ObservableObject {
         gptMode = mode
         gptModel = defaults.string(forKey: Key.gptModel) ?? GPTConfig.defaultModel(for: mode)
         gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
+        inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)
     }
 }
