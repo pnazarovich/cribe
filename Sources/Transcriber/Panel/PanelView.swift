@@ -169,7 +169,7 @@ private struct WaveformView: View {
 
     private static let barCount = 48
     private static let barWidth: CGFloat = 3
-    /// Минимальный зазор: при широкой капсуле столбики расходятся, ширина остаётся прежней.
+    /// Зазор фиксирован: волна всегда плотная, её ширина не зависит от ширины капсулы.
     private static let spacing: CGFloat = 2
     private static let maxBar: CGFloat = 32
     /// Столбик тишины — короткий штрих, а не пустое место.
@@ -180,15 +180,12 @@ private struct WaveformView: View {
     @State private var history = [Float](repeating: 0, count: WaveformView.barCount)
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: Self.spacing) {
             ForEach(history.indices, id: \.self) { index in
                 Capsule()
                     .fill(Self.fill)
                     .frame(width: Self.barWidth, height: Self.barHeight(history[index]))
                     .opacity(index >= Self.barCount - Self.freshCount ? 1 : 0.65)
-                if index < Self.barCount - 1 {
-                    Spacer(minLength: Self.spacing)
-                }
             }
         }
         .frame(height: Self.maxBar)
