@@ -46,7 +46,8 @@ public final class AudioRecorder {
     )!  // параметры константны и валидны
 
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "AudioRecorder")
-    private let engine = AVAudioEngine()
+    /// Пересоздаётся при работе с явно выбранным микрофоном — см. `prepareInputDevice()`.
+    private var engine = AVAudioEngine()
     private let lock = NSLock()
 
     // Под lock:
@@ -76,6 +77,10 @@ public final class AudioRecorder {
     private var conversionFailureLogged = false
 
     public init() {
+        observeConfigurationChange()
+    }
+
+    private func observeConfigurationChange() {
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -176,7 +181,7 @@ public final class AudioRecorder {
             if engine.isRunning {
                 engine.stop()
             }
-            applyInputDevice()
+            prepareInputDevice()
             try installTap()
         }
         if !engine.isRunning {
@@ -185,19 +190,51 @@ public final class AudioRecorder {
         }
     }
 
-    /// Ставит выбранный микрофон на аудиоюнит входного узла. Только при остановленном движке.
+    /// Готовит движок под выбранный микрофон.
+    ///
+    /// Пин живёт ровно один цикл жизни движка: запись `CurrentDevice` не переживает
+    /// `stop()`/`teardown()` — юнит откатывается на свой агрегат по умолчанию, а `inputFormat`
+    /// продолжает рапортовать частоту пина. Следующий `start()` падает с -10868
+    /// (kAudioUnitErr_FormatNotSupported) или отдаёт тишину — ровно то, что ловил пользователь
+    /// на второй диктовке. Поэтому под явный выбор берём ЧИСТЫЙ `AVAudioEngine`: это то же
+    /// состояние, что после перезапуска приложения, и только на нём пин ложится предсказуемо.
+    ///
+    /// Возврат к «Системному по умолчанию» — тот же чистый движок, но уже без записи свойства:
+    /// свежий экземпляр сам стоит на агрегате, который следует за системным микрофоном.
+    /// Путь без явного выбора не трогаем вовсе — он и так работает.
+    private func prepareInputDevice() {
+        guard inputDeviceUID != nil || isPinned else { return }
+        resetEngine()
+        isPinned = false
+        applyInputDevice()
+    }
+
+    /// Заменяет движок на чистый экземпляр. Вызывать только со снятым tap-ом.
+    private func resetEngine() {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+        engine = AVAudioEngine()
+        observeConfigurationChange()
+        converter = nil
+    }
+
+    /// Ставит выбранный микрофон на аудиоюнит входного узла. Только на чистом остановленном
+    /// движке (см. `prepareInputDevice()`). Микрофон не выбран или его UID больше не резолвится —
+    /// свойство не трогаем вовсе: движок остаётся на своём агрегате и сам следует за системным
+    /// устройством по умолчанию (подключились AirPods — переехали на них).
     private func applyInputDevice() {
-        guard let audioUnit = engine.inputNode.audioUnit else { return }
-        let explicit = inputDeviceUID.flatMap { AudioDeviceList.device(uid: $0)?.id }
-        // Пин ставим только под явно выбранный и живой микрофон. Нет выбора (или UID больше не
-        // резолвится) — свойство не трогаем вовсе: движок остаётся на своём агрегате и сам следует
-        // за системным устройством по умолчанию (подключились AirPods — переехали на них).
-        // Единственное исключение — снять наш же прежний пин, вернув системный дефолт.
-        guard let target = explicit ?? (isPinned ? AudioDeviceList.defaultInputDeviceID() : nil) else { return }
+        guard let audioUnit = engine.inputNode.audioUnit,
+              let uid = inputDeviceUID,
+              let target = AudioDeviceList.device(uid: uid)?.id
+        else { return }
         // Запись того же самого устройства всё равно порождает AVAudioEngineConfigurationChange,
         // а он — новую пересборку tap-а. Поэтому сначала читаем, что уже стоит на юните.
         guard currentDeviceID(of: audioUnit) != target else {
-            isPinned = explicit != nil
+            isPinned = true
             return
         }
 
@@ -216,7 +253,7 @@ public final class AudioRecorder {
             logger.error("Не удалось выбрать микрофон \(deviceID, privacy: .public): статус \(status, privacy: .public)")
             return
         }
-        isPinned = explicit != nil
+        isPinned = true
         // Своя же запись сейчас вернётся уведомлением о смене конфигурации — гасим его один раз,
         // иначе получится цикл «запись → уведомление → пересборка → запись».
         lastDeviceWrite = Date()
@@ -237,38 +274,51 @@ public final class AudioRecorder {
         return status == noErr ? deviceID : nil
     }
 
-    /// `installTap` кидает ObjC-исключение (не Swift-ошибку) на `format.sampleRate == hwFormat.sampleRate`,
-    /// а поймать его из SPM-модуля нечем — @try доступен только из Objective-C. Поэтому оба формата
-    /// узла читаются заново прямо перед установкой и сверяются здесь: именно расхождение между
-    /// «железным» входом и выходом узла (устройство сменилось под движком — путь AirPods)
-    /// и приводит к падению. Остаточный риск: любое другое ObjC-исключение внутри `installTap`
-    /// всё ещё уронит процесс — закрыть его можно только Objective-C обёрткой.
+    /// Tap и конвертер строятся по «железному» формату входа (`inputFormat`), а не по формату,
+    /// который отдаёт узел (`outputFormat`). Причина: прямая запись `CurrentDevice` в аудиоюнит
+    /// проходит мимо бухгалтерии `AVAudioEngine`, и `outputFormat` навсегда остаётся на частоте
+    /// прошлого устройства (Bluetooth-гарнитура 16 кГц → встроенный микрофон 48 кГц: `inputFormat`
+    /// уже 48 000, `outputFormat` всё ещё 16 000, и это не лечится ни временем, ни `reset()`,
+    /// ни `prepare()`). Tap, поставленный по такому формату, не отдаёт ни одного блока — запись
+    /// выходит пустой. `installTap` с «железным» форматом на остановленном движке, наоборот,
+    /// пересогласовывает шину, и `outputFormat` подтягивается сам.
+    ///
+    /// `installTap` кидает ObjC-исключение (не Swift-ошибку), если формат разъезжается с шиной,
+    /// а поймать его из SPM-модуля нечем — @try доступен только из Objective-C. Поэтому формат
+    /// перечитывается после сборки конвертера: если устройство меняется прямо сейчас, лучше
+    /// отказаться от tap-а, чем уронить процесс. Остаточный риск: любое другое ObjC-исключение
+    /// внутри `installTap` всё ещё уронит процесс — закрыть его можно только Objective-C обёрткой.
     private func installTap() throws {
         let input = engine.inputNode
-        let hardware = input.inputFormat(forBus: 0)
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0,
-              hardware.sampleRate > 0, hardware.channelCount > 0
-        else {
+        let format = input.inputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
             throw AudioRecorderError.noInputDevice
-        }
-        guard format.sampleRate == hardware.sampleRate else {
-            logger.error(
-                """
-                Формат входа разъехался: узел отдаёт \(format.sampleRate, privacy: .public) Гц \
-                при железных \(hardware.sampleRate, privacy: .public) Гц — tap не ставим
-                """
-            )
-            throw AudioRecorderError.unstableInputFormat
         }
         guard let converter = AVAudioConverter(from: format, to: Self.targetFormat) else {
             throw AudioRecorderError.converterUnavailable
+        }
+        let settled = input.inputFormat(forBus: 0)
+        guard settled.sampleRate == format.sampleRate, settled.channelCount == format.channelCount else {
+            logger.error(
+                """
+                Формат входа меняется на ходу: \(format.sampleRate, privacy: .public) Гц → \
+                \(settled.sampleRate, privacy: .public) Гц — tap не ставим
+                """
+            )
+            throw AudioRecorderError.unstableInputFormat
         }
         self.converter = converter
         input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(Self.chunkSize), format: format) { [weak self] buffer, _ in
             self?.handle(buffer)
         }
         tapInstalled = true
+        // Тихий отказ микрофона в поле диагностируется только по этой строке.
+        logger.info(
+            """
+            Вход подключён: устройство \(input.audioUnit.flatMap(self.currentDeviceID(of:)) ?? 0, privacy: .public), \
+            \(format.sampleRate, privacy: .public) Гц, \(format.channelCount, privacy: .public) кан.
+            """
+        )
     }
 
     /// Смена устройства ввода (AirPods и т.п.) — пересобираем tap под новый формат.
@@ -366,12 +416,13 @@ public final class AudioRecorder {
         return Array(UnsafeBufferPointer(start: channel[0], count: Int(output.frameLength)))
     }
 
-    /// Пишет в stderr одну строку на серию сбоев: tap приходит ~12 раз в секунду,
-    /// иначе поток лога забьётся повторами.
+    /// Одна строка на серию сбоев: tap приходит ~12 раз в секунду, иначе лог забьётся повторами.
+    /// Пишем в os_log, а не в stderr: у собранного .app stderr никто не читает, а так сбой
+    /// виден в `log show --predicate 'subsystem == "online.nazarovych.transcriber"'`.
     private func reportConversionFailure(_ reason: String) {
         guard !conversionFailureLogged else { return }
         conversionFailureLogged = true
-        FileHandle.standardError.write(Data("AudioRecorder: конвертация в 16 кГц не удалась — \(reason)\n".utf8))
+        logger.error("Конвертация в 16 кГц не удалась — \(reason, privacy: .public)")
     }
 
     private static func rms(_ samples: [Float]) -> Float {
