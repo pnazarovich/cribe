@@ -94,8 +94,12 @@ public enum WavEncoder {
 @MainActor
 public final class DictationController: ObservableObject {
 
-    /// Период live-превью и минимум аудио для него (1 c).
-    private static let previewInterval: TimeInterval = 1.2
+    /// Передышка между проходами live-превью и минимум аудио для прохода (1 c).
+    /// Сам проход — полный ре-декод буфера на large-v3-turbo, это ~1.3 c, поэтому передышку
+    /// держим короткой: с прежней паузой в 1.2 c превью обновлялось раз в ~2.6 c, то есть
+    /// половину записи цикл просто спал. Меньше секунды аудио отдавать бессмысленно —
+    /// WhisperKit с `chunkingStrategy: .vad` возвращает на таком срезе пустой результат.
+    private static let previewGap: TimeInterval = 0.3
     private static let previewMinSamples = Int(AudioRecorder.sampleRate)
     /// Сколько держим финальное состояние перед возвратом в `.idle`.
     private static let insertedLinger: TimeInterval = 1.5
@@ -103,8 +107,10 @@ public final class DictationController: ObservableObject {
     private static let errorLinger: TimeInterval = 2
     /// Сообщение действий меню (перевод последней диктовки) поверх простоя.
     private static let flashLinger: TimeInterval = 2
-    /// Через столько простоя отпускаем микрофон (гаснет индикатор записи).
-    private static let micReleaseDelay: TimeInterval = 60
+    /// Через столько простоя отпускаем микрофон (гаснет индикатор записи). Держать вход
+    /// прогретым дольше нет смысла: пересборка движка стоит ~150 мс, а горящий индикатор
+    /// читается как «микрофон не выключается».
+    private static let micReleaseDelay: TimeInterval = 10
 
     /// Бэкап последней записи — на случай, если вставка не дошла до приложения.
     private static let backupURL: URL = FileManager.default
@@ -139,6 +145,9 @@ public final class DictationController: ObservableObject {
     /// Старт асинхронный, а состояние меняется только в его конце — флаг закрывает
     /// окно, в котором второй хоткей запустил бы вторую запись.
     private var isStarting = false
+    /// Второй хоткей на `.preparingModel` отменяет сессию. Саму загрузку прервать нельзя
+    /// (WhisperKit её не отменяет) — она спокойно дойдёт до кэша, но запись не начнётся.
+    private var pendingCancel = false
 
     private var chunks: AsyncStream<[Float]>.Continuation?
     private var vadTask: Task<Void, Never>?
@@ -177,7 +186,10 @@ public final class DictationController: ObservableObject {
             stopAndProcess()
         case .idle, .inserted, .degraded, .error:
             begin()
-        case .preparingModel, .transcribing, .cleaning:
+        case .preparingModel:
+            // Первая загрузка модели идёт минутами — хоткей отменяет сессию, а не ждёт впустую.
+            pendingCancel = true
+        case .transcribing, .cleaning:
             break  // конвейер занят — хоткей игнорируем
         }
     }
@@ -220,14 +232,12 @@ public final class DictationController: ObservableObject {
     private func begin() {
         guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
         isStarting = true
+        pendingCancel = false  // отмена прошлой сессии новую не трогает
 
         idleTask?.cancel()
         idleTask = nil
         micReleaseTask?.cancel()
         micReleaseTask = nil
-        // Дёшево и идемпотентно: если UID не менялся, вызов ничего не делает.
-        recorder.setInputDevice(uid: settings.inputDeviceUID)
-        recorder.prepare()  // движок поднимается заранее, чтобы старт записи был мгновенным
 
         // Черновик прошлой сессии в буфер новой не попадёт: сбой до `startCapture` увидит пустой `live`.
         live = ""
@@ -240,6 +250,16 @@ public final class DictationController: ObservableObject {
                 try await gate.prepare(language: language) { [weak self] modelState in
                     Task { @MainActor in self?.apply(modelState) }
                 }
+                // Пока грузилась модель, хоткей нажали второй раз — сессия отменена.
+                if pendingCancel {
+                    cancelSession()
+                    return
+                }
+                // Микрофон поднимаем только здесь: первая загрузка модели идёт минутами,
+                // и всё это время индикатор записи гореть не должен.
+                // Выбор устройства дёшев и идемпотентен: если UID не менялся, вызов ничего не делает.
+                recorder.setInputDevice(uid: settings.inputDeviceUID)
+                recorder.prepare()  // движок поднимается прямо перед стартом — запись начнётся мгновенно
                 try await startCapture(language: language)
             } catch {
                 fail(error.localizedDescription)
@@ -313,21 +333,42 @@ public final class DictationController: ObservableObject {
     }
 
     /// Live-превью: полный ре-декод накопленного буфера, следующий проход стартует
-    /// только после завершения предыдущего (цикл последовательный).
+    /// только после завершения предыдущего (цикл последовательный) — с короткой
+    /// передышкой, чтобы не отбирать ANE у VAD-цикла.
     private func startPreviewLoop(language: Language) {
         let prompt = PromptBuilder.initialPrompt(entries: dictionary.entries, language: language)
         previewTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(Self.previewInterval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(Self.previewGap * 1_000_000_000))
                 guard let self, !Task.isCancelled else { return }
                 guard let samples = self.previewSamples() else { continue }
-                guard let text = try? await self.gate.transcribe(samples, language: language, prompt: prompt) else {
+                guard let text = await self.previewPass(samples, language: language, prompt: prompt) else {
                     continue
                 }
                 // Пока считали, запись могли остановить — в новую сессию не рисуем.
                 guard !Task.isCancelled else { return }
                 self.applyLive(text)
             }
+        }
+    }
+
+    /// Один проход превью. Провал превью не рушит диктовку (финал считается заново),
+    /// но раньше он был совсем немым — и «превью не появилось» было не отличить от
+    /// «модель не успела». Поэтому каждый сбой пишем в лог и в stderr.
+    private func previewPass(_ samples: [Float], language: Language, prompt: String) async -> String? {
+        let started = Date()
+        do {
+            let text = try await gate.transcribe(samples, language: language, prompt: prompt)
+            // Уровень debug: в обычной работе не пишется, но `log stream --level debug`
+            // на живой машине сразу показывает, идут ли проходы и сколько занимают.
+            logger.debug("Превью: \(Int(Date().timeIntervalSince(started) * 1000), privacy: .public) мс")
+            return text
+        } catch {
+            logger.error("Проход превью не удался: \(error.localizedDescription, privacy: .public)")
+            FileHandle.standardError.write(
+                Data("Transcriber: проход превью не удался — \(error.localizedDescription)\n".utf8)
+            )
+            return nil
         }
     }
 
@@ -559,6 +600,17 @@ public final class DictationController: ObservableObject {
         scheduleIdle(after: Self.errorLinger)
     }
 
+    /// Сессию отменили хоткеем на загрузке модели: записи не было, поэтому тихо возвращаемся
+    /// в простой — без сообщения об ошибке.
+    private func cancelSession() {
+        pendingCancel = false
+        state = .idle
+        activeSessionLanguage = nil
+        // Микрофон в этой сессии не поднимали, но `begin()` снял таймер отпускания — возвращаем
+        // его, иначе вход, прогретый прошлой диктовкой, останется включённым навсегда.
+        scheduleMicRelease()
+    }
+
     private func scheduleIdle(after seconds: TimeInterval) {
         idleTask?.cancel()
         idleTask = Task { [weak self] in
@@ -571,7 +623,7 @@ public final class DictationController: ObservableObject {
     }
 
     /// Микрофон держим прогретым сразу после диктовки (следующая обычно рядом),
-    /// но через минуту простоя отпускаем — индикатор записи не должен гореть вечно.
+    /// но через 10 с простоя отпускаем — индикатор записи не должен гореть вечно.
     private func scheduleMicRelease() {
         micReleaseTask?.cancel()
         micReleaseTask = Task { [weak self] in
