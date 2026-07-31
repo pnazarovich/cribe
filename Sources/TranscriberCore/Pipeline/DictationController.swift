@@ -145,28 +145,15 @@ public final class DictationController: ObservableObject {
     private var vadTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
-    private var deviceSubscription: AnyCancellable?
 
     public init(engine: TranscriptionEngine, dictionary: UserDictionary, settings: AppSettings) {
         self.gate = EngineGate(engine)
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
-
-        recorder.setInputDevice(uid: settings.inputDeviceUID)
-        // Текущее значение уже применено выше — подписка нужна только на последующие смены.
-        deviceSubscription = settings.$inputDeviceUID
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] uid in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    // На живой записи движок не пересобираем — это провал в аудио.
-                    // Новое устройство применит `begin()` следующей диктовки.
-                    if case .recording = self.state { return }
-                    self.recorder.setInputDevice(uid: uid)
-                }
-            }
+        // Микрофон намеренно не пиним: `AudioRecorder.setInputDevice` не вызывается нигде,
+        // поэтому вход всегда системный по умолчанию. Пиннинг через AUHAL воевал с системой
+        // (перебор устройства раз в секунду на BT-гарнитуре) и будет переделан отдельно.
     }
 
     // MARK: - Вход хоткеев
@@ -246,8 +233,6 @@ public final class DictationController: ObservableObject {
                 }
                 // Микрофон поднимаем только здесь: первая загрузка модели идёт минутами,
                 // и всё это время индикатор записи гореть не должен.
-                // Выбор устройства дёшев и идемпотентен: если UID не менялся, вызов ничего не делает.
-                recorder.setInputDevice(uid: settings.inputDeviceUID)
                 recorder.prepare()  // движок поднимается прямо перед стартом — запись начнётся мгновенно
                 try await startCapture()
             } catch {

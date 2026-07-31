@@ -25,7 +25,7 @@ struct MenuBarView: View {
             }
         }
 
-        MicrophonePicker(settings: settings)
+        MicrophoneMenu()
 
         Divider()
 
@@ -108,24 +108,22 @@ struct MenuBarView: View {
     }
 }
 
-/// Подменю микрофонов отдельным вью ради собственной точки обновления списка.
-/// Свежесть держится двумя независимыми механизмами, чтобы не зависеть от того,
-/// пересобирает ли SwiftUI содержимое NSMenu на каждом открытии:
-/// 1) стартовое значение `@State` читается при создании вью;
-/// 2) `onAppear` перечитывает список, когда вью показывается.
-/// Перечисление CoreAudio занимает единицы миллисекунд — на открытии меню не заметно.
-private struct MicrophonePicker: View {
-    @ObservedObject var settings: AppSettings
-
-    @State private var devices = AudioDeviceList.inputDevices()
+/// Своего выбора микрофона у приложения больше нет: пиннинг входа через AUHAL воевал
+/// с системой (движок пересобирался раз в секунду, перебирая BT-гарнитуру), поэтому
+/// запись всегда идёт с системного входа по умолчанию, а сменить его отправляем в macOS.
+private struct MicrophoneMenu: View {
+    /// Панель «Звук» → вкладка «Вход».
+    private static let soundSettings = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension")
 
     var body: some View {
-        Picker("Микрофон", selection: $settings.inputDeviceUID) {
-            Text("Системный по умолчанию").tag(String?.none)
-            ForEach(devices) { device in
-                Text(device.name).tag(String?.some(device.uid))
+        Menu("Микрофон") {
+            // Не кнопка: строка только сообщает, откуда берётся звук.
+            Text("Системный по умолчанию")
+
+            Button("Сменить микрофон в настройках macOS…") {
+                guard let soundSettings = Self.soundSettings else { return }
+                NSWorkspace.shared.open(soundSettings)
             }
         }
-        .onAppear { devices = AudioDeviceList.inputDevices() }
     }
 }
