@@ -48,10 +48,31 @@ public final class SoundPlayer {
     private let startPlayer: AVAudioPlayer?
     private let stopPlayer: AVAudioPlayer?
 
+    /// Каталог пользовательских звуков: `start.*`/`stop.*` здесь перекрывают синтез.
+    /// Кладём любые форматы, понятные AVAudioPlayer (wav/m4a/mp3/caf/aiff).
+    public static let customSoundsDirectory = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Transcriber/sounds", isDirectory: true)
+
+    private static func customPlayer(named name: String) -> AVAudioPlayer? {
+        let dir = customSoundsDirectory
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return nil }
+        guard let url = files.first(where: { $0.deletingPathExtension().lastPathComponent.lowercased() == name }) else { return nil }
+        guard let player = try? AVAudioPlayer(contentsOf: url) else {
+            logger.error("не удалось загрузить пользовательский звук \(url.lastPathComponent, privacy: .public)")
+            return nil
+        }
+        player.volume = volume
+        player.prepareToPlay()
+        return player
+    }
+
     /// Синтез и `prepareToPlay` — сразу: на первом хоткее чайм иначе опаздывал.
+    /// Пользовательские файлы (start.*/stop.* в Application Support/Transcriber/sounds)
+    /// имеют приоритет над синтезированными чаймами.
     private init() {
-        startPlayer = Self.player(Self.startWav)
-        stopPlayer = Self.player(Self.stopWav)
+        startPlayer = Self.customPlayer(named: "start") ?? Self.player(Self.startWav)
+        stopPlayer = Self.customPlayer(named: "stop") ?? Self.player(Self.stopWav)
     }
 
     /// Прогрев на старте приложения: создаёт `shared`, а с ним — оба готовых плеера.
