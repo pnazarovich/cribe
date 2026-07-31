@@ -2,34 +2,60 @@ import AVFoundation
 import Foundation
 import OSLog
 
-/// Короткие чаймы старта и остановки записи. Синтезируются в памяти при первом
-/// обращении — ни файлов, ни ресурсов в бандле.
+/// Короткие чаймы старта и остановки записи. Синтезируются в памяти при создании
+/// `shared` — ни файлов, ни ресурсов в бандле.
 public final class SoundPlayer {
     public static let shared = SoundPlayer()
 
     /// Синтез в 44.1 кГц: чайм идёт в динамики, а не через 16-кГц тракт записи.
     static let sampleRate = 44_100
-    /// Мягкая огибающая: без неё короткая нота щёлкает на старте и в конце.
-    private static let attack = 0.01
-    private static let decay = 0.08
-    /// Вторая гармоника тише основного тона на 12 дБ.
-    private static let harmonic = 0.251
-    private static let volume: Float = 0.4
 
-    private static let c5 = 523.25
-    private static let e5 = 659.25
-    private static let g5 = 783.99
+    /// Тембр маримбы: основной тон и два обертона. Каждый следующий тише и гаснет
+    /// быстрее — от этого нота звучит деревянной, а не голой синусоидой.
+    private static let partials: [(ratio: Double, gain: Double, damping: Double)] = [
+        (ratio: 1, gain: 1, damping: 1),        // основной тон
+        (ratio: 2, gain: 0.126, damping: 1.8),  // −18 дБ
+        (ratio: 3, gain: 0.050, damping: 2.6),  // −26 дБ
+    ]
 
-    /// C5 → E5 → G5 с шагом 70 мс: ноты звучат по 90 мс, поэтому слегка накладываются.
-    static let startWav = wav(frequencies: [c5, e5, g5], step: 0.07)
-    /// G5 → C5 с шагом 90 мс — нисходящий ответ на стартовый.
-    static let stopWav = wav(frequencies: [g5, c5], step: 0.09)
+    /// Атака приподнятым косинусом: мягко, но коротко — удар молоточка, а не «пуф».
+    private static let attack = 0.008
+    /// Постоянная времени спада в долях длины ноты: меньше — суше звук.
+    private static let damping = 0.45
+    /// Ноты накладываются: вторая входит, пока первая ещё звенит, и стыка не слышно.
+    private static let overlap = 0.4
+    private static let noteLength = 0.14
+    /// Последняя нота догорает дольше — после неё ничего не следует.
+    private static let tailLength = 0.22
+    /// Тишина по краям файла: устройство получает нули до и после чайма.
+    private static let padding = 0.006
+    /// Общий фейд в конце — страховка поверх огибающих нот.
+    private static let masterFade = 0.01
 
-    private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "SoundPlayer")
-    private lazy var startPlayer = player(Self.startWav)
-    private lazy var stopPlayer = player(Self.stopWav)
+    private static let peak: Float = 0.5
+    private static let volume: Float = 0.3
 
-    private init() {}
+    private static let g4 = 392.0
+    private static let d5 = 587.33
+
+    /// Восходящая кварта: запись пошла.
+    static let startWav = wav(frequencies: [g4, d5])
+    /// Та же пара наоборот — спокойный ответ на остановку.
+    static let stopWav = wav(frequencies: [d5, g4])
+
+    private static let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "SoundPlayer")
+
+    private let startPlayer: AVAudioPlayer?
+    private let stopPlayer: AVAudioPlayer?
+
+    /// Синтез и `prepareToPlay` — сразу: на первом хоткее чайм иначе опаздывал.
+    private init() {
+        startPlayer = Self.player(Self.startWav)
+        stopPlayer = Self.player(Self.stopWav)
+    }
+
+    /// Прогрев на старте приложения: создаёт `shared`, а с ним — оба готовых плеера.
+    public static func preload() { _ = shared }
 
     public func playStart() { restart(startPlayer) }
 
@@ -42,10 +68,10 @@ public final class SoundPlayer {
         player.play()
     }
 
-    private func player(_ data: Data) -> AVAudioPlayer? {
+    private static func player(_ data: Data) -> AVAudioPlayer? {
         do {
             let player = try AVAudioPlayer(data: data)
-            player.volume = Self.volume
+            player.volume = volume
             player.prepareToPlay()
             return player
         } catch {
@@ -56,34 +82,54 @@ public final class SoundPlayer {
 
     // MARK: - Синтез
 
-    static func wav(frequencies: [Double], step: Double) -> Data {
-        WavEncoder.encode(mix(frequencies: frequencies, step: step), sampleRate: sampleRate)
+    static func wav(frequencies: [Double]) -> Data {
+        WavEncoder.encode(mix(frequencies), sampleRate: sampleRate)
     }
 
-    private static func mix(frequencies: [Double], step: Double) -> [Float] {
-        let noteLength = Int((attack + decay) * Double(sampleRate))
-        let stepLength = Int(step * Double(sampleRate))
-        var buffer = [Float](repeating: 0, count: (frequencies.count - 1) * stepLength + noteLength)
+    /// Каждая нота рендерится в свой буфер и складывается с наложением: на стыке нот
+    /// звучит сумма двух непрерывных сигналов, поэтому разрыва там быть не может.
+    private static func mix(_ frequencies: [Double]) -> [Float] {
+        let step = Int(noteLength * (1 - overlap) * Double(sampleRate))
+        let pad = Int(padding * Double(sampleRate))
+        let notes = frequencies.enumerated().map { index, frequency in
+            note(frequency, length: index == frequencies.count - 1 ? tailLength : noteLength)
+        }
 
-        for (index, frequency) in frequencies.enumerated() {
-            let offset = index * stepLength
-            for sample in 0..<noteLength {
-                let time = Double(sample) / Double(sampleRate)
-                let wave = sin(2 * .pi * frequency * time) + harmonic * sin(4 * .pi * frequency * time)
-                buffer[offset + sample] += Float(wave * envelope(time))
-            }
+        let end = notes.indices.map { pad + $0 * step + notes[$0].count }.max() ?? pad
+        var buffer = [Float](repeating: 0, count: end + pad)
+        for (index, note) in notes.enumerated() {
+            let offset = pad + index * step
+            for (sample, value) in note.enumerated() { buffer[offset + sample] += value }
+        }
+
+        let fade = Int(masterFade * Double(sampleRate))
+        for index in 0..<fade {
+            buffer[end - fade + index] *= Float(0.5 * (1 + cos(.pi * Double(index) / Double(fade))))
         }
 
         // Наложение нот складывается — нормируем, иначе кодировщик срежет пики.
-        let peak = buffer.reduce(Float(0)) { max($0, abs($1)) }
-        guard peak > 0 else { return buffer }
-        return buffer.map { $0 / peak * 0.9 }
+        let loudest = buffer.reduce(Float(0)) { max($0, abs($1)) }
+        guard loudest > 0 else { return buffer }
+        return buffer.map { $0 / loudest * peak }
     }
 
-    /// Линейная атака, затем квадратичный спад ровно в ноль.
-    private static func envelope(_ time: Double) -> Double {
-        if time < attack { return time / attack }
-        let progress = min(1, (time - attack) / decay)
-        return (1 - progress) * (1 - progress)
+    private static func note(_ frequency: Double, length: Double) -> [Float] {
+        let count = Int(length * Double(sampleRate))
+        let tau = length * damping
+        return (0..<count).map { sample in
+            let time = Double(sample) / Double(sampleRate)
+            let wave = partials.reduce(0.0) { sum, partial in
+                sum + partial.gain * exp(-time * partial.damping / tau)
+                    * sin(2 * .pi * frequency * partial.ratio * time)
+            }
+            return Float(wave * envelope(time, length: length))
+        }
+    }
+
+    /// Приподнятый косинус на атаке и на всём спаде: нота начинается и заканчивается
+    /// ровным нулём, причём с нулевой производной — щёлкнуть там нечему.
+    private static func envelope(_ time: Double, length: Double) -> Double {
+        if time < attack { return 0.5 * (1 - cos(.pi * time / attack)) }
+        return 0.5 * (1 + cos(.pi * min(1, (time - attack) / (length - attack))))
     }
 }

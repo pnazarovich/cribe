@@ -35,7 +35,7 @@ final class WavEncoderTests: XCTestCase {
     // MARK: - Чаймы SoundPlayer (проверить на слух агент не может — проверяем данные)
 
     func testChimesAreValidWavWithExpectedDuration() {
-        for (name, data) in [("старт", SoundPlayer.startWav), ("стоп", SoundPlayer.stopWav)] {
+        for (name, data) in chimes {
             XCTAssertEqual(String(decoding: data[0..<4], as: UTF8.self), "RIFF", name)
             XCTAssertEqual(String(decoding: data[8..<12], as: UTF8.self), "WAVE", name)
             XCTAssertEqual(le32(data, 4), UInt32(data.count - 8), name)     // размер RIFF
@@ -47,19 +47,57 @@ final class WavEncoderTests: XCTestCase {
             let dataSize = Int(le32(data, 40))
             XCTAssertEqual(dataSize, data.count - 44, name)
             let duration = Double(dataSize) / 2 / 44_100
-            XCTAssertGreaterThan(duration, 0.1, "чайм \(name) слишком короткий: \(duration) с")
-            XCTAssertLessThan(duration, 1.0, "чайм \(name) слишком длинный: \(duration) с")
+            XCTAssertGreaterThan(duration, 0.25, "чайм \(name) слишком короткий: \(duration) с")
+            XCTAssertLessThan(duration, 0.40, "чайм \(name) слишком длинный: \(duration) с")
         }
     }
 
-    func testChimesAreAudibleAndNotClipped() {
-        for (name, data) in [("старт", SoundPlayer.startWav), ("стоп", SoundPlayer.stopWav)] {
-            let peak = stride(from: 44, to: data.count, by: 2)
-                .map { abs(Int(Int16(bitPattern: le16(data, $0)))) }
-                .max() ?? 0
-            XCTAssertGreaterThan(peak, 16_000, "чайм \(name) почти тишина")
-            XCTAssertLessThan(peak, 32_767, "чайм \(name) упёрся в клиппинг")
+    /// Пик нормирован в 0.5: слышно, но с запасом до клиппинга.
+    func testChimesPeakAtHalfScale() {
+        for (name, data) in chimes {
+            let peak = samples(data).map { abs($0) }.max() ?? 0
+            XCTAssertGreaterThan(peak, 0.45, "чайм \(name) слишком тихий: пик \(peak)")
+            XCTAssertLessThan(peak, 0.55, "чайм \(name) слишком громкий: пик \(peak)")
         }
+    }
+
+    /// Щелчок в звуке — это разрыв сигнала. Ищем его как скачок между соседними
+    /// сэмплами: на плавных огибающих шаг не превышает сотых долей шкалы.
+    func testChimesHaveNoClicks() {
+        for (name, data) in chimes {
+            let wave = samples(data)
+            let jump = zip(wave, wave.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+            XCTAssertLessThan(jump, 0.12, "чайм \(name) щёлкает: скачок \(jump)")
+        }
+    }
+
+    /// Края файла — тишина: устройство не получает ни рывка на старте, ни обрыва хвоста.
+    func testChimeEdgesAreSilent() {
+        let edge = 44_100 / 200   // 5 мс
+        for (name, data) in chimes {
+            let wave = samples(data)
+            let head = wave.prefix(edge).map { abs($0) }.max() ?? 0
+            let tail = wave.suffix(edge).map { abs($0) }.max() ?? 0
+            XCTAssertLessThan(head, 0.01, "чайм \(name) начинается рывком: \(head)")
+            XCTAssertLessThan(tail, 0.01, "чайм \(name) обрывается: \(tail)")
+        }
+    }
+
+    /// Готовые WAV можно послушать: путь задаётся снаружи, в обычном прогоне тест молчит.
+    func testDumpChimesWhenRequested() throws {
+        guard let dir = ProcessInfo.processInfo.environment["CHIME_WAV_DIR"] else { return }
+        for (name, data) in [("start", SoundPlayer.startWav), ("stop", SoundPlayer.stopWav)] {
+            try data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("chime-\(name).wav"))
+        }
+    }
+
+    private var chimes: [(String, Data)] {
+        [("старт", SoundPlayer.startWav), ("стоп", SoundPlayer.stopWav)]
+    }
+
+    private func samples(_ data: Data) -> [Float] {
+        stride(from: 44, to: data.count, by: 2)
+            .map { Float(Int16(bitPattern: le16(data, $0))) / 32_767 }
     }
 
     private func le16(_ data: Data, _ offset: Int) -> UInt16 {

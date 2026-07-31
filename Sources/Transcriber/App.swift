@@ -44,6 +44,8 @@ final class AppCore: ObservableObject {
     private init() {
         controller = DictationController(engine: engine, dictionary: dictionary, settings: settings)
         needsOnboarding = !UserDefaults.standard.bool(forKey: Self.onboardingKey)
+        // Чаймы синтезируются заранее: на первом хоткее звук иначе опаздывал.
+        SoundPlayer.preload()
     }
 
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
