@@ -363,6 +363,19 @@ public enum DictationState: Sendable, Equatable {
 
 ---
 
+### Task 15: Звуки старта/окончания записи
+
+**Files:** Create: `Sources/TranscriberCore/Support/SoundPlayer.swift`; Modify: `Support/AppSettings.swift` (+`@Published public var soundsEnabled: Bool` default true, key `soundsEnabled`), `Pipeline/DictationController.swift` (хуки).
+
+**Interfaces:**
+- `public final class SoundPlayer { public static let shared; public func playStart(); public func playStop() }` — синтез в памяти при первом обращении: 44.1 кГц mono, синус + 2-я гармоника (−12 дБ), мягкая атака 10 мс / спад 80 мс на ноту; старт = C5→E5→G5 (по ~70 мс, лёгкий overlap), стоп = G5→C5 (по ~90 мс); WavEncoder.encode → AVAudioPlayer(data:), громкость ~0.4. Никаких файлов/бандла.
+- DictationController: перед `recorder.start` — `if settings.soundsEnabled { SoundPlayer.shared.playStart() }`; в stopAndProcess сразу после `recorder.stop()` — playStop(). Чайм старта частично попадает в捕запись — VAD обрезает не-речь (принято).
+- Тумблер «Звуки» в настройках — задача UI (Task 9).
+
+- [ ] Реализация → `swift build` + прослушать вручную нельзя (агент) — проверка: WAV-данные валидны (парсинг заголовка тестом), длительности в ожидаемых пределах → коммит `feat(transcriber): звуки старта и окончания записи`.
+
+---
+
 ### Task 11: Финальная верификация
 
 - [ ] `swift test` — все зелёные. `bash scripts/build-app.sh` — подписанный .app. `open dist/Transcriber.app` — меню-бар иконка появилась, онбординг открылся. CLI-smoke RU и UK. Сверка со спекой (каждый пункт «Конвейер»/«GPT-слой»/«Errors»). REQUIRED: superpowers:verification-before-completion. Финальный коммит + краткий отчёт пользователю (что готово, как запустить, что руками: включить device-code auth в ChatGPT, дать разрешения).
