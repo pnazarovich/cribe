@@ -140,6 +140,12 @@ public actor CodexAuth {
     public static let shared = CodexAuth()
 
     private let account = KeychainStore.codexTokensAccount
+    /// Идущее обновление токена. Актор реентерабелен: на `await` внутри `refresh` он
+    /// освобождается, и второй вызов `validAccessToken` (прогрев соединения рядом с чисткой —
+    /// ровно этот случай) ушёл бы на сервер с ТЕМ ЖЕ refresh_token. Второй обмен сервер
+    /// отвергает как `reused`, а это терминальная ошибка — мы бы стёрли токены из Keychain
+    /// на ровном месте. Поэтому обновление одно на всех, как `previewLoading` в WhisperEngine.
+    private var refreshInFlight: Task<CodexTokens, Error>?
 
     public init() {}
 
@@ -211,11 +217,23 @@ public actor CodexAuth {
         guard CodexProtocol.needsRefresh(accessToken: tokens.accessToken) else {
             return (tokens.accessToken, tokens.accountId)
         }
-        let refreshed = try await refresh(tokens)
+        let refreshed = try await coalescedRefresh(tokens)
         return (refreshed.accessToken, refreshed.accountId)
     }
 
     // MARK: - Внутреннее
+
+    /// Одно обновление на всех: задача регистрируется синхронно (между проверкой и записью
+    /// `refreshInFlight` нет ни одного await), а подоспевшие следом ждут её результат.
+    private func coalescedRefresh(_ tokens: CodexTokens) async throws -> CodexTokens {
+        if let refreshInFlight {
+            return try await refreshInFlight.value
+        }
+        let task = Task { [self] in try await refresh(tokens) }
+        refreshInFlight = task
+        defer { refreshInFlight = nil }
+        return try await task.value
+    }
 
     private func exchange(code: String, verifier: String) async throws {
         let form = [
