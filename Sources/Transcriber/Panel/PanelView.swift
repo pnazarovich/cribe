@@ -1,79 +1,86 @@
 import SwiftUI
 import TranscriberCore
 
-/// Содержимое живой панели: одна капсула у нижнего края экрана.
+/// Содержимое живой панели: одна маленькая пилюля у нижнего края экрана.
 /// Пересобирается на каждое обновление уровня (~12 раз в секунду), поэтому дерево держим плоским.
 struct PanelView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var settings: AppSettings
-
-    /// Хвост после последнего законченного предложения — «сырая» часть превью, её красим серым.
-    private static let sentenceEnders: Set<Character> = [".", "!", "?", "…"]
 
     var body: some View {
         Group {
             if case .idle = controller.state {
                 EmptyView()
             } else {
-                capsule
+                PanelPill(
+                    state: controller.state,
+                    // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
+                    language: controller.activeSessionLanguage ?? settings.language,
+                    translateToEnglish: settings.translateToEnglish
+                )
             }
         }
-        // Окно выше капсулы: лишнее пространство прозрачно, капсула прижата к его низу.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        // Окно больше пилюли: лишнее пространство прозрачно, пилюля висит по центру.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
 
-    private var capsule: some View {
+/// Пилюля без наблюдаемых объектов: то же дерево рисует и проба ImageRenderer,
+/// которой неоткуда взять контроллер в нужном состоянии.
+struct PanelPill: View {
+    let state: DictationState
+    let language: Language
+    let translateToEnglish: Bool
+
+    /// Габарит пилюли: один и тот же для записи и всех состояний обработки —
+    /// панель не должна «дышать» размером на каждом шаге конвейера.
+    static let width: CGFloat = 190
+    static let height: CGFloat = 44
+    /// Потолок ширины: сообщение об ошибке длиннее ярлыка, но панель всё равно остаётся маленькой.
+    private static let maxWidth: CGFloat = 320
+
+    var body: some View {
         content
-            .font(.system(size: 13))
-            // Общий потолок высоты: длинное сообщение об ошибке не должно раздувать капсулу.
-            .lineLimit(3)
+            .font(.system(size: 12))
+            // Длинная ошибка переносится, но выше двух строк пилюля не растёт.
+            .lineLimit(2)
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(minWidth: Self.width, maxWidth: Self.maxWidth, minHeight: Self.height)
+            // Без `fixedSize` рамка забирает всю предложенную ширину окна и пилюля всегда
+            // раздувается до потолка: измерено пробой (190/320 против 320/320).
+            .fixedSize(horizontal: true, vertical: false)
+            .background(.ultraThinMaterial, in: Capsule())
     }
 
     @ViewBuilder
     private var content: some View {
-        switch controller.state {
+        switch state {
         case .idle:
             EmptyView()
 
         case .preparingModel(let progress):
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ProgressView(value: progress)
                     .progressViewStyle(.linear)
-                    .frame(width: 140)
-                Text("Загружаю модель…")
+                    .frame(width: 80)
+                Text("Загружаю…")
             }
 
-        case .recording(let live, let level):
-            // Волна занимает верхнюю строку целиком, превью идёт под ней.
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    PulsingDot()
-                    // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
-                    Text(Self.flag(controller.activeSessionLanguage ?? settings.language))
-                    if settings.translateToEnglish {
-                        TranslationBadge()
-                    }
-                    WaveformView(level: level)
+        case .recording(_, let level):
+            // Живого текста в панели нет: только язык, метка перевода и эквалайзер.
+            HStack(spacing: 8) {
+                Text(Self.flag(language))
+                if translateToEnglish {
+                    TranslationBadge()
                 }
-                liveText(live)
+                EqualizerView(level: level)
             }
 
         case .transcribing:
             spinnerRow("Распознаю…")
 
         case .cleaning:
-            HStack(spacing: 10) {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .controlSize(.small)
-                Text("✨ Чищу…")
-                if settings.translateToEnglish {
-                    TranslationBadge()
-                }
-            }
+            spinnerRow("✨ Чищу…")
 
         case .inserted:
             Text("✓ Вставлено")
@@ -82,37 +89,17 @@ struct PanelView: View {
             Text("⚠️ \(Self.reasonText(reason))")
 
         case .error(let message):
-            Text(message)
+            Text("⚠️ \(message)")
         }
     }
 
     private func spinnerRow(_ text: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             ProgressView()
                 .progressViewStyle(.circular)
                 .controlSize(.small)
             Text(text)
         }
-    }
-
-    @ViewBuilder
-    private func liveText(_ text: String) -> some View {
-        if text.isEmpty {
-            Text("Слушаю…").foregroundStyle(.secondary)
-        } else {
-            let parts = Self.split(text)
-            // Обрезаем начало: на экране всегда последние строки превью.
-            (Text(parts.settled) + Text(parts.tail).foregroundStyle(.secondary))
-                .lineLimit(3)
-                .truncationMode(.head)
-                .multilineTextAlignment(.leading)
-        }
-    }
-
-    private static func split(_ text: String) -> (settled: String, tail: String) {
-        guard let last = text.lastIndex(where: { sentenceEnders.contains($0) }) else { return ("", text) }
-        let boundary = text.index(after: last)
-        return (String(text[..<boundary]), String(text[boundary...]))
     }
 
     private static func flag(_ language: Language) -> String {
@@ -139,69 +126,75 @@ private struct TranslationBadge: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(.quaternary, in: Capsule())
-            // Иначе капсула перевода схлопнется под длинным превью.
             .fixedSize()
     }
 }
 
-/// Красная точка записи. Отдельный вью — чтобы анимация не перезапускалась при обновлении уровня.
-private struct PulsingDot: View {
-    @State private var dimmed = false
-
-    var body: some View {
-        Circle()
-            .fill(.red)
-            .frame(width: 9, height: 9)
-            .opacity(dimmed ? 0.35 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                    dimmed = true
-                }
-            }
-    }
-}
-
-/// Бегущая волна голоса: столбики уровня растут от средней линии в обе стороны,
-/// новый уровень дописывается справа, самый старый уезжает влево.
-/// Историю держит у себя (как PulsingDot — свою анимацию): пересборка панели её не сбрасывает.
-private struct WaveformView: View {
+/// Эквалайзер: столбики пляшут на месте, а не едут справа налево, как бегущая волна.
+/// Высота столбика — текущий уровень, умноженный на его вес; веса пересчитываются
+/// на каждом тике уровня, поэтому картинка переливается, оставаясь детерминированной.
+/// Кадр держит у себя (`@State`): пересборка панели его не сбрасывает.
+private struct EqualizerView: View {
     let level: Float
 
-    private static let barCount = 48
+    private static let barCount = 12
     private static let barWidth: CGFloat = 3
-    /// Зазор фиксирован: волна всегда плотная, её ширина не зависит от ширины капсулы.
-    private static let spacing: CGFloat = 2
-    private static let maxBar: CGFloat = 32
+    private static let spacing: CGFloat = 4
+    private static let maxBar: CGFloat = 22
     /// Столбик тишины — короткий штрих, а не пустое место.
-    private static let minBar: CGFloat = 2
-    /// Сколько последних столбиков подсвечены ярче — «голова» волны.
-    private static let freshCount = 4
+    private static let minBar: CGFloat = 2.5
 
-    @State private var history = [Float](repeating: 0, count: WaveformView.barCount)
+    /// Уровень и номер тика меняются одним присваиванием: иначе анимация ловила бы
+    /// смену высот двумя рывками — сначала уровень, потом веса.
+    private struct Frame: Equatable {
+        var tick: Int
+        var level: Float
+    }
+
+    @State private var frame: Frame
+
+    /// Стартовый кадр берём из первого же уровня, а не из нуля: иначе первая отрисовка
+    /// (и статичная проба рендера) показывала бы штрихи тишины при живом звуке.
+    init(level: Float) {
+        self.level = level
+        _frame = State(initialValue: Frame(tick: 0, level: level))
+    }
 
     var body: some View {
         HStack(spacing: Self.spacing) {
-            ForEach(history.indices, id: \.self) { index in
+            ForEach(0..<Self.barCount, id: \.self) { index in
                 Capsule()
                     .fill(Self.fill)
-                    .frame(width: Self.barWidth, height: Self.barHeight(history[index]))
-                    .opacity(index >= Self.barCount - Self.freshCount ? 1 : 0.65)
+                    .frame(width: Self.barWidth, height: Self.barHeight(bar: index, frame: frame))
             }
         }
+        // Симметрия относительно средней линии: столбики центрируются по высоте полосы.
         .frame(height: Self.maxBar)
-        .animation(.easeOut(duration: 0.08), value: history)
-        // Именно на смену уровня: обновление одного live-текста волну сдвигать не должно.
+        .animation(.easeOut(duration: 0.1), value: frame)
         .onChange(of: level) { _, new in
-            history.removeFirst()
-            history.append(new)
+            frame = Frame(tick: frame.tick &+ 1, level: new)
         }
     }
 
-    /// RMS речи обычно 0.02…0.2 — тянем перцептивно: тихая речь всё равно шевелит волну,
+    /// RMS речи обычно 0.02…0.2 — тянем перцептивно: тихая речь всё равно шевелит эквалайзер,
     /// а громкая не упирается в полку.
-    private static func barHeight(_ level: Float) -> CGFloat {
-        let norm = min(1, pow(max(level, 0) * 6, 0.7))
-        return minBar + CGFloat(norm) * (maxBar - minBar)
+    private static func barHeight(bar: Int, frame: Frame) -> CGFloat {
+        let norm = min(1, pow(max(frame.level, 0) * 6, 0.7))
+        return minBar + CGFloat(norm) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
+    }
+
+    /// Вес столбика 0.35…1 — детерминированный хеш пары (столбик, тик): разброс выглядит
+    /// случайным, но один и тот же кадр всегда рисуется одинаково (важно для пробы рендера).
+    private static func weight(bar: Int, tick: Int) -> CGFloat {
+        var x = UInt64(truncatingIfNeeded: tick) &* 0x9E37_79B9_7F4A_7C15
+        x ^= UInt64(truncatingIfNeeded: bar) &* 0xBF58_476D_1CE4_E5B9
+        x ^= x >> 30
+        x = x &* 0xBF58_476D_1CE4_E5B9
+        x ^= x >> 27
+        x = x &* 0x94D0_49BB_1331_11EB
+        x ^= x >> 31
+        // Старшие 24 бита → доля 0…1.
+        return 0.35 + CGFloat(x >> 40) / CGFloat(1 << 24) * 0.65
     }
 
     private static let fill = LinearGradient(

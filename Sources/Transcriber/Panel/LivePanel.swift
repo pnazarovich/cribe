@@ -9,11 +9,11 @@ import TranscriberCore
 @MainActor
 public final class LivePanel {
 
-    /// Ширина окна = максимальная ширина капсулы: тексту есть куда переноситься.
-    private static let width: CGFloat = 560
-    /// Запас по высоте под три строки превью; капсула прижата к низу окна, остальное прозрачно.
-    private static let height: CGFloat = 180
-    /// Отступ капсулы от нижнего края экрана.
+    /// Окно с запасом вокруг пилюли (190×44, до 320 на длинной ошибке): она висит по центру,
+    /// остальное прозрачно. Запас нужен, чтобы широкая ошибка не обрезалась по краям.
+    private static let width: CGFloat = 360
+    private static let height: CGFloat = 80
+    /// Отступ окна от нижнего края экрана.
     private static let bottomInset: CGFloat = 80
     /// Небольшая задержка на скрытии, чтобы «✓ Вставлено» не мигало.
     private static let hideDelay: Duration = .milliseconds(300)
@@ -61,8 +61,8 @@ public final class LivePanel {
         panel.ignoresMouseEvents = true
         panel.contentView = NSHostingView(rootView: PanelView(controller: controller, settings: settings))
 
-        // Окно трогаем только на смене фазы: поток live-текста и уровня (~12 обновлений
-        // в секунду) целиком укладывается в одну фазу и до окна не доходит.
+        // Окно трогаем только на смене фазы: поток уровня (~12 обновлений в секунду)
+        // целиком укладывается в одну фазу и до окна не доходит.
         cancellable = controller.$state
             .map(Phase.init)
             .removeDuplicates()
