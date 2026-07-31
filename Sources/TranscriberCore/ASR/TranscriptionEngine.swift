@@ -12,11 +12,15 @@ public enum ASRModelState: Sendable {
 public enum TranscriptionEngineError: LocalizedError {
     /// `transcribe` вызван до успешного `prepare` для этого языка.
     case notPrepared(Language)
+    /// `transcribePreview` вызван до того, как лёгкая модель превью догрузилась.
+    case previewNotPrepared
 
     public var errorDescription: String? {
         switch self {
         case let .notPrepared(language):
             return "Модель для языка «\(language.displayName)» не загружена."
+        case .previewNotPrepared:
+            return "Модель live-превью ещё не загружена."
         }
     }
 }
@@ -29,4 +33,21 @@ public protocol TranscriptionEngine: AnyObject {
     /// Распознаёт моно-сэмплы 16 кГц. `prompt` — биасинг словарём/контекстом, может быть пустым.
     /// Требует успешного `prepare` для этого языка, иначе бросает `TranscriptionEngineError.notPrepared`.
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String
+
+    /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
+    func preparePreview() async throws
+
+    /// Быстрый черновой проход для живой панели: другая (лёгкая) модель, без промпта.
+    /// Требует успешного `preparePreview`, иначе бросает `TranscriptionEngineError.previewNotPrepared`.
+    func transcribePreview(_ samples: [Float], language: Language) async throws -> String
+}
+
+/// Движок без лёгкой модели превью — законное состояние: вызывающий код откатывается
+/// на черновой проход основной модели.
+public extension TranscriptionEngine {
+    func preparePreview() async throws {}
+
+    func transcribePreview(_ samples: [Float], language: Language) async throws -> String {
+        throw TranscriptionEngineError.previewNotPrepared
+    }
 }
