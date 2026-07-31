@@ -376,6 +376,19 @@ public enum DictationState: Sendable, Equatable {
 
 ---
 
+### Task 16: Хоткей записи — правый ⌘ по умолчанию
+
+**Files:** Create: `Sources/Transcriber/ModifierKeyTap.swift`; Modify: `Support/AppSettings.swift` (+`dictationHotkeyMode: HotkeyMode` enum rightCommand|custom, default rightCommand, key `dictationHotkeyMode`), `Sources/Transcriber/App.swift` (установка/снятие тапа по режиму), `Sources/Transcriber/SettingsView.swift` (пикер режима; Recorder виден только в custom).
+
+**Interfaces:**
+- `@MainActor final class ModifierKeyTap { init(keyCode: Int64 = 54, onTap: @escaping () -> Void); func start() -> Bool; func stop() }` — CGEventTap listen-only на flagsChanged+keyDown: rcmd-down → (если до rcmd-up не было keyDown и других flagsChanged-модификаторов) → rcmd-up = onTap(). Re-enable на kCGEventTapDisabledByTimeout/UserInput. start() false без Accessibility — UI показывает подсказку.
+- App: при mode == .rightCommand ставит тап (onTap → controller.toggle()); KeyboardShortcuts-хоткей работает всегда параллельно (custom-режим просто без тапа). Переключение режима на лету через подписку на settings.
+- Порог анти-дребезга: игнорировать tap, если rcmd удерживался > 0.6 c (это чей-то долгий Cmd-аккорд, не намеренный tap).
+
+- [ ] Реализация → build + `swift test` + build-app.sh → коммит `feat(transcriber): правый Cmd как кнопка записи по умолчанию`.
+
+---
+
 ### Task 11: Финальная верификация
 
 - [ ] `swift test` — все зелёные. `bash scripts/build-app.sh` — подписанный .app. `open dist/Transcriber.app` — меню-бар иконка появилась, онбординг открылся. CLI-smoke RU и UK. Сверка со спекой (каждый пункт «Конвейер»/«GPT-слой»/«Errors»). REQUIRED: superpowers:verification-before-completion. Финальный коммит + краткий отчёт пользователю (что готово, как запустить, что руками: включить device-code auth в ChatGPT, дать разрешения).
