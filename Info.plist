@@ -6,6 +6,8 @@
 	<string>ru</string>
 	<key>CFBundleExecutable</key>
 	<string>Transcriber</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>online.nazarovych.transcriber</string>
 	<key>CFBundleInfoDictionaryVersion</key>
