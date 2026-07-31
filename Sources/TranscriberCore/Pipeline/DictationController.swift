@@ -338,7 +338,9 @@ public final class DictationController: ObservableObject {
     // MARK: - Конвейер
 
     private func runPipeline(samples: [Float], language: Language) async {
-        await writeBackup(samples)
+        // Бэкап уходит в фон и не ждётся: кодирование и запись WAV длинной диктовки —
+        // это сотни миллисекунд ровно перед распознаванием, то есть чистая задержка.
+        let backup = startBackup(samples)
         do {
             let vad = try await ensureVad()
             // Финал — всегда свежее распознавание обрезанной записи, превью не переиспользуем.
@@ -402,7 +404,7 @@ public final class DictationController: ObservableObject {
             let output = translation ?? text
             let outcome = await insert(output)
             history.add(output, language: language)
-            removeBackup()
+            await finishBackup(backup)
 
             if case .clipboardOnly(let reason) = outcome {
                 degradations.append(Self.clipboardMessage(reason))
@@ -549,10 +551,11 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Кодирование и запись WAV — вне главного потока: на длинной диктовке это сотни мс.
-    private func writeBackup(_ samples: [Float]) async {
+    /// Кодирование и запись WAV — вне главного потока и вне критического пути. `samples`
+    /// уезжает в задачу значением (массив уже никто не меняет), поэтому снимок консистентен.
+    private func startBackup(_ samples: [Float]) -> Task<String?, Never> {
         let url = Self.backupURL
-        let failure = await Task.detached(priority: .utility) { () -> String? in
+        return Task.detached(priority: .utility) { () -> String? in
             do {
                 try FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(),
@@ -563,14 +566,16 @@ public final class DictationController: ObservableObject {
             } catch {
                 return error.localizedDescription
             }
-        }.value
-
-        if let failure {
-            logger.error("Бэкап записи не сохранён: \(failure, privacy: .public)")
         }
     }
 
-    private func removeBackup() {
+    /// Вставка дошла до приложения — бэкап больше не нужен. Ждём саму запись: без этого
+    /// припозднившийся `write` положил бы WAV обратно уже после удаления, и в следующей
+    /// сессии на диске лежал бы чужой файл.
+    private func finishBackup(_ backup: Task<String?, Never>) async {
+        if let failure = await backup.value {
+            logger.error("Бэкап записи не сохранён: \(failure, privacy: .public)")
+        }
         try? FileManager.default.removeItem(at: Self.backupURL)
     }
 }
