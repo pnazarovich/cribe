@@ -49,7 +49,11 @@ struct PanelView: View {
         case .recording(let live, let level):
             HStack(spacing: 10) {
                 PulsingDot()
-                Text(Self.flag(settings.language))
+                // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
+                Text(Self.flag(controller.activeSessionLanguage ?? settings.language))
+                if settings.translateToEnglish {
+                    TranslationBadge()
+                }
                 liveText(live)
                 LevelBar(level: level)
             }
@@ -58,7 +62,15 @@ struct PanelView: View {
             spinnerRow("Распознаю…")
 
         case .cleaning:
-            spinnerRow("✨ Чищу…")
+            HStack(spacing: 10) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                Text("✨ Чищу…")
+                if settings.translateToEnglish {
+                    TranslationBadge()
+                }
+            }
 
         case .inserted:
             Text("✓ Вставлено")
@@ -112,6 +124,20 @@ struct PanelView: View {
         case "no accessibility": return "Нет разрешения Accessibility"
         default: return reason
         }
+    }
+}
+
+/// Метка «перевод на английский включён»: результат придёт не на языке записи.
+private struct TranslationBadge: View {
+    var body: some View {
+        Text("→ EN")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+            // Иначе капсула перевода схлопнется под длинным превью.
+            .fixedSize()
     }
 }
 

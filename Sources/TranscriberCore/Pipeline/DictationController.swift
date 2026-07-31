@@ -116,6 +116,10 @@ public final class DictationController: ObservableObject {
     @Published public private(set) var lastOriginal: String?
     /// Английский перевод последней диктовки: вставленный или сделанный по запросу из меню.
     @Published public private(set) var lastTranslation: String?
+    /// Язык идущей диктовки. Переключение языка на живой записи меняет настройку, но не сессию —
+    /// UI показывает отсюда, чтобы флаг не врал про то, чем на самом деле распознаётся речь.
+    /// `nil` — сессии нет, показываем `settings.language`.
+    @Published public private(set) var activeSessionLanguage: Language?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -129,6 +133,9 @@ public final class DictationController: ObservableObject {
     private var live = ""
     private var level: Float = 0
     private var sessionLanguage: Language = .ru
+    /// Язык, на котором распознана `lastOriginal`: перевод из меню должен идти с него,
+    /// а не с языка, который к тому моменту стоит в настройках.
+    private var lastOriginalLanguage: Language = .ru
     /// Старт асинхронный, а состояние меняется только в его конце — флаг закрывает
     /// окно, в котором второй хоткей запустил бы вторую запись.
     private var isStarting = false
@@ -222,8 +229,11 @@ public final class DictationController: ObservableObject {
         recorder.setInputDevice(uid: settings.inputDeviceUID)
         recorder.prepare()  // движок поднимается заранее, чтобы старт записи был мгновенным
 
+        // Черновик прошлой сессии в буфер новой не попадёт: сбой до `startCapture` увидит пустой `live`.
+        live = ""
         let language = settings.language
         sessionLanguage = language
+        activeSessionLanguage = language
         Task {
             defer { isStarting = false }
             do {
@@ -422,6 +432,7 @@ public final class DictationController: ObservableObject {
                 throw DictationError.noSpeech
             }
             lastOriginal = text
+            lastOriginalLanguage = language
             lastTranslation = translation
 
             // Непустой по построению: перевод либо непустой, либо сброшен в nil выше.
@@ -469,7 +480,8 @@ public final class DictationController: ObservableObject {
             let translated = try await PostProcessor.cleanup(
                 text: original,
                 entries: dictionary.entries,
-                language: sessionLanguage,
+                // Именно язык `lastOriginal`: с прошлой диктовки язык могли переключить.
+                language: lastOriginalLanguage,
                 config: settings.gptConfig,
                 translateToEnglish: true
             )
@@ -533,8 +545,17 @@ public final class DictationController: ObservableObject {
         return created
     }
 
+    /// При любом сбое отдаём то, что есть: последнее live-превью уходит в буфер обмена
+    /// черновиком, чтобы сказанное не пропало вместе с ошибкой.
     private func fail(_ message: String) {
-        state = .error(message)
+        let draft = live.trimmingCharacters(in: .whitespacesAndNewlines)
+        live = ""
+        if draft.isEmpty {
+            state = .error(message)
+        } else {
+            copyToClipboard(draft)
+            state = .error("\(message) — черновик в буфере")
+        }
         scheduleIdle(after: Self.errorLinger)
     }
 
@@ -544,6 +565,7 @@ public final class DictationController: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.state = .idle
+            self.activeSessionLanguage = nil
             self.scheduleMicRelease()
         }
     }

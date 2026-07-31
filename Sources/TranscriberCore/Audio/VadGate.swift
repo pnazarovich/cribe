@@ -45,20 +45,25 @@ public actor VadGate {
     /// Скармливает чанк (4096 сэмплов 16 кГц). `true` — 2 с тишины после речи, пора останавливаться.
     /// Вызовы выстраиваются в очередь, чтобы состояние стрима обновлялось строго по порядку.
     public func feedStream(_ chunk: [Float]) async throws -> Bool {
+        // Поколение фиксируем в момент постановки в очередь, а не в начале счёта: чанк,
+        // вставший в очередь до `resetStream()`, доходит до `process` уже после него
+        // и иначе засеял бы новую запись звуком предыдущей.
+        let queuedGeneration = generation
         let previous = inFlight
         let task = Task { [self] in
             _ = try? await previous?.value
-            return try await process(chunk)
+            return try await process(chunk, generation: queuedGeneration)
         }
         inFlight = task
         return try await task.value
     }
 
-    private func process(_ chunk: [Float]) async throws -> Bool {
-        let generationAtStart = generation
+    private func process(_ chunk: [Float], generation queued: Int) async throws -> Bool {
+        // Пока чанк стоял в очереди, могла начаться новая запись — он уже не про неё.
+        guard queued == generation else { return false }
         let result = try await vad.processStreamingChunk(chunk, state: streamState, config: streamConfig)
-        // Пока считали, началась новая запись — результат уже не про неё.
-        guard generationAtStart == generation else { return false }
+        // И то же самое после счёта: `processStreamingChunk` — точка приостановки.
+        guard queued == generation else { return false }
         streamState = result.state
         return result.event?.isEnd == true
     }

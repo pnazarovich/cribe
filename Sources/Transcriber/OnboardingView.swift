@@ -12,23 +12,30 @@ struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var downloader = ModelDownloader()
 
-    @State private var micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibilityGranted = TextInserter.hasAccessibility
+    @State private var gptAuthorized = false
+
+    private var micGranted: Bool { micStatus == .authorized }
 
     private static let accessibilitySettingsURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    )
+    private static let microphoneSettingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
     )
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Настройка Transcriber")
                 .font(.title2.weight(.semibold))
-            Text("Диктовка по ⌥` — три шага, и можно начинать.")
+            Text("Диктовка по ⌥` — три шага, и можно начинать. Четвёртый — по желанию.")
                 .foregroundStyle(.secondary)
 
             micCard
             accessibilityCard
             modelsCard
+            gptCard
 
             HStack {
                 Spacer()
@@ -50,8 +57,15 @@ struct OnboardingView: View {
             Text("Нужен для записи речи. Распознавание идёт на этом компьютере.")
                 .foregroundStyle(.secondary)
             if !micGranted {
-                Button("Разрешить доступ") {
-                    Task { _ = await AVCaptureDevice.requestAccess(for: .audio) }
+                HStack {
+                    Button("Разрешить доступ") {
+                        Task { _ = await AVCaptureDevice.requestAccess(for: .audio) }
+                    }
+                    // После отказа системный запрос больше не показывает окно — остаётся
+                    // только тумблер в System Settings.
+                    if micStatus == .denied, let url = Self.microphoneSettingsURL {
+                        Button("Открыть System Settings") { NSWorkspace.shared.open(url) }
+                    }
                 }
             }
         }
@@ -91,6 +105,29 @@ struct OnboardingView: View {
         }
     }
 
+    private var gptCard: some View {
+        card(number: 4, title: "GPT-авторизация (опционально)", done: gptAuthorized) {
+            Text("""
+                Без неё диктовка работает целиком на этом компьютере. \
+                Авторизация включает AI-чистку текста и перевод на английский: \
+                вход через ChatGPT или ключ OpenAI задаётся в «Настройки… → AI».
+                """)
+                .foregroundStyle(.secondary)
+            Button("Открыть настройки") { Self.openSettings() }
+        }
+    }
+
+    /// `SettingsLink` программно не нажимается, поэтому шлём то же действие, что и пункт
+    /// «Настройки…» в меню приложения. Имя селектора менялось между версиями macOS —
+    /// пробуем оба и молча выходим, если ни один не принят: ручной путь назван в тексте карточки.
+    private static func openSettings() {
+        NSApp.activate()
+        for name in ["showSettingsWindow:", "showPreferencesWindow:"]
+        where NSApp.sendAction(Selector((name)), to: nil, from: nil) {
+            return
+        }
+    }
+
     // MARK: - Каркас карточки
 
     private func card<Content: View>(
@@ -116,8 +153,11 @@ struct OnboardingView: View {
 
     private func pollPermissions() async {
         while !Task.isCancelled {
-            micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
             accessibilityGranted = TextInserter.hasAccessibility
+            // Авторизоваться можно любым из двух способов — засчитываем оба.
+            gptAuthorized = await CodexAuth.shared.isAuthorized()
+                || KeychainStore.getString(KeychainStore.apiKeyAccount)?.isEmpty == false
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }

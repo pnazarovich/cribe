@@ -66,6 +66,13 @@ enum GPTProtocol {
         return "low"
     }
 
+    /// Reasoning-поля понимает не всякая модель: публичный API отвечает 400 на `reasoning`
+    /// и `include: ["reasoning.encrypted_content"]` для gpt-4o и прочих не-reasoning семейств.
+    /// Codex-бэкенд отдаёт только reasoning-модели, поэтому там проверка по слагу не нужна.
+    static func supportsReasoning(model: String, mode: GPTAuthMode) -> Bool {
+        mode == .codex || model.hasPrefix("gpt-5")
+    }
+
     static func requestBody(
         model: String,
         instructions: String,
@@ -73,7 +80,7 @@ enum GPTProtocol {
         effort: String,
         mode: GPTAuthMode
     ) -> [String: Any] {
-        [
+        var body: [String: Any] = [
             "model": model,
             "instructions": instructions,
             "input": [[
@@ -83,11 +90,16 @@ enum GPTProtocol {
             ]],
             "tool_choice": "auto",
             "parallel_tool_calls": false,
-            "reasoning": ["effort": normalizedEffort(effort, mode: mode)],
             "store": false,
             "stream": true,
-            "include": ["reasoning.encrypted_content"],
         ]
+        // `none` означает «без reasoning вовсе» — тогда обоих полей в теле быть не должно.
+        let effort = normalizedEffort(effort, mode: mode)
+        if effort != "none", supportsReasoning(model: model, mode: mode) {
+            body["reasoning"] = ["effort": effort]
+            body["include"] = ["reasoning.encrypted_content"]
+        }
+        return body
     }
 
     static func codexModels(from data: Data) throws -> [String] {

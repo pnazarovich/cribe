@@ -8,6 +8,7 @@ import OSLog
 public enum AudioRecorderError: Error, LocalizedError {
     case noInputDevice
     case converterUnavailable
+    case unstableInputFormat
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ public enum AudioRecorderError: Error, LocalizedError {
             return "Микрофон недоступен"
         case .converterUnavailable:
             return "Не удалось создать конвертер аудио в 16 кГц"
+        case .unstableInputFormat:
+            return "Формат микрофона меняется — переподключите устройство"
         }
     }
 }
@@ -234,11 +237,29 @@ public final class AudioRecorder {
         return status == noErr ? deviceID : nil
     }
 
+    /// `installTap` кидает ObjC-исключение (не Swift-ошибку) на `format.sampleRate == hwFormat.sampleRate`,
+    /// а поймать его из SPM-модуля нечем — @try доступен только из Objective-C. Поэтому оба формата
+    /// узла читаются заново прямо перед установкой и сверяются здесь: именно расхождение между
+    /// «железным» входом и выходом узла (устройство сменилось под движком — путь AirPods)
+    /// и приводит к падению. Остаточный риск: любое другое ObjC-исключение внутри `installTap`
+    /// всё ещё уронит процесс — закрыть его можно только Objective-C обёрткой.
     private func installTap() throws {
         let input = engine.inputNode
+        let hardware = input.inputFormat(forBus: 0)
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        guard format.sampleRate > 0, format.channelCount > 0,
+              hardware.sampleRate > 0, hardware.channelCount > 0
+        else {
             throw AudioRecorderError.noInputDevice
+        }
+        guard format.sampleRate == hardware.sampleRate else {
+            logger.error(
+                """
+                Формат входа разъехался: узел отдаёт \(format.sampleRate, privacy: .public) Гц \
+                при железных \(hardware.sampleRate, privacy: .public) Гц — tap не ставим
+                """
+            )
+            throw AudioRecorderError.unstableInputFormat
         }
         guard let converter = AVAudioConverter(from: format, to: Self.targetFormat) else {
             throw AudioRecorderError.converterUnavailable
@@ -269,6 +290,22 @@ public final class AudioRecorder {
             try startEngine()
         } catch {
             logger.error("Пересборка tap-а не удалась: \(error.localizedDescription, privacy: .public)")
+            abortRecording()
+        }
+    }
+
+    /// Пересобрать tap не удалось — молча писать тишину нельзя. Запись обрываем, но уже
+    /// накопленное не трогаем: `stop()` вернёт то, что успели захватить до сбоя.
+    private func abortRecording() {
+        let wasRecording = lock.withLock { () -> Bool in
+            let wasRecording = isRecording
+            isRecording = false
+            chunkHandler = nil
+            pending.removeAll(keepingCapacity: true)
+            return wasRecording
+        }
+        if wasRecording {
+            logger.error("Запись прервана: движок остался без входа")
         }
     }
 

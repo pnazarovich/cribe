@@ -73,11 +73,17 @@ struct MenuBarView: View {
         Button("Выход") { NSApp.terminate(nil) }
     }
 
+    /// Пока сессия идёт, показываем её язык: переключение на живой записи меняет настройку,
+    /// но не то, чем распознаётся текущая диктовка.
+    private var displayLanguage: Language {
+        controller.activeSessionLanguage ?? settings.language
+    }
+
     private var status: String {
         switch controller.state {
-        case .idle: return "Готов · \(settings.language.displayName)"
+        case .idle: return "Готов · \(displayLanguage.displayName)"
         case .preparingModel(let progress): return "Загружаю модель… \(Int(progress * 100))%"
-        case .recording: return "● Идёт запись"
+        case .recording: return "● Идёт запись · \(displayLanguage.displayName)"
         case .transcribing: return "Распознаю…"
         case .cleaning: return "✨ Чищу…"
         case .inserted: return "✓ Вставлено"

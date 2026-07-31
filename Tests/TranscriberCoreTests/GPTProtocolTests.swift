@@ -137,6 +137,55 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertEqual(GPTProtocol.normalizedEffort("none", mode: .apiKey), "none")
     }
 
+    // MARK: - Reasoning-поля только там, где их понимают
+
+    /// codex + none: нормализация в `low` идёт первой, поэтому поля остаются на месте.
+    func testCodexNoneEffortStillSendsReasoning() {
+        let body = GPTProtocol.requestBody(
+            model: "gpt-5.2", instructions: "i", input: "t", effort: "none", mode: .codex
+        )
+        XCTAssertEqual((body["reasoning"] as? [String: Any])?["effort"] as? String, "low")
+        XCTAssertEqual(body["include"] as? [String], ["reasoning.encrypted_content"])
+    }
+
+    /// Публичный API отвечает 400 на reasoning-поля для не-reasoning моделей.
+    func testAPIKeyNonReasoningModelOmitsReasoningAndInclude() {
+        let body = GPTProtocol.requestBody(
+            model: "gpt-4o", instructions: "i", input: "t", effort: "medium", mode: .apiKey
+        )
+        XCTAssertNil(body["reasoning"])
+        XCTAssertNil(body["include"])
+        // Остальное тело не пострадало.
+        XCTAssertEqual(body["model"] as? String, "gpt-4o")
+        XCTAssertEqual(body["stream"] as? Bool, true)
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: body))
+    }
+
+    func testAPIKeyNoneEffortOmitsReasoningAndInclude() {
+        let body = GPTProtocol.requestBody(
+            model: "gpt-5.2", instructions: "i", input: "t", effort: "none", mode: .apiKey
+        )
+        XCTAssertNil(body["reasoning"])
+        XCTAssertNil(body["include"])
+    }
+
+    func testAPIKeyReasoningModelKeepsReasoningAndInclude() {
+        let body = GPTProtocol.requestBody(
+            model: "gpt-5.6-luna", instructions: "i", input: "t", effort: "minimal", mode: .apiKey
+        )
+        XCTAssertEqual((body["reasoning"] as? [String: Any])?["effort"] as? String, "minimal")
+        XCTAssertEqual(body["include"] as? [String], ["reasoning.encrypted_content"])
+    }
+
+    func testSupportsReasoningByModelFamily() {
+        XCTAssertTrue(GPTProtocol.supportsReasoning(model: "gpt-5.2", mode: .apiKey))
+        XCTAssertTrue(GPTProtocol.supportsReasoning(model: "gpt-5.6-luna", mode: .apiKey))
+        XCTAssertFalse(GPTProtocol.supportsReasoning(model: "gpt-4o", mode: .apiKey))
+        XCTAssertFalse(GPTProtocol.supportsReasoning(model: "gpt-4.1-mini", mode: .apiKey))
+        // Codex-бэкенд отдаёт только reasoning-модели — слаг не проверяем.
+        XCTAssertTrue(GPTProtocol.supportsReasoning(model: "codex-mini", mode: .codex))
+    }
+
     // MARK: - SSE
 
     private let deltaFixture = """
