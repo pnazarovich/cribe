@@ -1,0 +1,303 @@
+import AppKit
+import KeyboardShortcuts
+import ServiceManagement
+import SwiftUI
+import TranscriberCore
+
+struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+    let dictionaryURL: URL
+
+    var body: some View {
+        TabView {
+            GeneralTab(settings: settings)
+                .tabItem { Label("Общие", systemImage: "gearshape") }
+            AITab(settings: settings)
+                .tabItem { Label("AI", systemImage: "sparkles") }
+            DictionaryTab(url: dictionaryURL)
+                .tabItem { Label("Словарь", systemImage: "text.book.closed") }
+        }
+        .frame(width: 480, height: 430)
+    }
+}
+
+// MARK: - Общие
+
+private struct GeneralTab: View {
+    @ObservedObject var settings: AppSettings
+
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchNote: String?
+
+    var body: some View {
+        Form {
+            KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
+            KeyboardShortcuts.Recorder("Сменить язык:", name: .switchLanguage)
+
+            Picker("Язык:", selection: $settings.language) {
+                ForEach(Language.allCases, id: \.self) { language in
+                    Text(language.displayName).tag(language)
+                }
+            }
+
+            Toggle("Звуки старта и окончания записи", isOn: $settings.soundsEnabled)
+
+            // Тумблер ведомый: значение меняем только после успешного вызова SMAppService,
+            // иначе галочка врала бы о фактическом состоянии.
+            Toggle("Запускать при входе в систему", isOn: Binding(
+                get: { launchAtLogin },
+                set: { setLaunchAtLogin($0) }
+            ))
+
+            if let launchNote {
+                Text(launchNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { syncLaunchState() }
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            syncLaunchState()
+        } catch {
+            launchNote = error.localizedDescription
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    private func syncLaunchState() {
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        launchNote = status == .requiresApproval
+            ? "Разрешите Transcriber в «Основные → Объекты входа»."
+            : nil
+    }
+}
+
+// MARK: - AI
+
+private struct AITab: View {
+    @ObservedObject var settings: AppSettings
+
+    @StateObject private var codex = CodexAuthModel()
+    @State private var apiKey = ""
+    @State private var apiKeyNote: String?
+    @State private var models: [String] = []
+    @State private var isLoadingModels = false
+
+    /// Порядок как в спеке; Codex-бэкенд нормализует `none`/`minimal` в `low` сам.
+    private static let efforts = ["none", "minimal", "low", "medium", "high"]
+
+    var body: some View {
+        Form {
+            Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
+            Toggle("Перевод на английский", isOn: $settings.translateToEnglish)
+
+            Picker("Доступ:", selection: $settings.gptMode) {
+                Text("Аккаунт ChatGPT").tag(GPTAuthMode.codex)
+                Text("API-ключ OpenAI").tag(GPTAuthMode.apiKey)
+            }
+
+            switch settings.gptMode {
+            case .apiKey: apiKeySection
+            case .codex: codexSection
+            }
+
+            HStack {
+                Picker("Модель:", selection: $settings.gptModel) {
+                    ForEach(modelOptions, id: \.self) { Text($0).tag($0) }
+                }
+                Button {
+                    Task { await refreshModels() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(isLoadingModels)
+                .help("Обновить список моделей")
+            }
+
+            Picker("Усилие рассуждения:", selection: $settings.gptEffort) {
+                ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            apiKey = KeychainStore.getString(KeychainStore.apiKeyAccount) ?? ""
+            await codex.refreshStatus()
+        }
+    }
+
+    // MARK: API-ключ
+
+    @ViewBuilder
+    private var apiKeySection: some View {
+        SecureField("API-ключ:", text: $apiKey)
+            .onSubmit { saveAPIKey() }
+        HStack {
+            Button("Сохранить ключ") { saveAPIKey() }
+            if let apiKeyNote {
+                Text(apiKeyNote).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Ключ живёт только в Keychain: ни UserDefaults, ни файлов.
+    private func saveAPIKey() {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainStore.delete(KeychainStore.apiKeyAccount)
+            apiKeyNote = "Ключ удалён"
+        } else {
+            KeychainStore.setString(trimmed, account: KeychainStore.apiKeyAccount)
+            apiKeyNote = "Ключ сохранён в Keychain"
+        }
+    }
+
+    // MARK: Аккаунт ChatGPT
+
+    @ViewBuilder
+    private var codexSection: some View {
+        if codex.isAuthorized {
+            HStack {
+                Text("✓ Авторизован")
+                Spacer()
+                Button("Выйти") { Task { await codex.logout() } }
+            }
+        } else if let session = codex.session {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Код подтверждения:").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text(session.userCode)
+                        .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button {
+                        copy(session.userCode)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .help("Скопировать код")
+                }
+                Link("Открыть страницу подтверждения", destination: session.verificationURL)
+                if codex.isPolling {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Ожидаю подтверждения…").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Отмена") { codex.cancel() }
+                    }
+                }
+            }
+        } else {
+            Button("Авторизоваться") { codex.start() }
+        }
+
+        if let message = codex.message {
+            Text(message).font(.caption).foregroundStyle(.red)
+        }
+    }
+
+    // MARK: Модели
+
+    /// Сохранённая модель может отсутствовать в свежем списке — иначе пикер показал бы пустоту.
+    private var modelOptions: [String] {
+        models.contains(settings.gptModel) ? models : [settings.gptModel] + models
+    }
+
+    private func refreshModels() async {
+        isLoadingModels = true
+        defer { isLoadingModels = false }
+        models = (try? await GPTClient(config: settings.gptConfig).listModels()) ?? []
+    }
+
+    private func copy(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+/// Device-code flow: старт, ожидание подтверждения, статус. Держит одну задачу поллинга.
+@MainActor
+private final class CodexAuthModel: ObservableObject {
+    @Published private(set) var isAuthorized = false
+    @Published private(set) var session: DeviceFlowSession?
+    @Published private(set) var isPolling = false
+    @Published private(set) var message: String?
+
+    private var task: Task<Void, Never>?
+
+    func refreshStatus() async {
+        isAuthorized = await CodexAuth.shared.isAuthorized()
+    }
+
+    func start() {
+        task?.cancel()
+        message = nil
+        task = Task {
+            do {
+                let session = try await CodexAuth.shared.startDeviceFlow()
+                self.session = session
+                isPolling = true
+                try await CodexAuth.shared.pollUntilAuthorized(session)
+                isAuthorized = true
+                message = nil
+            } catch is CancellationError {
+                message = nil
+            } catch {
+                // deviceCodeDisabled сам объясняет, что включить в настройках ChatGPT.
+                message = error.localizedDescription
+            }
+            session = nil
+            isPolling = false
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        session = nil
+        isPolling = false
+    }
+
+    func logout() async {
+        cancel()
+        await CodexAuth.shared.logout()
+        isAuthorized = false
+    }
+}
+
+// MARK: - Словарь
+
+private struct DictionaryTab: View {
+    let url: URL
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Form {
+            Button("Открыть редактор словаря…") {
+                NSApp.activate()
+                openWindow(id: WindowID.dictionary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Файл словаря").font(.caption).foregroundStyle(.secondary)
+                Text(url.path)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                Button("Показать в Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
