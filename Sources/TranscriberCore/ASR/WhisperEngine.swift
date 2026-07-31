@@ -57,23 +57,27 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     public func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        let cached = queue.sync { pipelines[language] }
-        guard let pipe = cached else {
-            throw TranscriptionEngineError.notPrepared(language)
-        }
+        Self.text(of: try await run(samples, language: language, prompt: prompt))
+    }
 
-        let options = DecodingOptions(
-            task: .transcribe,
-            language: language.rawValue,
-            temperature: 0.0,
-            usePrefillPrompt: true,
-            detectLanguage: false,
-            skipSpecialTokens: true,
-            promptTokens: promptTokens(prompt, pipe: pipe),
-            chunkingStrategy: .vad
-        )
-
-        return Self.text(of: try await pipe.transcribe(audioArray: samples, decodeOptions: options))
+    /// Те же опции, что и у `transcribe` (они считаются в одном месте — `run`), другой разбор
+    /// результата. Таймкоды сегментов абсолютны относительно переданного буфера: при
+    /// VAD-нарезке WhisperKit сам сдвигает их на смещение чанка.
+    public func transcribeSegments(
+        _ samples: [Float],
+        language: Language,
+        prompt: String
+    ) async throws -> [ASRSegment] {
+        try await run(samples, language: language, prompt: prompt)
+            .flatMap(\.segments)
+            .sorted { $0.start < $1.start }
+            .map {
+                ASRSegment(
+                    text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    start: Double($0.start),
+                    end: Double($0.end)
+                )
+            }
     }
 
     public func preparePreview() async throws {
@@ -116,6 +120,28 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    /// Один проход большой модели. Опции здесь ровно одни на все проходы сессии —
+    /// иначе фоновые проходы и финал распознавали бы по-разному, и склеивать их было бы нечем.
+    private func run(_ samples: [Float], language: Language, prompt: String) async throws -> [TranscriptionResult] {
+        let cached = queue.sync { pipelines[language] }
+        guard let pipe = cached else {
+            throw TranscriptionEngineError.notPrepared(language)
+        }
+
+        let options = DecodingOptions(
+            task: .transcribe,
+            language: language.rawValue,
+            temperature: 0.0,
+            usePrefillPrompt: true,
+            detectLanguage: false,
+            skipSpecialTokens: true,
+            promptTokens: promptTokens(prompt, pipe: pipe),
+            chunkingStrategy: .vad
+        )
+
+        return try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+    }
 
     private static func text(of results: [TranscriptionResult]) -> String {
         results

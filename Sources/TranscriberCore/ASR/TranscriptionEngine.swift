@@ -14,6 +14,8 @@ public enum TranscriptionEngineError: LocalizedError {
     case notPrepared(Language)
     /// `transcribePreview` вызван до того, как лёгкая модель превью догрузилась.
     case previewNotPrepared
+    /// Движок не умеет отдавать сегменты с таймкодами.
+    case segmentsUnsupported
 
     public var errorDescription: String? {
         switch self {
@@ -21,7 +23,22 @@ public enum TranscriptionEngineError: LocalizedError {
             return "Модель для языка «\(language.displayName)» не загружена."
         case .previewNotPrepared:
             return "Модель live-превью ещё не загружена."
+        case .segmentsUnsupported:
+            return "Движок не отдаёт сегменты с таймкодами."
         }
+    }
+}
+
+/// Кусок распознанного текста с таймкодами относительно начала переданного буфера.
+public struct ASRSegment: Sendable, Equatable {
+    public let text: String
+    public let start: Double
+    public let end: Double
+
+    public init(text: String, start: Double, end: Double) {
+        self.text = text
+        self.start = start
+        self.end = end
     }
 }
 
@@ -34,6 +51,11 @@ public protocol TranscriptionEngine: AnyObject {
     /// Требует успешного `prepare` для этого языка, иначе бросает `TranscriptionEngineError.notPrepared`.
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String
 
+    /// То же распознавание, что и `transcribe`, с теми же опциями, но результат — сегменты
+    /// с таймкодами. Нужен потоковой финализации: по таймкоду последнего устоявшегося
+    /// сегмента считается, сколько записи уже распознано.
+    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment]
+
     /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
     func preparePreview() async throws
 
@@ -43,8 +65,13 @@ public protocol TranscriptionEngine: AnyObject {
 }
 
 /// Движок без лёгкой модели превью — законное состояние: вызывающий код откатывается
-/// на черновой проход основной модели.
+/// на черновой проход основной модели. Так же и с сегментами: движок без них законен,
+/// потоковая финализация просто не включится.
 public extension TranscriptionEngine {
+    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
+        throw TranscriptionEngineError.segmentsUnsupported
+    }
+
     func preparePreview() async throws {}
 
     func transcribePreview(_ samples: [Float], language: Language) async throws -> String {
