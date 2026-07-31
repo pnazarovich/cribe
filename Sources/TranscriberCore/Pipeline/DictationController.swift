@@ -1,0 +1,408 @@
+import Combine
+import Foundation
+import OSLog
+
+/// Единственный канал прогресса и ошибок конвейера: UI подписан на `DictationController.state`.
+public enum DictationState: Sendable, Equatable {
+    case idle
+    /// Доля скачанного/загрузки модели, 0...1.
+    case preparingModel(Double)
+    case recording(live: String, level: Float)
+    case transcribing
+    case cleaning
+    case inserted
+    /// Текст вставлен, но с оговоркой (без AI-чистки / только в буфер обмена).
+    case degraded(String)
+    case error(String)
+}
+
+public enum DictationError: LocalizedError, Sendable {
+    case noSpeech
+
+    public var errorDescription: String? {
+        "речь не обнаружена"
+    }
+}
+
+/// Сериализует доступ к движку: WhisperKit-инстансы не потокобезопасны,
+/// а live-превью и финальный проход приходят из разных задач.
+private actor EngineGate {
+    private let engine: TranscriptionEngine
+
+    init(_ engine: TranscriptionEngine) {
+        self.engine = engine
+    }
+
+    func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
+        try await engine.prepare(language: language, onState: onState)
+    }
+
+    func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
+        try await engine.transcribe(samples, language: language, prompt: prompt)
+    }
+}
+
+/// Минимальный WAV: 16-bit PCM mono. Нужен только для бэкапа последней записи.
+public enum WavEncoder {
+    public static func encode(_ samples: [Float], sampleRate: Int = Int(AudioRecorder.sampleRate)) -> Data {
+        let bytesPerSample = 2
+        let dataSize = samples.count * bytesPerSample
+        var data = Data(capacity: 44 + dataSize)
+
+        func put32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        func put16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+
+        data.append(contentsOf: Array("RIFF".utf8))
+        put32(UInt32(36 + dataSize))
+        data.append(contentsOf: Array("WAVE".utf8))
+
+        data.append(contentsOf: Array("fmt ".utf8))
+        put32(16)                                       // размер fmt-чанка
+        put16(1)                                        // PCM без сжатия
+        put16(1)                                        // моно
+        put32(UInt32(sampleRate))
+        put32(UInt32(sampleRate * bytesPerSample))      // байт в секунду
+        put16(UInt16(bytesPerSample))                   // выравнивание блока
+        put16(16)                                       // бит на сэмпл
+
+        data.append(contentsOf: Array("data".utf8))
+        put32(UInt32(dataSize))
+        for sample in samples {
+            put16(UInt16(bitPattern: Int16(max(-1, min(1, sample)) * 32_767)))
+        }
+        return data
+    }
+}
+
+/// Конвейер диктовки: запись → VAD → Whisper → словарь → GPT → вставка.
+@MainActor
+public final class DictationController: ObservableObject {
+
+    /// Период live-превью и минимум аудио для него (1 c).
+    private static let previewInterval: TimeInterval = 1.2
+    private static let previewMinSamples = Int(AudioRecorder.sampleRate)
+    /// Сколько держим финальное состояние перед возвратом в `.idle`.
+    private static let insertedLinger: TimeInterval = 1.5
+    private static let degradedLinger: TimeInterval = 2.5
+    private static let errorLinger: TimeInterval = 2
+
+    /// Бэкап последней записи — на случай, если вставка не дошла до приложения.
+    private static let backupURL: URL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Transcriber/last-recording.wav")
+
+    @Published public private(set) var state: DictationState = .idle
+
+    private let gate: EngineGate
+    private let dictionary: UserDictionary
+    private let settings: AppSettings
+    private let history: HistoryStore
+    private let recorder = AudioRecorder()
+    private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Dictation")
+
+    private var vad: VadGate?
+    private var buffer: [Float] = []
+    private var live = ""
+    private var level: Float = 0
+    private var sessionLanguage: Language = .ru
+
+    private var chunks: AsyncStream<[Float]>.Continuation?
+    private var vadTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
+    private var idleTask: Task<Void, Never>?
+
+    public init(engine: TranscriptionEngine, dictionary: UserDictionary, settings: AppSettings) {
+        self.gate = EngineGate(engine)
+        self.dictionary = dictionary
+        self.settings = settings
+        self.history = .shared
+    }
+
+    // MARK: - Вход хоткеев
+
+    public func toggle() {
+        switch state {
+        case .recording:
+            stopAndProcess()
+        case .idle, .inserted, .degraded, .error:
+            begin()
+        case .preparingModel, .transcribing, .cleaning:
+            break  // конвейер занят — хоткей игнорируем
+        }
+    }
+
+    public func switchLanguage() {
+        settings.language = settings.language == .ru ? .uk : .ru
+    }
+
+    /// Прогон файла для CLI: VAD-обрезка → Whisper → словарь → (опционально) GPT. Без вставки и истории.
+    public func process(fileSamples: [Float], language: Language, useGPT: Bool) async throws -> String {
+        defer { state = .idle }
+
+        try await gate.prepare(language: language) { [weak self] modelState in
+            Task { @MainActor in self?.apply(modelState) }
+        }
+        let vad = try await ensureVad()
+        guard let speech = try await vad.trimmed(fileSamples) else { throw DictationError.noSpeech }
+
+        let entries = dictionary.entries
+        state = .transcribing
+        let raw = try await gate.transcribe(
+            speech,
+            language: language,
+            prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
+        )
+        let text = ReplacementEngine.apply(raw, entries: entries)
+        guard useGPT else { return text }
+
+        state = .cleaning
+        return try await PostProcessor.cleanup(
+            text: text,
+            entries: entries,
+            language: language,
+            config: settings.gptConfig
+        )
+    }
+
+    // MARK: - Запись
+
+    private func begin() {
+        idleTask?.cancel()
+        idleTask = nil
+
+        let language = settings.language
+        sessionLanguage = language
+        Task {
+            do {
+                try await gate.prepare(language: language) { [weak self] modelState in
+                    Task { @MainActor in self?.apply(modelState) }
+                }
+                try await startCapture(language: language)
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
+    }
+
+    private func startCapture(language: Language) async throws {
+        let vad = try await ensureVad()
+        await vad.resetStream()
+
+        buffer.removeAll(keepingCapacity: true)
+        live = ""
+        level = 0
+
+        let stream = AsyncStream<[Float]> { continuation in chunks = continuation }
+        recorder.onLevel = { [weak self] value in
+            Task { @MainActor in self?.updateLevel(value) }
+        }
+
+        // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
+        state = .recording(live: "", level: 0)
+        do {
+            try recorder.start { [weak self] chunk in
+                Task { @MainActor in self?.append(chunk) }
+            }
+        } catch {
+            chunks?.finish()
+            chunks = nil
+            throw error
+        }
+
+        startVadLoop(stream: stream, vad: vad)
+        startPreviewLoop(language: language)
+    }
+
+    private func append(_ chunk: [Float]) {
+        guard case .recording = state else { return }
+        buffer.append(contentsOf: chunk)
+        chunks?.yield(chunk)
+    }
+
+    private func updateLevel(_ value: Float) {
+        guard case .recording = state else { return }
+        level = value
+        state = .recording(live: live, level: value)
+    }
+
+    /// 2 с тишины после речи → автостоп.
+    private func startVadLoop(stream: AsyncStream<[Float]>, vad: VadGate) {
+        vadTask = Task { [weak self] in
+            for await chunk in stream {
+                guard let speechEnded = try? await vad.feedStream(chunk) else { continue }
+                if speechEnded {
+                    self?.autoStop()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Live-превью: полный ре-декод накопленного буфера, следующий проход стартует
+    /// только после завершения предыдущего (цикл последовательный).
+    private func startPreviewLoop(language: Language) {
+        let prompt = PromptBuilder.initialPrompt(entries: dictionary.entries, language: language)
+        previewTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(Self.previewInterval * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                guard let samples = self.previewSamples() else { continue }
+                guard let text = try? await self.gate.transcribe(samples, language: language, prompt: prompt) else {
+                    continue
+                }
+                self.applyLive(text)
+            }
+        }
+    }
+
+    private func previewSamples() -> [Float]? {
+        guard case .recording = state, buffer.count >= Self.previewMinSamples else { return nil }
+        return buffer
+    }
+
+    private func applyLive(_ text: String) {
+        guard case .recording = state else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        live = trimmed
+        state = .recording(live: trimmed, level: level)
+    }
+
+    private func autoStop() {
+        guard case .recording = state else { return }
+        stopAndProcess()
+    }
+
+    private func stopAndProcess() {
+        previewTask?.cancel()
+        previewTask = nil
+        chunks?.finish()
+        chunks = nil
+        vadTask?.cancel()
+        vadTask = nil
+        recorder.onLevel = nil
+
+        let samples = recorder.stop()
+        let language = sessionLanguage
+        state = .transcribing
+        Task { await runPipeline(samples: samples, language: language) }
+    }
+
+    // MARK: - Конвейер
+
+    private func runPipeline(samples: [Float], language: Language) async {
+        writeBackup(samples)
+        do {
+            let vad = try await ensureVad()
+            // Финал — всегда свежее распознавание обрезанной записи, превью не переиспользуем.
+            guard let speech = try await vad.trimmed(samples) else { throw DictationError.noSpeech }
+
+            let entries = dictionary.entries
+            let raw = try await gate.transcribe(
+                speech,
+                language: language,
+                prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
+            )
+            var text = ReplacementEngine.apply(raw, entries: entries)
+            var degradation: String?
+
+            if settings.gptEnabled {
+                state = .cleaning
+                do {
+                    text = try await PostProcessor.cleanup(
+                        text: text,
+                        entries: entries,
+                        language: language,
+                        config: settings.gptConfig
+                    )
+                } catch {
+                    // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
+                    degradation = "без AI-чистки: \(error.localizedDescription)"
+                    logger.error("GPT-чистка не удалась: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw DictationError.noSpeech
+            }
+
+            let outcome = await insert(text)
+            history.add(text, language: language)
+            removeBackup()
+
+            if case .clipboardOnly(let reason) = outcome {
+                degradation = Self.clipboardMessage(reason)
+            }
+            if let degradation {
+                state = .degraded(degradation)
+                scheduleIdle(after: Self.degradedLinger)
+            } else {
+                state = .inserted
+                scheduleIdle(after: Self.insertedLinger)
+            }
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    /// `TextInserter.insert` синхронно спит 50 мс — уводим с главного потока.
+    private func insert(_ text: String) async -> InsertOutcome {
+        await Task.detached(priority: .userInitiated) { TextInserter.insert(text) }.value
+    }
+
+    private static func clipboardMessage(_ reason: String) -> String {
+        switch reason {
+        case "secure input": return "поле пароля — текст в буфере обмена"
+        case "no accessibility": return "нет доступа к Универсальному доступу — текст в буфере обмена"
+        default: return "текст только в буфере обмена (\(reason))"
+        }
+    }
+
+    // MARK: - Состояние и ресурсы
+
+    private func apply(_ modelState: ASRModelState) {
+        switch modelState {
+        case .downloading(let progress): state = .preparingModel(progress)
+        case .loading: state = .preparingModel(1)
+        case .notLoaded, .ready: break
+        }
+    }
+
+    private func ensureVad() async throws -> VadGate {
+        if let vad { return vad }
+        state = .preparingModel(1)
+        let created = try await VadGate()
+        vad = created
+        return created
+    }
+
+    private func fail(_ message: String) {
+        state = .error(message)
+        scheduleIdle(after: Self.errorLinger)
+    }
+
+    private func scheduleIdle(after seconds: TimeInterval) {
+        idleTask?.cancel()
+        idleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.state = .idle
+        }
+    }
+
+    private func writeBackup(_ samples: [Float]) {
+        do {
+            try FileManager.default.createDirectory(
+                at: Self.backupURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try WavEncoder.encode(samples).write(to: Self.backupURL, options: .atomic)
+        } catch {
+            logger.error("Бэкап записи не сохранён: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func removeBackup() {
+        try? FileManager.default.removeItem(at: Self.backupURL)
+    }
+}
