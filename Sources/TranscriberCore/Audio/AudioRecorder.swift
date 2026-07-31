@@ -57,6 +57,9 @@ public final class AudioRecorder {
     private var tapInstalled = false
     private var configObserver: NSObjectProtocol?
 
+    /// Только аудиопоток: гасит повтор лога о сбоях конвертации.
+    private var conversionFailureLogged = false
+
     public init() {
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -109,6 +112,24 @@ public final class AudioRecorder {
             pending.removeAll(keepingCapacity: true)
             return samples
         }
+    }
+
+    /// Останавливает движок и освобождает микрофон (гаснет индикатор записи).
+    /// Безопасно вызывать повторно; после `teardown()` `prepare()` снова поднимает движок.
+    public func teardown() {
+        lock.withLock {
+            isRecording = false
+            chunkHandler = nil
+            pending.removeAll(keepingCapacity: false)
+        }
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+        converter = nil
     }
 
     // MARK: - Движок
@@ -186,7 +207,10 @@ public final class AudioRecorder {
         guard let converter = converter else { return nil }
         let ratio = Self.targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
-        guard let output = AVAudioPCMBuffer(pcmFormat: Self.targetFormat, frameCapacity: capacity) else { return nil }
+        guard let output = AVAudioPCMBuffer(pcmFormat: Self.targetFormat, frameCapacity: capacity) else {
+            reportConversionFailure("не удалось выделить буфер на \(capacity) сэмплов")
+            return nil
+        }
 
         var consumed = false
         var error: NSError?
@@ -199,8 +223,20 @@ public final class AudioRecorder {
             outStatus.pointee = .haveData
             return buffer
         }
-        guard status != .error, let channel = output.floatChannelData else { return nil }
+        guard status != .error, let channel = output.floatChannelData else {
+            reportConversionFailure(error?.localizedDescription ?? "статус \(status.rawValue)")
+            return nil
+        }
+        conversionFailureLogged = false
         return Array(UnsafeBufferPointer(start: channel[0], count: Int(output.frameLength)))
+    }
+
+    /// Пишет в stderr одну строку на серию сбоев: tap приходит ~12 раз в секунду,
+    /// иначе поток лога забьётся повторами.
+    private func reportConversionFailure(_ reason: String) {
+        guard !conversionFailureLogged else { return }
+        conversionFailureLogged = true
+        FileHandle.standardError.write(Data("AudioRecorder: конвертация в 16 кГц не удалась — \(reason)\n".utf8))
     }
 
     private static func rms(_ samples: [Float]) -> Float {

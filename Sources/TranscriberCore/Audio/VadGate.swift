@@ -13,6 +13,10 @@ public actor VadGate {
     /// Для стрима: молчание 2 с → `.speechEnd` → автостоп.
     private let streamConfig = VadSegmentationConfig(minSilenceDuration: 2.0)
     private var streamState = VadStreamState.initial()
+    /// Цепочка вызовов feedStream: актор реентерабелен, а `streamState` — read-modify-write.
+    private var inFlight: Task<Bool, Error>?
+    /// Номер записи: результат, посчитанный до `resetStream()`, выбрасывается.
+    private var generation = 0
 
     public init() async throws {
         vad = try await VadManager(config: VadConfig())
@@ -34,12 +38,27 @@ public actor VadGate {
 
     /// Сбрасывает состояние стрима перед новой записью.
     public func resetStream() {
+        generation += 1
         streamState = VadStreamState.initial()
     }
 
     /// Скармливает чанк (4096 сэмплов 16 кГц). `true` — 2 с тишины после речи, пора останавливаться.
+    /// Вызовы выстраиваются в очередь, чтобы состояние стрима обновлялось строго по порядку.
     public func feedStream(_ chunk: [Float]) async throws -> Bool {
+        let previous = inFlight
+        let task = Task { [self] in
+            _ = try? await previous?.value
+            return try await process(chunk)
+        }
+        inFlight = task
+        return try await task.value
+    }
+
+    private func process(_ chunk: [Float]) async throws -> Bool {
+        let generationAtStart = generation
         let result = try await vad.processStreamingChunk(chunk, state: streamState, config: streamConfig)
+        // Пока считали, началась новая запись — результат уже не про неё.
+        guard generationAtStart == generation else { return false }
         streamState = result.state
         return result.event?.isEnd == true
     }
