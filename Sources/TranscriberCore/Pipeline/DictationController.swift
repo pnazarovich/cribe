@@ -216,6 +216,7 @@ public final class DictationController: ObservableObject {
         idleTask = nil
         micReleaseTask?.cancel()
         micReleaseTask = nil
+        prewarmGPT()
 
         let language = settings.language
         sessionLanguage = language
@@ -239,6 +240,15 @@ public final class DictationController: ObservableObject {
                 fail(error.localizedDescription)
             }
         }
+    }
+
+    /// Пока идёт запись, соединение до GPT успевает установиться — POST чистки уходит
+    /// в уже прогретый канал. Строго побочный эффект: результат не ждём, ошибки не смотрим,
+    /// на состояние конвейера прогрев не влияет никак.
+    private func prewarmGPT() {
+        guard settings.gptEnabled else { return }
+        let config = settings.gptConfig
+        Task.detached(priority: .utility) { await GPTClient(config: config).prewarm() }
     }
 
     private func startCapture() async throws {

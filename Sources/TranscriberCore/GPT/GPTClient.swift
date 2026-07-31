@@ -194,6 +194,26 @@ public actor GPTClient {
         }
     }
 
+    /// Прогрев соединения: лёгкий GET к списку моделей текущего режима, результат выбрасывается.
+    /// Смысл только в побочном эффекте — TCP + TLS + HTTP/2 к хосту уже установлены к моменту,
+    /// когда конвейеру понадобится POST чистки (это ~200–400 мс рукопожатий).
+    /// Ничего не бросает и ничего не меняет: провал прогрева означает лишь холодное соединение.
+    public func prewarm() async {
+        do {
+            var request = URLRequest(
+                url: config.mode == .codex ? GPTProtocol.codexModelsURL : GPTProtocol.apiModelsURL,
+                timeoutInterval: 5
+            )
+            switch config.mode {
+            case .codex: try await applyCodexHeaders(&request, accept: "application/json")
+            case .apiKey: try applyAPIKeyHeaders(&request, accept: "application/json")
+            }
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            // Нечего логировать: прогрев необязателен, а реальный запрос сам сообщит о проблеме.
+        }
+    }
+
     public func respond(instructions: String, input: String) async throws -> String {
         var request = URLRequest(
             url: config.mode == .codex ? GPTProtocol.codexResponsesURL : GPTProtocol.apiResponsesURL
