@@ -77,7 +77,9 @@ struct TranscriberApp: App {
         .defaultSize(width: 640, height: 420)
 
         Window("Настройка Transcriber", id: WindowID.onboarding) {
-            OnboardingView(engine: AppCore.shared.engine)
+            // Флаг первого запуска гасим отсюда: только появление окна доказывает,
+            // что онбординг пользователь действительно увидел.
+            OnboardingView(engine: AppCore.shared.engine) { AppCore.shared.markOnboardingShown() }
         }
         .windowResizability(.contentSize)
     }
@@ -100,10 +102,10 @@ private struct MenuBarScene: Scene {
         .menuBarExtraStyle(.menu)
         .onChange(of: core.needsOnboarding, initial: true) { _, needs in
             guard needs else { return }
-            // Следующим тиком: сцены окон к этому моменту зарегистрированы, а мутация
-            // состояния не приходится на текущий проход обновления.
+            // Следующим тиком: сцены окон к этому моменту зарегистрированы.
+            // Флаг гасит сам онбординг при появлении — если окно почему-то не открылось,
+            // попытка повторится на следующем запуске, а вручную его зовёт пункт меню.
             Task { @MainActor in
-                core.markOnboardingShown()
                 // LSUIElement-приложение неактивно — без этого окно откроется позади чужих.
                 NSApp.activate()
                 openWindow(id: WindowID.onboarding)

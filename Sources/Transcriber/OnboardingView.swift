@@ -6,6 +6,8 @@ import TranscriberCore
 /// Первый запуск: микрофон, Универсальный доступ и загрузка моделей.
 struct OnboardingView: View {
     let engine: WhisperEngine
+    /// Зовётся при появлении окна: флаг первого запуска гасит факт показа, а не намерение.
+    let onShown: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var downloader = ModelDownloader()
@@ -36,6 +38,7 @@ struct OnboardingView: View {
         }
         .padding(20)
         .frame(width: 520)
+        .onAppear(perform: onShown)
         // Разрешения выдаются в системных окнах — состояние подтягиваем опросом.
         .task { await pollPermissions() }
     }

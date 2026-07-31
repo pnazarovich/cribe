@@ -25,14 +25,7 @@ struct MenuBarView: View {
             }
         }
 
-        // Тело меню пересобирается при каждом открытии, поэтому список микрофонов
-        // всегда свежий — отдельного «обновить» не нужно.
-        Picker("Микрофон", selection: $settings.inputDeviceUID) {
-            Text("Системный по умолчанию").tag(String?.none)
-            ForEach(AudioDeviceList.inputDevices()) { device in
-                Text(device.name).tag(String?.some(device.uid))
-            }
-        }
+        MicrophonePicker(settings: settings)
 
         Divider()
 
@@ -68,6 +61,12 @@ struct MenuBarView: View {
             openWindow(id: WindowID.dictionary)
         }
         SettingsLink { Text("Настройки…") }
+        // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
+        // а автоматически окно показывается только на первом запуске.
+        Button("Первичная настройка…") {
+            NSApp.activate()
+            openWindow(id: WindowID.onboarding)
+        }
 
         Divider()
 
@@ -100,5 +99,27 @@ struct MenuBarView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard flat.count > historyTitleLimit else { return flat }
         return String(flat.prefix(historyTitleLimit)) + "…"
+    }
+}
+
+/// Подменю микрофонов отдельным вью ради собственной точки обновления списка.
+/// Свежесть держится двумя независимыми механизмами, чтобы не зависеть от того,
+/// пересобирает ли SwiftUI содержимое NSMenu на каждом открытии:
+/// 1) стартовое значение `@State` читается при создании вью;
+/// 2) `onAppear` перечитывает список, когда вью показывается.
+/// Перечисление CoreAudio занимает единицы миллисекунд — на открытии меню не заметно.
+private struct MicrophonePicker: View {
+    @ObservedObject var settings: AppSettings
+
+    @State private var devices = AudioDeviceList.inputDevices()
+
+    var body: some View {
+        Picker("Микрофон", selection: $settings.inputDeviceUID) {
+            Text("Системный по умолчанию").tag(String?.none)
+            ForEach(devices) { device in
+                Text(device.name).tag(String?.some(device.uid))
+            }
+        }
+        .onAppear { devices = AudioDeviceList.inputDevices() }
     }
 }

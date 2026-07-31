@@ -105,6 +105,13 @@ private struct AITab: View {
                 Text("Аккаунт ChatGPT").tag(GPTAuthMode.codex)
                 Text("API-ключ OpenAI").tag(GPTAuthMode.apiKey)
             }
+            .onChange(of: settings.gptMode) { _, mode in
+                // Списки моделей у бэкендов разные: старый выбор в новом режиме не существует.
+                models = []
+                settings.gptModel = GPTConfig.defaultModel(for: mode)
+                // Уход в режим API-ключа прячет блок входа — поллинг за ним не оставляем.
+                codex.cancel()
+            }
 
             switch settings.gptMode {
             case .apiKey: apiKeySection
@@ -133,6 +140,9 @@ private struct AITab: View {
             apiKey = KeychainStore.getString(KeychainStore.apiKeyAccount) ?? ""
             await codex.refreshStatus()
         }
+        // Поллинг device-code живёт до 15 минут — закрытые настройки не должны
+        // продолжать долбить auth.openai.com каждые пять секунд.
+        .onDisappear { codex.cancel() }
     }
 
     // MARK: API-ключ
@@ -233,36 +243,45 @@ private final class CodexAuthModel: ObservableObject {
     @Published private(set) var message: String?
 
     private var task: Task<Void, Never>?
+    /// Номер попытки входа: хвост отменённой задачи не должен трогать состояние следующей.
+    private var generation = 0
 
     func refreshStatus() async {
         isAuthorized = await CodexAuth.shared.isAuthorized()
     }
 
     func start() {
-        task?.cancel()
+        cancel()
         message = nil
-        task = Task {
+        let generation = self.generation
+        task = Task { [weak self] in
+            guard let self else { return }
             do {
                 let session = try await CodexAuth.shared.startDeviceFlow()
+                guard generation == self.generation else { return }
                 self.session = session
                 isPolling = true
+
                 try await CodexAuth.shared.pollUntilAuthorized(session)
+                guard generation == self.generation else { return }
                 isAuthorized = true
                 message = nil
-            } catch is CancellationError {
-                message = nil
             } catch {
+                guard generation == self.generation else { return }
                 // deviceCodeDisabled сам объясняет, что включить в настройках ChatGPT.
-                message = error.localizedDescription
+                message = Self.isCancellation(error) ? nil : error.localizedDescription
             }
+            guard generation == self.generation else { return }
             session = nil
             isPolling = false
         }
     }
 
+    /// Идемпотентна: повторный вызов на уже остановленном входе ничего не меняет.
     func cancel() {
         task?.cancel()
         task = nil
+        generation += 1
         session = nil
         isPolling = false
     }
@@ -271,6 +290,11 @@ private final class CodexAuthModel: ObservableObject {
         cancel()
         await CodexAuth.shared.logout()
         isAuthorized = false
+    }
+
+    /// Отмена — не ошибка: `Task` бросает `CancellationError`, URLSession — `URLError.cancelled`.
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 }
 
