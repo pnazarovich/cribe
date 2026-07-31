@@ -355,15 +355,17 @@ public final class DictationController: ObservableObject {
         state = .recording(live: live, level: value)
     }
 
-    /// 2 с тишины после речи → автостоп.
+    /// 2 с тишины после речи → автостоп, если он включён в настройках.
     private func startVadLoop(stream: AsyncStream<[Float]>, vad: VadGate) {
         vadTask = Task { [weak self] in
             for await chunk in stream {
                 guard let speechEnded = try? await vad.feedStream(chunk) else { continue }
-                if speechEnded {
-                    self?.autoStop()
-                    return
-                }
+                // Автостоп по умолчанию выключен: запись останавливает только повторный хоткей.
+                // Кормить гейт при этом продолжаем — состояние стрима должно оставаться живым,
+                // если автостоп включат посреди записи. Обрезка финального буфера идёт отдельно.
+                guard speechEnded, self?.settings.autoStopEnabled == true else { continue }
+                self?.autoStop()
+                return
             }
         }
     }

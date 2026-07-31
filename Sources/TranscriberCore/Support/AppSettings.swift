@@ -21,6 +21,7 @@ public final class AppSettings: ObservableObject {
         static let inputDeviceUID = "inputDeviceUID"
         static let translateToEnglish = "translateToEnglish"
         static let soundsEnabled = "soundsEnabled"
+        static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
     }
 
@@ -57,6 +58,12 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(soundsEnabled, forKey: Key.soundsEnabled) }
     }
 
+    /// Останавливать запись самой после 2 с тишины. По умолчанию выключено: запись
+    /// выключается только повторным нажатием хоткея.
+    @Published public var autoStopEnabled: Bool {
+        didSet { defaults.set(autoStopEnabled, forKey: Key.autoStopEnabled) }
+    }
+
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
     @Published public var dictationHotkeyMode: HotkeyMode {
         didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
@@ -81,6 +88,7 @@ public final class AppSettings: ObservableObject {
         gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
+        autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

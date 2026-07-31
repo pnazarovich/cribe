@@ -56,6 +56,8 @@ private struct GeneralTab: View {
                 }
             }
 
+            Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
+
             Toggle("Звуки старта и окончания записи", isOn: $settings.soundsEnabled)
 
             // Тумблер ведомый: значение меняем только после успешного вызова SMAppService,
