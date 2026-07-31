@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct TranscriberApp: App {
     var body: some Scene {
-        MenuBarExtra("Transcriber", systemImage: "mic") {
+        MenuBarExtra("Transcriber", systemImage: "waveform") {
             Text("stub")
         }
     }
