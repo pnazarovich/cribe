@@ -15,11 +15,11 @@ final class ModifierTapDetectorTests: XCTestCase {
         XCTAssertTrue(detector.flagsChanged(keyCode: rcmd, flags: released, at: 0.1))
     }
 
-    /// ⌘C правым ⌘: между нажатием и отпусканием была клавиша — это аккорд.
-    func testKeyDownBetweenCancels() {
+    /// ⌘C правым ⌘ (и так же ⌘-клик, ⌘-скролл): между нажатием и отпусканием был ввод — это аккорд.
+    func testInputBetweenCancels() {
         var detector = ModifierTapDetector()
         _ = detector.flagsChanged(keyCode: rcmd, flags: rcmdDown, at: 0)
-        detector.keyDown()
+        detector.cancel()
         XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: released, at: 0.1))
     }
 

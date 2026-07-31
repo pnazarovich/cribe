@@ -3,8 +3,9 @@ import Foundation
 /// Распознаёт «тап» по модификатору: нажали и отпустили, а между этим — ничего.
 /// Чистая логика без CoreGraphics: события подаёт `ModifierKeyTap`.
 ///
-/// Отменяют тап любое нажатие клавиши (⌘C правым ⌘ не должен запускать диктовку),
-/// смена любого другого модификатора и удержание дольше `holdLimit`.
+/// Отменяют тап любое действие пользователя между нажатием и отпусканием — клавиша (⌘C правым
+/// ⌘ не должен запускать диктовку), клик или скролл мышью, — а также смена любого другого
+/// модификатора и удержание дольше `holdLimit`.
 public struct ModifierTapDetector {
     /// Правый ⌘: keyCode 54, device-бит `NX_DEVICERCMDKEYMASK` во флагах события.
     public static let rightCommandKeyCode: Int64 = 54
@@ -43,8 +44,8 @@ public struct ModifierTapDetector {
         return time - pressed <= Self.holdLimit
     }
 
-    /// Любое нажатие клавиши во время удержания отменяет тап.
-    public mutating func keyDown() {
+    /// Любой ввод во время удержания (клавиша, клик, скролл) отменяет тап.
+    public mutating func cancel() {
         pressedAt = nil
     }
 
