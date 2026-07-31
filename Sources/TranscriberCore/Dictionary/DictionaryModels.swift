@@ -16,7 +16,7 @@ public struct DictionaryEntry: Codable, Equatable, Identifiable, Sendable {
 
 public let defaultEntries: [DictionaryEntry] = [
     DictionaryEntry(canonical: "GitHub", variants: ["гитхаб", "гіт хаб", "гит хаб"]),
-    DictionaryEntry(canonical: "deploy", variants: ["деплой", "деплоить", "задеплой"]),
+    DictionaryEntry(canonical: "deploy", variants: ["деплой", "деплоить", "задеплой", "деплу", "задеплу"]),
     DictionaryEntry(canonical: "commit", variants: ["коммит", "закоммить", "коміт"]),
     DictionaryEntry(canonical: "Tailscale", variants: ["тейлскейл", "тэйлскейл"]),
     DictionaryEntry(canonical: "backend", variants: ["бэкенд", "бекенд", "бэкэнд"]),
@@ -41,7 +41,7 @@ public let defaultEntries: [DictionaryEntry] = [
     DictionaryEntry(canonical: "CFv1", variants: ["си эф ви один", "сиэфви один", "сі еф ві один"], stem: false),
     DictionaryEntry(canonical: "m2fit.com.ua", variants: ["эм два фит ком юа", "эм два фит", "ем два фіт"], stem: false),
     DictionaryEntry(canonical: "Claude.MD", variants: ["клод эм дэ", "клод точка эм дэ", "клод мд", "клод ем де"], stem: false),
-    DictionaryEntry(canonical: "Klientomat", variants: ["клиентомат", "клієнтомат", "клиентомата", "клиентомату"]),
+    DictionaryEntry(canonical: "Klientomat", variants: ["клиентомат", "клієнтомат", "клиентомата", "клиентомату", "clientomat", "client-o-mat"]),
     DictionaryEntry(canonical: "openclaw-billing-proxy", variants: ["опенкло биллинг прокси", "опен кло биллинг прокси", "опенкло білінг проксі"], stem: false),
     DictionaryEntry(canonical: "ChatGPT", variants: ["чат гпт", "чатгпт", "чат джипити", "чат жпт", "чат джіпіті"]),
     DictionaryEntry(canonical: "Clo3D", variants: ["кло три дэ", "кло 3д", "кло три де"], stem: false),
