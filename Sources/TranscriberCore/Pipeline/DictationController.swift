@@ -152,7 +152,13 @@ public final class DictationController: ObservableObject {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] uid in
-                MainActor.assumeIsolated { self?.recorder.setInputDevice(uid: uid) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // На живой записи движок не пересобираем — это провал в аудио.
+                    // Новое устройство применит `begin()` следующей диктовки.
+                    if case .recording = self.state { return }
+                    self.recorder.setInputDevice(uid: uid)
+                }
             }
     }
 
@@ -394,9 +400,10 @@ public final class DictationController: ObservableObject {
                     }
                 } catch {
                     // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
+                    // При переводе тем же вызовом теряется и чистка — говорим об обоих.
                     degradations.append(
                         wantsTranslation
-                            ? "без перевода: \(error.localizedDescription)"
+                            ? "без перевода и AI-чистки: \(error.localizedDescription)"
                             : "без AI-чистки: \(error.localizedDescription)"
                     )
                     logger.error("GPT-слой не отработал: \(error.localizedDescription, privacy: .public)")
@@ -405,12 +412,19 @@ public final class DictationController: ObservableObject {
                 degradations.append("без перевода")
             }
 
+            // Пустой ответ модели `cleanup` отсекает сам, но вставлять пустоту нельзя ни при
+            // каких обстоятельствах: откатываемся на результат слоя 2 и говорим об этом.
+            if translation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                translation = nil
+                degradations.append("без перевода: пустой ответ модели")
+            }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw DictationError.noSpeech
             }
             lastOriginal = text
             lastTranslation = translation
 
+            // Непустой по построению: перевод либо непустой, либо сброшен в nil выше.
             let output = translation ?? text
             let outcome = await insert(output)
             history.add(output, language: language)
@@ -446,6 +460,11 @@ public final class DictationController: ObservableObject {
             copyToClipboard(lastTranslation)
             return
         }
+        // Без GPT переводить нечем: не ждём таймаут впустую (пункт меню гейтит и UI).
+        guard settings.gptEnabled else {
+            flash("перевод не удался: GPT выключен")
+            return
+        }
         do {
             let translated = try await PostProcessor.cleanup(
                 text: original,
@@ -454,7 +473,11 @@ public final class DictationController: ObservableObject {
                 config: settings.gptConfig,
                 translateToEnglish: true
             )
-            lastTranslation = translated
+            // Пока переводили, могла закончиться новая диктовка — её кэш чужим переводом
+            // не портим, но пользователю отдаём то, что он запросил.
+            if lastOriginal == original {
+                lastTranslation = translated
+            }
             copyToClipboard(translated)
         } catch {
             logger.error("Перевод последней диктовки не удался: \(error.localizedDescription, privacy: .public)")
