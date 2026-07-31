@@ -127,11 +127,24 @@ struct SSEAccumulator {
         case "response.completed":
             isCompleted = true
         case "response.failed":
-            let error = (json["response"] as? [String: Any])?["error"] as? [String: Any]
-            throw GPTClientError.stream(error?["message"] as? String ?? "неизвестная ошибка")
+            throw GPTClientError.stream(Self.message(in: json) ?? "неизвестная ошибка")
+        case "error":
+            // Верхнеуровневый кадр ошибки: лимиты аккаунта, 429 внутри стрима.
+            throw GPTClientError.stream(Self.message(in: json) ?? "неизвестная ошибка")
         default:
-            break
+            // Прочие error-подобные кадры не глушим, иначе причина подменится «пустым ответом».
+            if type.lowercased().contains("error") {
+                throw GPTClientError.stream(Self.message(in: json).map { "\(type): \($0)" } ?? type)
+            }
         }
+    }
+
+    /// Сообщение об ошибке лежит по-разному: верхним уровнем, в `error` или в `response.error`.
+    private static func message(in json: [String: Any]) -> String? {
+        if let message = json["message"] as? String { return message }
+        if let error = json["error"] as? [String: Any], let message = error["message"] as? String { return message }
+        let responseError = (json["response"] as? [String: Any])?["error"] as? [String: Any]
+        return responseError?["message"] as? String
     }
 }
 

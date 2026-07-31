@@ -66,7 +66,9 @@ public enum PostProcessor {
         let result = try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { try await client.respond(instructions: instructions, input: text) }
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                // Клампим: отрицательный/NaN/огромный таймаут иначе роняет UInt64-конверсию.
+                let seconds = min(max(0, timeout), 600)
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw PostProcessorError.timedOut
             }
             guard let first = try await group.next() else { throw PostProcessorError.timedOut }
