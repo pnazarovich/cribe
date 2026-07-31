@@ -332,8 +332,34 @@ public enum DictationState: Sendable, Equatable {
 - `DictationController`: прокидывает `settings.translateToEnglish` в cleanup; если перевод включён, а GPT выключен/упал → вставка результата слоя 2 + `.degraded("без перевода")`.
 - `DictationState` не меняется; панель/меню читают `settings.translateToEnglish` напрямую (бейдж «→ EN» — задача UI).
 - Тест: systemPrompt с translate содержит английскую инструкцию и правила словаря; без translate — не содержит.
+- **Последняя диктовка (для меню):** `DictationController` хранит `@Published public private(set) var lastOriginal: String?` и `lastTranslation: String?` (original = текст ПОСЛЕ слоя 2 и GPT-чистки, до перевода; при выключенном переводе lastTranslation = nil; при включённом — вставленный перевод). Методы: `copyLastOriginal()` (в NSPasteboard) и `translateLastAndCopy() async` — если lastTranslation нет, переводит lastOriginal через `PostProcessor.cleanup(..., translateToEnglish: true)`, кэширует, кладёт в буфер; ошибки → `.degraded("перевод не удался")` на ~2 c без смены idle-состояния пайплайна.
 
 - [ ] TDD → реализация → `swift test` PASS → коммит `feat(transcriber): перевод на английский через GPT-слой`.
+
+---
+
+### Task 13: Выбор микрофона (устройство ввода)
+
+**Files:** Create: `Sources/TranscriberCore/Audio/AudioDeviceList.swift`; Modify: `Audio/AudioRecorder.swift`, `Support/AppSettings.swift`.
+
+**Interfaces:**
+- `public struct AudioInputDevice: Identifiable, Equatable, Sendable { public let id: AudioDeviceID; public let uid: String; public let name: String }`
+- `public enum AudioDeviceList { public static func inputDevices() -> [AudioInputDevice] }` — CoreAudio: `kAudioHardwarePropertyDevices` → фильтр устройств с input-стримами (`kAudioDevicePropertyStreamConfiguration`, scope input, mChannels > 0), имя `kAudioObjectPropertyName`, UID `kAudioDevicePropertyDeviceUID`.
+- `AppSettings`: `@Published public var inputDeviceUID: String?` (nil = системный по умолчанию, key `inputDeviceUID`).
+- `AudioRecorder`: `public func setInputDevice(uid: String?)` — резолвит UID → AudioDeviceID (через inputDevices()), ставит `kAudioOutputUnitProperty_CurrentDevice` на audioUnit inputNode (Global scope, element 0) ДО старта engine; nil → системный дефолт; несуществующий UID → фолбэк на дефолт без краша. Вызывается перед每 start() из контроллера/меню.
+- Меню (Task 9): подменю «Микрофон» — «Системный по умолчанию» + список inputDevices() (обновлять при открытии меню), галочка на выбранном, выбор пишет settings.inputDeviceUID и дергает setInputDevice.
+
+- [ ] Реализация → `swift build` (юнит-тестов нет — CoreAudio) → коммит `feat(transcriber): выбор микрофона в меню`.
+
+---
+
+---
+
+### Task 14: Иконка приложения (звуковая волна)
+
+**Files:** Create: `scripts/make-icon.swift` (CoreGraphics: 1024×1024 — скруглённый квадрат macOS-пропорций с градиентом, белые вертикальные столбики звуковой волны разной высоты, симметрия от центра), `Resources/AppIcon.icns` (генерируется: swift make-icon.swift → PNG 1024 → sips в 16/32/64/128/256/512(+@2x) → iconutil -c icns); Modify: `Info.plist` (+CFBundleIconFile AppIcon), `scripts/build-app.sh` (копировать Resources/AppIcon.icns в Contents/Resources/), `Sources/Transcriber/App.swift` (MenuBarExtra systemImage: "waveform"; при записи — "waveform.badge.mic" или заливка).
+
+- [ ] Генерация → визуальная проверка PNG → сборка .app с иконкой → коммит `feat(transcriber): иконка приложения — звуковая волна`.
 
 ---
 
