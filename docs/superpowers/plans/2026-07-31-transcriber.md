@@ -321,6 +321,22 @@ public enum DictationState: Sendable, Equatable {
 
 ---
 
+### Task 12: Перевод на английский (GPT)
+
+**Files:** Modify: `GPT/PostProcessor.swift`, `Support/AppSettings.swift`, `Pipeline/DictationController.swift`; Tests: `GPTProtocolTests.swift` (дополнить).
+
+**Interfaces:**
+- `AppSettings`: `@Published public var translateToEnglish: Bool` (default false, UserDefaults key `translateToEnglish`).
+- `PostProcessor.systemPrompt(entries:language:translateToEnglish:)` и `cleanup(text:entries:language:config:timeout:translateToEnglish:)` — новый параметр с дефолтом `false` (существующие вызовы не ломаются).
+- Промпт при `translateToEnglish == true`: те же правила чистки + «переведи результат на естественный английский; термины словаря оставь в канонической форме; верни ТОЛЬКО перевод».
+- `DictationController`: прокидывает `settings.translateToEnglish` в cleanup; если перевод включён, а GPT выключен/упал → вставка результата слоя 2 + `.degraded("без перевода")`.
+- `DictationState` не меняется; панель/меню читают `settings.translateToEnglish` напрямую (бейдж «→ EN» — задача UI).
+- Тест: systemPrompt с translate содержит английскую инструкцию и правила словаря; без translate — не содержит.
+
+- [ ] TDD → реализация → `swift test` PASS → коммит `feat(transcriber): перевод на английский через GPT-слой`.
+
+---
+
 ### Task 11: Финальная верификация
 
 - [ ] `swift test` — все зелёные. `bash scripts/build-app.sh` — подписанный .app. `open dist/Transcriber.app` — меню-бар иконка появилась, онбординг открылся. CLI-smoke RU и UK. Сверка со спекой (каждый пункт «Конвейер»/«GPT-слой»/«Errors»). REQUIRED: superpowers:verification-before-completion. Финальный коммит + краткий отчёт пользователю (что готово, как запустить, что руками: включить device-code auth в ChatGPT, дать разрешения).
