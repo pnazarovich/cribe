@@ -24,20 +24,35 @@ public enum DictationError: LocalizedError, Sendable {
     }
 }
 
-/// Сериализует доступ к движку: WhisperKit-инстансы не потокобезопасны,
-/// а live-превью и финальный проход приходят из разных задач.
-private actor EngineGate {
+/// Сериализует распознавание: WhisperKit-инстанс не потокобезопасен, а live-превью и
+/// финальный проход приходят из разных задач. Актор реентерабелен (на `await` он
+/// освобождается), поэтому вызовы выстроены в цепочку задач — как в `VadGate.feedStream`.
+actor EngineGate {
     private let engine: TranscriptionEngine
+    private var inFlight: Task<String, Error>?
 
     init(_ engine: TranscriptionEngine) {
         self.engine = engine
     }
 
+    /// Загрузка модели идёт мимо цепочки: она не трогает уже прогретый инстанс,
+    /// а `WhisperEngine` сам склеивает параллельные `prepare`.
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         try await engine.prepare(language: language, onState: onState)
     }
 
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
+        let previous = inFlight
+        let task = Task { [self] in
+            _ = try? await previous?.value
+            return try await run(samples, language: language, prompt: prompt)
+        }
+        // Регистрация синхронна: между чтением и записью `inFlight` нет ни одного await.
+        inFlight = task
+        return try await task.value
+    }
+
+    private func run(_ samples: [Float], language: Language, prompt: String) async throws -> String {
         try await engine.transcribe(samples, language: language, prompt: prompt)
     }
 }
@@ -85,6 +100,8 @@ public final class DictationController: ObservableObject {
     private static let insertedLinger: TimeInterval = 1.5
     private static let degradedLinger: TimeInterval = 2.5
     private static let errorLinger: TimeInterval = 2
+    /// Через столько простоя отпускаем микрофон (гаснет индикатор записи).
+    private static let micReleaseDelay: TimeInterval = 60
 
     /// Бэкап последней записи — на случай, если вставка не дошла до приложения.
     private static let backupURL: URL = FileManager.default
@@ -105,11 +122,15 @@ public final class DictationController: ObservableObject {
     private var live = ""
     private var level: Float = 0
     private var sessionLanguage: Language = .ru
+    /// Старт асинхронный, а состояние меняется только в его конце — флаг закрывает
+    /// окно, в котором второй хоткей запустил бы вторую запись.
+    private var isStarting = false
 
     private var chunks: AsyncStream<[Float]>.Continuation?
     private var vadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
+    private var micReleaseTask: Task<Void, Never>?
 
     public init(engine: TranscriptionEngine, dictionary: UserDictionary, settings: AppSettings) {
         self.gate = EngineGate(engine)
@@ -167,12 +188,19 @@ public final class DictationController: ObservableObject {
     // MARK: - Запись
 
     private func begin() {
+        guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
+        isStarting = true
+
         idleTask?.cancel()
         idleTask = nil
+        micReleaseTask?.cancel()
+        micReleaseTask = nil
+        recorder.prepare()  // движок поднимается заранее, чтобы старт записи был мгновенным
 
         let language = settings.language
         sessionLanguage = language
         Task {
+            defer { isStarting = false }
             do {
                 try await gate.prepare(language: language) { [weak self] modelState in
                     Task { @MainActor in self?.apply(modelState) }
@@ -185,6 +213,14 @@ public final class DictationController: ObservableObject {
     }
 
     private func startCapture(language: Language) async throws {
+        // Страховка от хвостов прошлой сессии: осиротевший цикл превью крутился бы вечно.
+        previewTask?.cancel()
+        previewTask = nil
+        vadTask?.cancel()
+        vadTask = nil
+        chunks?.finish()
+        chunks = nil
+
         let vad = try await ensureVad()
         await vad.resetStream()
 
@@ -206,6 +242,7 @@ public final class DictationController: ObservableObject {
         } catch {
             chunks?.finish()
             chunks = nil
+            recorder.onLevel = nil
             throw error
         }
 
@@ -250,6 +287,8 @@ public final class DictationController: ObservableObject {
                 guard let text = try? await self.gate.transcribe(samples, language: language, prompt: prompt) else {
                     continue
                 }
+                // Пока считали, запись могли остановить — в новую сессию не рисуем.
+                guard !Task.isCancelled else { return }
                 self.applyLive(text)
             }
         }
@@ -275,6 +314,7 @@ public final class DictationController: ObservableObject {
 
     private func stopAndProcess() {
         previewTask?.cancel()
+        let preview = previewTask
         previewTask = nil
         chunks?.finish()
         chunks = nil
@@ -283,15 +323,21 @@ public final class DictationController: ObservableObject {
         recorder.onLevel = nil
 
         let samples = recorder.stop()
+        buffer.removeAll(keepingCapacity: false)
         let language = sessionLanguage
         state = .transcribing
-        Task { await runPipeline(samples: samples, language: language) }
+        Task {
+            // Отмена не прерывает уже начатый декод WhisperKit — дожидаемся его,
+            // чтобы финальный проход не пересёкся с превью на одном инстансе.
+            await preview?.value
+            await runPipeline(samples: samples, language: language)
+        }
     }
 
     // MARK: - Конвейер
 
     private func runPipeline(samples: [Float], language: Language) async {
-        writeBackup(samples)
+        await writeBackup(samples)
         do {
             let vad = try await ensureVad()
             // Финал — всегда свежее распознавание обрезанной записи, превью не переиспользуем.
@@ -304,7 +350,7 @@ public final class DictationController: ObservableObject {
                 prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
             )
             var text = ReplacementEngine.apply(raw, entries: entries)
-            var degradation: String?
+            var degradations: [String] = []
 
             if settings.gptEnabled {
                 state = .cleaning
@@ -317,7 +363,7 @@ public final class DictationController: ObservableObject {
                     )
                 } catch {
                     // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
-                    degradation = "без AI-чистки: \(error.localizedDescription)"
+                    degradations.append("без AI-чистки: \(error.localizedDescription)")
                     logger.error("GPT-чистка не удалась: \(error.localizedDescription, privacy: .public)")
                 }
             }
@@ -331,14 +377,14 @@ public final class DictationController: ObservableObject {
             removeBackup()
 
             if case .clipboardOnly(let reason) = outcome {
-                degradation = Self.clipboardMessage(reason)
+                degradations.append(Self.clipboardMessage(reason))
             }
-            if let degradation {
-                state = .degraded(degradation)
-                scheduleIdle(after: Self.degradedLinger)
-            } else {
+            if degradations.isEmpty {
                 state = .inserted
                 scheduleIdle(after: Self.insertedLinger)
+            } else {
+                state = .degraded(degradations.joined(separator: "; "))
+                scheduleIdle(after: Self.degradedLinger)
             }
         } catch {
             fail(error.localizedDescription)
@@ -385,20 +431,41 @@ public final class DictationController: ObservableObject {
         idleTask?.cancel()
         idleTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.state = .idle
+            guard !Task.isCancelled, let self else { return }
+            self.state = .idle
+            self.scheduleMicRelease()
         }
     }
 
-    private func writeBackup(_ samples: [Float]) {
-        do {
-            try FileManager.default.createDirectory(
-                at: Self.backupURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try WavEncoder.encode(samples).write(to: Self.backupURL, options: .atomic)
-        } catch {
-            logger.error("Бэкап записи не сохранён: \(error.localizedDescription, privacy: .public)")
+    /// Микрофон держим прогретым сразу после диктовки (следующая обычно рядом),
+    /// но через минуту простоя отпускаем — индикатор записи не должен гореть вечно.
+    private func scheduleMicRelease() {
+        micReleaseTask?.cancel()
+        micReleaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.micReleaseDelay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.recorder.teardown()
+        }
+    }
+
+    /// Кодирование и запись WAV — вне главного потока: на длинной диктовке это сотни мс.
+    private func writeBackup(_ samples: [Float]) async {
+        let url = Self.backupURL
+        let failure = await Task.detached(priority: .utility) { () -> String? in
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try WavEncoder.encode(samples).write(to: url, options: .atomic)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }.value
+
+        if let failure {
+            logger.error("Бэкап записи не сохранён: \(failure, privacy: .public)")
         }
     }
 
