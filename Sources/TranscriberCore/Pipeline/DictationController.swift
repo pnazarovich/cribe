@@ -31,6 +31,9 @@ public enum DictationError: LocalizedError, Sendable {
 actor EngineGate {
     private let engine: TranscriptionEngine
     private var inFlight: Task<String, Error>?
+    /// Своя цепочка для превью: оно считается на отдельном инстансе WhisperKit (tiny),
+    /// поэтому финальный проход большой модели не должен ждать идущий проход превью.
+    private var previewInFlight: Task<String, Error>?
 
     init(_ engine: TranscriptionEngine) {
         self.engine = engine
@@ -40,6 +43,10 @@ actor EngineGate {
     /// а `WhisperEngine` сам склеивает параллельные `prepare`.
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         try await engine.prepare(language: language, onState: onState)
+    }
+
+    func preparePreview() async throws {
+        try await engine.preparePreview()
     }
 
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
@@ -53,8 +60,22 @@ actor EngineGate {
         return try await task.value
     }
 
+    func transcribePreview(_ samples: [Float], language: Language) async throws -> String {
+        let previous = previewInFlight
+        let task = Task { [self] in
+            _ = try? await previous?.value
+            return try await runPreview(samples, language: language)
+        }
+        previewInFlight = task
+        return try await task.value
+    }
+
     private func run(_ samples: [Float], language: Language, prompt: String) async throws -> String {
         try await engine.transcribe(samples, language: language, prompt: prompt)
+    }
+
+    private func runPreview(_ samples: [Float], language: Language) async throws -> String {
+        try await engine.transcribePreview(samples, language: language)
     }
 }
 
@@ -94,13 +115,12 @@ public enum WavEncoder {
 @MainActor
 public final class DictationController: ObservableObject {
 
-    /// Передышка между проходами live-превью и минимум аудио для прохода (1 c).
-    /// Сам проход — полный ре-декод буфера на large-v3-turbo, это ~1.3 c, поэтому передышку
-    /// держим короткой: с прежней паузой в 1.2 c превью обновлялось раз в ~2.6 c, то есть
-    /// половину записи цикл просто спал. Меньше секунды аудио отдавать бессмысленно —
-    /// WhisperKit с `chunkingStrategy: .vad` возвращает на таком срезе пустой результат.
+    /// Передышка между проходами live-превью и минимум аудио для прохода (0.6 c).
+    /// Проход — полный ре-декод буфера, но на отдельной лёгкой модели (whisper-tiny):
+    /// это десятки миллисекунд против ~1.3 c у большой модели сессии, поэтому и порог
+    /// входа опущен до 0.6 c — первый текст появляется почти сразу, а не через ~5 c.
     private static let previewGap: TimeInterval = 0.3
-    private static let previewMinSamples = Int(AudioRecorder.sampleRate)
+    private static let previewMinSamples = Int(AudioRecorder.sampleRate * 0.6)
     /// Сколько держим финальное состояние перед возвратом в `.idle`.
     private static let insertedLinger: TimeInterval = 1.5
     private static let degradedLinger: TimeInterval = 2.5
@@ -176,6 +196,22 @@ public final class DictationController: ObservableObject {
                     self.recorder.setInputDevice(uid: uid)
                 }
             }
+
+        // Модель live-превью (tiny, ~150 МБ) качается и компилируется под ANE один раз, фоном
+        // при старте приложения: первая диктовка не должна её ждать, а до её готовности
+        // превью просто идёт по старому пути через большую модель.
+        let gate = self.gate
+        let logger = self.logger
+        Task.detached(priority: .utility) {
+            do {
+                try await gate.preparePreview()
+            } catch {
+                logger.error("Модель live-превью не загрузилась: \(error.localizedDescription, privacy: .public)")
+                FileHandle.standardError.write(
+                    Data("Transcriber: модель live-превью не загрузилась — \(error.localizedDescription)\n".utf8)
+                )
+            }
+        }
     }
 
     // MARK: - Вход хоткеев
@@ -352,16 +388,33 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Один проход превью. Провал превью не рушит диктовку (финал считается заново),
-    /// но раньше он был совсем немым — и «превью не появилось» было не отличить от
-    /// «модель не успела». Поэтому каждый сбой пишем в лог и в stderr.
+    /// Один проход превью на лёгкой модели. Пока она не догрузилась (первые минуты после
+    /// установки) — откат на старый путь через большую модель сессии, чтобы текст всё же
+    /// появлялся, просто реже.
     private func previewPass(_ samples: [Float], language: Language, prompt: String) async -> String? {
         let started = Date()
         do {
-            let text = try await gate.transcribe(samples, language: language, prompt: prompt)
+            let text = try await gate.transcribePreview(samples, language: language)
             // Уровень debug: в обычной работе не пишется, но `log stream --level debug`
             // на живой машине сразу показывает, идут ли проходы и сколько занимают.
-            logger.debug("Превью: \(Int(Date().timeIntervalSince(started) * 1000), privacy: .public) мс")
+            logger.debug("Превью (tiny): \(Int(Date().timeIntervalSince(started) * 1000), privacy: .public) мс")
+            return text
+        } catch {
+            // Штатное состояние, а не сбой: в stderr не шумим — он бы забился повторами
+            // по три раза в секунду, пока модель превью качается.
+            logger.debug("Превью на tiny недоступно: \(error.localizedDescription, privacy: .public)")
+            return await fallbackPreviewPass(samples, language: language, prompt: prompt)
+        }
+    }
+
+    /// Откат: черновой проход большой моделью сессии (~1.3 c). Провал превью не рушит
+    /// диктовку (финал считается заново), но раньше он был совсем немым — и «превью не
+    /// появилось» было не отличить от «модель не успела». Поэтому сбой пишем в лог и в stderr.
+    private func fallbackPreviewPass(_ samples: [Float], language: Language, prompt: String) async -> String? {
+        let started = Date()
+        do {
+            let text = try await gate.transcribe(samples, language: language, prompt: prompt)
+            logger.debug("Превью (большая модель): \(Int(Date().timeIntervalSince(started) * 1000), privacy: .public) мс")
             return text
         } catch {
             logger.error("Проход превью не удался: \(error.localizedDescription, privacy: .public)")
@@ -406,8 +459,9 @@ public final class DictationController: ObservableObject {
         let language = sessionLanguage
         state = .transcribing
         Task {
-            // Отмена не прерывает уже начатый декод WhisperKit — дожидаемся его,
-            // чтобы финальный проход не пересёкся с превью на одном инстансе.
+            // Превью считает отдельный инстанс, так что финалу оно уже не мешает, но отмена
+            // не прерывает начатый декод WhisperKit — дожидаемся его, чтобы устаревший
+            // черновик не дорисовался поверх завершённой сессии.
             await preview?.value
             await runPipeline(samples: samples, language: language)
         }
