@@ -254,6 +254,8 @@ public final class DictationController: ObservableObject {
 
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
         state = .recording(live: "", level: 0)
+        // Хвост чайма попадает в запись — VAD обрезает не-речь.
+        if settings.soundsEnabled { SoundPlayer.shared.playStart() }
         do {
             try recorder.start { [weak self] chunk in
                 Task { @MainActor in self?.append(chunk) }
@@ -342,6 +344,7 @@ public final class DictationController: ObservableObject {
         recorder.onLevel = nil
 
         let samples = recorder.stop()
+        if settings.soundsEnabled { SoundPlayer.shared.playStop() }
         buffer.removeAll(keepingCapacity: false)
         let language = sessionLanguage
         state = .transcribing
