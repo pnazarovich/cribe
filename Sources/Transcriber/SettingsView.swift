@@ -153,6 +153,8 @@ private struct AITab: View {
                 .help("Обновить список моделей")
             }
 
+            recommendations
+
             Picker("Усилие рассуждения:", selection: $settings.gptEffort) {
                 ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
             }
@@ -233,6 +235,57 @@ private struct AITab: View {
 
         if let message = codex.message {
             Text(message).font(.caption).foregroundStyle(.red)
+        }
+    }
+
+    // MARK: Рекомендации
+
+    /// Строки пересобираются из `settings.gptMode`: у режимов разные усилия и пояснения.
+    @ViewBuilder
+    private var recommendations: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Рекомендации").font(.caption).foregroundStyle(.secondary)
+
+            ForEach(ModelRecommendations.list(for: settings.gptMode)) { recommendation in
+                recommendationRow(recommendation)
+            }
+
+            Text(ModelRecommendations.disclaimer)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func recommendationRow(_ recommendation: ModelRecommendation) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(recommendation.tier.emoji)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(recommendation.tier.title)
+                    Text(recommendation.model)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Text(recommendation.note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            // Выбранной модели кнопка не нужна — вместо неё галочка.
+            if settings.gptModel == recommendation.model {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .help("Уже выбрана")
+            } else {
+                Button("Выбрать") {
+                    settings.gptModel = recommendation.model
+                    settings.gptEffort = recommendation.effort
+                }
+            }
         }
     }
 
