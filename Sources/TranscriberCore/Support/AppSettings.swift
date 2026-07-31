@@ -13,6 +13,7 @@ public final class AppSettings: ObservableObject {
         static let gptModel = "gptModel"
         static let gptEffort = "gptEffort"
         static let inputDeviceUID = "inputDeviceUID"
+        static let translateToEnglish = "translateToEnglish"
     }
 
     private let defaults: UserDefaults
@@ -38,6 +39,11 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(gptEffort, forKey: Key.gptEffort) }
     }
 
+    /// Диктовка вставляется переводом на английский (GPT-слой переводит вместо простой чистки).
+    @Published public var translateToEnglish: Bool {
+        didSet { defaults.set(translateToEnglish, forKey: Key.translateToEnglish) }
+    }
+
     /// UID выбранного микрофона; nil — системный по умолчанию (nil стирает ключ).
     @Published public var inputDeviceUID: String? {
         didSet { defaults.set(inputDeviceUID, forKey: Key.inputDeviceUID) }
@@ -55,6 +61,7 @@ public final class AppSettings: ObservableObject {
         gptMode = mode
         gptModel = defaults.string(forKey: Key.gptModel) ?? GPTConfig.defaultModel(for: mode)
         gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
+        translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)
     }
 }
