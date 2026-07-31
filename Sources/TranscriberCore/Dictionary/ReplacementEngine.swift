@@ -20,19 +20,35 @@ public enum ReplacementEngine {
         let template: String
     }
 
+    /// Минимальная длина основы, при которой можно отбрасывать конечную -й/-ь/-ъ.
+    /// Короткая основа ловит посторонние слова: «стал» из «сталь» съел бы «сталкер».
+    private static let minimumStemLength = 5
+
     /// Длинные варианты идут первыми: «гит хаб» должен сработать раньше «гит».
+    /// При равной длине — алфавитный tie-break: `sorted` не стабилен, а порядок правил
+    /// влияет на результат, поэтому он должен быть детерминированным.
     private static func rules(for entries: [DictionaryEntry]) -> [Rule] {
-        entries
-            .flatMap { entry in entry.variants.map { (variant: $0, entry: entry) } }
-            .filter { !$0.variant.trimmingCharacters(in: .whitespaces).isEmpty }
-            .sorted { $0.variant.count > $1.variant.count }
-            .compactMap { pair in
-                let pattern = pattern(for: pair.variant, stem: pair.entry.stem)
-                guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                    return nil
-                }
-                return Rule(regex: regex, template: NSRegularExpression.escapedTemplate(for: pair.entry.canonical))
+        var pairs: [(variant: String, entry: DictionaryEntry)] = []
+        for entry in entries {
+            for variant in entry.variants where !variant.trimmingCharacters(in: .whitespaces).isEmpty {
+                pairs.append((variant: variant, entry: entry))
             }
+        }
+        pairs.sort { lhs, rhs in
+            if lhs.variant.count != rhs.variant.count {
+                return lhs.variant.count > rhs.variant.count
+            }
+            return lhs.variant < rhs.variant
+        }
+        return pairs.compactMap { pair in
+            let pattern = pattern(for: pair.variant, stem: pair.entry.stem)
+            let options: NSRegularExpression.Options = [.caseInsensitive]
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+                return nil
+            }
+            let template = NSRegularExpression.escapedTemplate(for: pair.entry.canonical)
+            return Rule(regex: regex, template: template)
+        }
     }
 
     private static func pattern(for variant: String, stem: Bool) -> String {
@@ -40,9 +56,13 @@ public enum ReplacementEngine {
         var words = variant.split(whereSeparator: { $0.isWhitespace })
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
         // Слова на -й/-ь/-ъ склоняются заменой этой буквы («деплой» → «деплоя»),
-        // поэтому у stem-вариантов она необязательна.
+        // поэтому у stem-вариантов она необязательна — но только если оставшаяся
+        // основа достаточно длинная, иначе паттерн ловит посторонние слова.
         if stem, let last = words.last, let tail = last.last, "йьъЙЬЪ".contains(tail) {
-            words[words.count - 1] = String(last.dropLast()) + "\(tail)?"
+            let base = String(last.dropLast())
+            if base.count >= minimumStemLength {
+                words[words.count - 1] = base + "\(tail)?"
+            }
         }
         let core = words.joined(separator: "\\s+")
         // Границы слова по буквам/цифрам: «загитхабить» не начинается с триггера — не матчится.

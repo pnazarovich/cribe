@@ -47,7 +47,15 @@ final class UserDictionaryTests: XCTestCase {
 
         XCTAssertEqual(dict.entries, updated)
         wait(for: [notified], timeout: 2)
+        XCTAssertNil(dict.lastSaveError)
         XCTAssertEqual(UserDictionary(url: url).entries, updated)
+    }
+
+    func testFailedSaveIsReportedInLastSaveError() {
+        // /dev/null — не каталог, создать в нём файл нельзя.
+        let dict = UserDictionary(url: URL(fileURLWithPath: "/dev/null/nope/dictionary.json"))
+        XCTAssertNotNil(dict.lastSaveError)
+        XCTAssertEqual(dict.entries, defaultEntries)
     }
 
     func testExternalEditTriggersOnChange() throws {
@@ -57,6 +65,19 @@ final class UserDictionaryTests: XCTestCase {
 
         let external = [DictionaryEntry(canonical: "Postgres", variants: ["постгрес"])]
         try JSONEncoder().encode(external).write(to: url, options: .atomic)
+
+        wait(for: [notified], timeout: 5)
+        XCTAssertEqual(dict.entries, external)
+    }
+
+    func testInPlaceEditTriggersOnChange() throws {
+        let dict = UserDictionary(url: url)
+        let notified = expectation(description: "onChange")
+        dict.onChange = { notified.fulfill() }
+
+        // Без .atomic — правка «на месте», каталог при этом не меняется.
+        let external = [DictionaryEntry(canonical: "Kafka", variants: ["кафка"])]
+        try JSONEncoder().encode(external).write(to: url)
 
         wait(for: [notified], timeout: 5)
         XCTAssertEqual(dict.entries, external)

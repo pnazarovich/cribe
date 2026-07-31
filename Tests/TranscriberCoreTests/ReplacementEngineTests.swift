@@ -58,6 +58,26 @@ final class ReplacementEngineTests: XCTestCase {
         XCTAssertEqual(ReplacementEngine.apply("дёрни апишку", entries: [api]), "дёрни апишку")
     }
 
+    func testShortStemVariantDoesNotOvermatchUnrelatedWord() {
+        // Основа «стал» (после отбрасывания -ь) съела бы «сталкер» — она слишком коротка.
+        let steel = DictionaryEntry(canonical: "Steel", variants: ["сталь"])
+        XCTAssertEqual(
+            ReplacementEngine.apply("мимо шёл сталкер", entries: [steel]),
+            "мимо шёл сталкер"
+        )
+        XCTAssertEqual(ReplacementEngine.apply("нужна сталь", entries: [steel]), "нужна Steel")
+    }
+
+    func testVeryShortVariantsNeverProduceEmptyCorePattern() {
+        // Пустая основа дала бы паттерн, матчащий ЛЮБОЕ слово.
+        let single = DictionaryEntry(canonical: "J", variants: ["й"])
+        let double = DictionaryEntry(canonical: "Oy", variants: ["ой"])
+        XCTAssertEqual(
+            ReplacementEngine.apply("любой обычный текст", entries: [single, double]),
+            "любой обычный текст"
+        )
+    }
+
     // MARK: - Несколько вхождений
 
     func testMultipleOccurrences() {
@@ -86,6 +106,15 @@ final class ReplacementEngineTests: XCTestCase {
             ReplacementEngine.apply("открой гит хаб", entries: [git, github]),
             "открой GitHub"
         )
+    }
+
+    func testEqualLengthVariantsResolveDeterministically() {
+        let first = DictionaryEntry(canonical: "A", variants: ["деплой"])
+        let second = DictionaryEntry(canonical: "B", variants: ["деплоя"])
+        let direct = ReplacementEngine.apply("сделал деплоя", entries: [first, second])
+        let reversed = ReplacementEngine.apply("сделал деплоя", entries: [second, first])
+        XCTAssertEqual(direct, reversed)
+        XCTAssertEqual(direct, "сделал A") // алфавитный tie-break: «деплой» < «деплоя»
     }
 
     // MARK: - Стартовый словарь
