@@ -1,5 +1,7 @@
 import AppKit
+import Combine
 import KeyboardShortcuts
+import OSLog
 import SwiftUI
 import TranscriberCore
 
@@ -33,6 +35,11 @@ final class AppCore: ObservableObject {
     private static let onboardingKey = "onboardingShown"
 
     private var panel: LivePanel?
+    private var rightCommandTap: ModifierKeyTap?
+    private var hotkeyModeSubscription: AnyCancellable?
+    /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
+    private var loggedTapFailure = false
+    private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Hotkey")
 
     private init() {
         controller = DictationController(engine: engine, dictionary: dictionary, settings: settings)
@@ -43,8 +50,39 @@ final class AppCore: ObservableObject {
     func start() {
         guard panel == nil else { return }
         panel = LivePanel(controller: controller, settings: settings)
+        // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [controller] in controller.toggle() }
         KeyboardShortcuts.onKeyUp(for: .switchLanguage) { [controller] in controller.switchLanguage() }
+
+        rightCommandTap = ModifierKeyTap { [controller] in controller.toggle() }
+        // `@Published` отдаёт текущее значение при подписке — режим применится и на старте.
+        hotkeyModeSubscription = settings.$dictationHotkeyMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                MainActor.assumeIsolated { self?.applyHotkeyMode(mode) }
+            }
+    }
+
+    /// Повторная попытка после выдачи Accessibility: разрешение дают в System Settings уже
+    /// после старта, а `start()` идемпотентна — на работающем тапе вызов ничего не делает.
+    func retryHotkeyTapIfNeeded() {
+        applyHotkeyMode(settings.dictationHotkeyMode)
+    }
+
+    private func applyHotkeyMode(_ mode: HotkeyMode) {
+        guard let rightCommandTap else { return }
+        switch mode {
+        case .rightCommand:
+            // Без Accessibility тап не поднимется — настройки показывают это подсказкой.
+            if rightCommandTap.start() {
+                loggedTapFailure = false
+            } else if !loggedTapFailure {
+                loggedTapFailure = true
+                logger.error("Правый ⌘ не подключён: нет разрешения Accessibility")
+            }
+        case .custom:
+            rightCommandTap.stop()
+        }
     }
 
     func markOnboardingShown() {
@@ -57,6 +95,11 @@ final class AppCore: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { AppCore.shared.start() }
+    }
+
+    /// Возврат в приложение — обычный момент после выдачи Accessibility в System Settings.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated { AppCore.shared.retryHotkeyTapIfNeeded() }
     }
 }
 

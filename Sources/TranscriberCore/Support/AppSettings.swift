@@ -1,6 +1,12 @@
 import Combine
 import Foundation
 
+/// Чем запускается диктовка: «голым» правым ⌘ или своим шорткатом.
+public enum HotkeyMode: String, Codable, CaseIterable, Sendable {
+    case rightCommand
+    case custom
+}
+
 /// Настройки приложения поверх UserDefaults. Каждое поле пишется на диск при изменении,
 /// UI подписан через `@Published`.
 public final class AppSettings: ObservableObject {
@@ -15,6 +21,7 @@ public final class AppSettings: ObservableObject {
         static let inputDeviceUID = "inputDeviceUID"
         static let translateToEnglish = "translateToEnglish"
         static let soundsEnabled = "soundsEnabled"
+        static let dictationHotkeyMode = "dictationHotkeyMode"
     }
 
     private let defaults: UserDefaults
@@ -50,6 +57,11 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(soundsEnabled, forKey: Key.soundsEnabled) }
     }
 
+    /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
+    @Published public var dictationHotkeyMode: HotkeyMode {
+        didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
+    }
+
     /// UID выбранного микрофона; nil — системный по умолчанию (nil стирает ключ).
     @Published public var inputDeviceUID: String? {
         didSet { defaults.set(inputDeviceUID, forKey: Key.inputDeviceUID) }
@@ -69,6 +81,8 @@ public final class AppSettings: ObservableObject {
         gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
+        dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
+            .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)
     }
 }
