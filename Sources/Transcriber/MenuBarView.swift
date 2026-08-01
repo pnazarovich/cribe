@@ -25,7 +25,7 @@ struct MenuBarView: View {
             }
         }
 
-        MicrophoneMenu()
+        MicrophoneMenu(settings: settings)
 
         Divider()
 
@@ -114,22 +114,47 @@ struct MenuBarView: View {
     }
 }
 
-/// Своего выбора микрофона у приложения больше нет: пиннинг входа через AUHAL воевал
-/// с системой (движок пересобирался раз в секунду, перебирая BT-гарнитуру), поэтому
-/// запись всегда идёт с системного входа по умолчанию, а сменить его отправляем в macOS.
+/// Подменю микрофонов отдельным вью ради собственной точки обновления списка.
+/// Свежесть держится двумя независимыми механизмами, чтобы не зависеть от того,
+/// пересобирает ли SwiftUI содержимое NSMenu на каждом открытии:
+/// 1) стартовое значение `@State` читается при создании вью;
+/// 2) `onAppear` перечитывает список, когда вью показывается.
+/// Перечисление CoreAudio занимает единицы миллисекунд — на открытии меню не заметно.
+///
+/// Пункты — кнопки, а не `Picker`: в стиле `.menu` (нативное NSMenu) привязка `Picker`
+/// молча не срабатывает — выбор в меню отмечался, а в настройки не доезжал.
 private struct MicrophoneMenu: View {
+    @ObservedObject var settings: AppSettings
+
+    @State private var devices = AudioDeviceList.inputDevices()
+
     /// Панель «Звук» → вкладка «Вход».
     private static let soundSettings = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension")
 
     var body: some View {
         Menu("Микрофон") {
-            // Не кнопка: строка только сообщает, откуда берётся звук.
-            Text("Системный по умолчанию")
+            Button(Self.title("Системный по умолчанию", selected: settings.inputDeviceUID == nil)) {
+                settings.inputDeviceUID = nil
+            }
+            ForEach(devices) { device in
+                Button(Self.title(device.name, selected: settings.inputDeviceUID == device.uid)) {
+                    settings.inputDeviceUID = device.uid
+                }
+            }
+
+            Divider()
 
             Button("Сменить микрофон в настройках macOS…") {
                 guard let soundSettings = Self.soundSettings else { return }
                 NSWorkspace.shared.open(soundSettings)
             }
         }
+        .onAppear { devices = AudioDeviceList.inputDevices() }
+    }
+
+    /// Галочка префиксом: у кнопки в NSMenu своего состояния выбора нет, а отступ у
+    /// невыбранных строк держит колонку ровной.
+    private static func title(_ name: String, selected: Bool) -> String {
+        (selected ? "✓ " : "    ") + name
     }
 }
