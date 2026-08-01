@@ -232,6 +232,10 @@ public final class DictationController: ObservableObject {
     /// UI показывает отсюда, чтобы флаг не врал про то, чем на самом деле распознаётся речь.
     /// `nil` — сессии нет, показываем `settings.language`.
     @Published public private(set) var activeSessionLanguage: Language?
+    /// Перевод, назначенный этой сессии хоткеем (правый ⌥), — он сильнее настройки.
+    /// `nil` — сессии с переопределением нет, решает `settings.translateToEnglish`
+    /// (в том числе прямо на стопе: обычную сессию тумблер меню меняет и на живой записи).
+    @Published public private(set) var activeSessionTranslate: Bool?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -288,12 +292,16 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Вход хоткеев
 
-    public func toggle() {
+    /// `translating` назначает переводом всю сессию поверх настройки; `nil` — как раньше,
+    /// решает `settings.translateToEnglish`. На остановке (и на отмене загрузки) параметр
+    /// не смотрим вовсе: остановить и отменить сессию вправе любой хоткей, а решение
+    /// о переводе принято при её старте.
+    public func toggle(translating: Bool? = nil) {
         switch state {
         case .recording:
             stopAndProcess()
         case .idle, .inserted, .degraded, .error:
-            begin()
+            begin(translating: translating)
         case .preparingModel:
             // Первая загрузка модели идёт минутами — хоткей отменяет сессию, а не ждёт впустую.
             pendingCancel = true
@@ -340,7 +348,7 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Запись
 
-    private func begin() {
+    private func begin(translating: Bool?) {
         guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
         isStarting = true
         pendingCancel = false  // отмена прошлой сессии новую не трогает
@@ -354,6 +362,7 @@ public final class DictationController: ObservableObject {
         let language = settings.language
         sessionLanguage = language
         activeSessionLanguage = language
+        activeSessionTranslate = translating
         Task {
             defer { isStarting = false }
             do {
@@ -579,7 +588,8 @@ public final class DictationController: ObservableObject {
             }
             var text = ReplacementEngine.apply(raw, entries: entries)
             var degradations: [String] = []
-            let wantsTranslation = settings.translateToEnglish
+            // Хоткей сессии сильнее настройки; без него всё как раньше — решает тумблер.
+            let wantsTranslation = activeSessionTranslate ?? settings.translateToEnglish
             var translation: String?
             let skipsGPT = ShortDictation.skipsGPT(
                 text: text,
@@ -788,6 +798,7 @@ public final class DictationController: ObservableObject {
         pendingCancel = false
         state = .idle
         activeSessionLanguage = nil
+        activeSessionTranslate = nil
         // Микрофон к этому моменту мог быть уже прогрет (отмена на подъёме VAD идёт после
         // `recorder.prepare()`), а `begin()` снял таймер отпускания — возвращаем его,
         // иначе индикатор записи останется гореть.
@@ -801,6 +812,7 @@ public final class DictationController: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.state = .idle
             self.activeSessionLanguage = nil
+            self.activeSessionTranslate = nil
             self.scheduleMicRelease()
         }
     }

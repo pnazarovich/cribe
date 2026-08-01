@@ -53,6 +53,23 @@ final class ModifierTapDetectorTests: XCTestCase {
         XCTAssertTrue(detector.flagsChanged(keyCode: rcmd, flags: 0x8, at: 0.1))
     }
 
+    /// Детектор правого ⌥ (диктовка с переводом) ловит свою клавишу и не путает её с ⌘:
+    /// у них разные и keyCode, и device-бит, а тапы работают одновременно.
+    func testRightOptionDetectorIsIndependentFromCommand() {
+        var detector = ModifierTapDetector(
+            keyCode: ModifierTapDetector.rightOptionKeyCode,
+            deviceFlag: ModifierTapDetector.rightOptionFlag
+        )
+        let ralt = ModifierTapDetector.rightOptionKeyCode
+        let raltDown = ModifierTapDetector.rightOptionFlag
+
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: rcmdDown, at: 0))
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: released, at: 0.1))
+
+        XCTAssertFalse(detector.flagsChanged(keyCode: ralt, flags: raltDown, at: 0.2))
+        XCTAssertTrue(detector.flagsChanged(keyCode: ralt, flags: released, at: 0.3))
+    }
+
     /// После сброса (тап отключали и включали) ожидание не воскресает.
     func testResetDropsPendingTap() {
         var detector = ModifierTapDetector()

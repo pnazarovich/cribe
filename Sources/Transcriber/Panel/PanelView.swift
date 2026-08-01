@@ -16,7 +16,9 @@ struct PanelView: View {
                     state: controller.state,
                     // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
                     language: controller.activeSessionLanguage ?? settings.language,
-                    translateToEnglish: settings.translateToEnglish
+                    // Перевод сессии, а не настройки: правый ⌥ переводит вопреки выключенному
+                    // тумблеру. Без переопределения (nil) всё как раньше — по тумблеру.
+                    translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish
                 )
             }
         }

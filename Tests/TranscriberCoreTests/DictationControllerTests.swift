@@ -67,6 +67,73 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionLanguage)
     }
 
+    /// Правый ⌥ назначает переводом всю сессию: флаг сессии встаёт сразу на старте,
+    /// ещё до записи, и не зависит от выключенного тумблера настроек.
+    func testTranslateHotkeyMarksSession() async throws {
+        let engine = GatedEngine()
+        let controller = makeController(engine: engine)
+
+        controller.toggle(translating: true)
+        try await wait(for: "загрузку модели") {
+            if case .preparingModel = controller.state { return true }
+            return false
+        }
+        XCTAssertEqual(controller.activeSessionTranslate, true)
+
+        controller.toggle()  // второй хоткей — отмена
+        engine.release()
+        try await wait(for: "выход из загрузки") {
+            if case .preparingModel = controller.state { return false }
+            return true
+        }
+        // Флаг живёт ровно столько же, сколько язык сессии: следующая диктовка должна
+        // снова решать сама, а не наследовать перевод от отменённой.
+        XCTAssertNil(controller.activeSessionTranslate)
+    }
+
+    /// Обычная диктовка переопределения не ставит: решает `settings.translateToEnglish`,
+    /// причём на момент конвейера — тумблер меню работает и на живой записи.
+    func testPlainHotkeyLeavesTranslationToSettings() async throws {
+        let engine = GatedEngine()
+        let controller = makeController(engine: engine)
+
+        controller.toggle()
+        try await wait(for: "загрузку модели") {
+            if case .preparingModel = controller.state { return true }
+            return false
+        }
+        XCTAssertNil(controller.activeSessionTranslate)
+
+        controller.toggle()
+        engine.release()
+        try await wait(for: "выход из загрузки") {
+            if case .preparingModel = controller.state { return false }
+            return true
+        }
+    }
+
+    /// Остановка (здесь — отмена на загрузке модели) игнорирует `translating`: любой из двух
+    /// хоткеев снимает чужую сессию, а не превращает её в переводящую и не запускает вторую.
+    func testTranslateHotkeyStopsPlainSessionWithoutMarkingIt() async throws {
+        let engine = GatedEngine()
+        let controller = makeController(engine: engine)
+
+        controller.toggle()
+        try await wait(for: "загрузку модели") {
+            if case .preparingModel = controller.state { return true }
+            return false
+        }
+
+        controller.toggle(translating: true)  // второй хоткей — отмена, а не «переводить»
+        engine.release()
+        try await wait(for: "выход из загрузки") {
+            if case .preparingModel = controller.state { return false }
+            return true
+        }
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertNil(controller.activeSessionTranslate)
+    }
+
     // MARK: - Обвязка
 
     private func makeController(engine: TranscriptionEngine) -> DictationController {

@@ -79,11 +79,17 @@ struct MenuBarView: View {
         controller.activeSessionLanguage ?? settings.language
     }
 
+    /// Метка перевода в строке записи: сессия правого ⌥ переводит вопреки выключенному
+    /// тумблеру, поэтому переопределение сессии сильнее настройки (как и в панели).
+    private var translateMark: String {
+        (controller.activeSessionTranslate ?? settings.translateToEnglish) ? " → EN" : ""
+    }
+
     private var status: String {
         switch controller.state {
         case .idle: return "Готов · \(displayLanguage.displayName)"
         case .preparingModel(let progress): return "Загружаю модель… \(Int(progress * 100))%"
-        case .recording: return "● Идёт запись · \(displayLanguage.displayName)"
+        case .recording: return "● Идёт запись · \(displayLanguage.displayName)\(translateMark)"
         case .transcribing: return "Распознаю…"
         case .cleaning: return "✨ Чищу…"
         case .inserted: return "✓ Вставлено"

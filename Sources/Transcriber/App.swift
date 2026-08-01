@@ -8,6 +8,9 @@ import TranscriberCore
 extension KeyboardShortcuts.Name {
     static let toggleDictation = Self("toggleDictation", initial: .init(.backtick, modifiers: [.option]))
     static let switchLanguage = Self("switchLanguage", initial: .init(.backtick, modifiers: [.option, .shift]))
+    /// Диктовка с переводом. Без значения по умолчанию: в режиме правого ⌘ эту диктовку
+    /// запускает правый ⌥, а свой шорткат назначает тот, кому он нужен.
+    static let toggleTranslateDictation = Self("toggleTranslateDictation")
 }
 
 /// Идентификаторы окон-сцен для `openWindow(id:)`.
@@ -36,6 +39,7 @@ final class AppCore: ObservableObject {
 
     private var panel: LivePanel?
     private var rightCommandTap: ModifierKeyTap?
+    private var rightOptionTap: ModifierKeyTap?
     private var hotkeyModeSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
     private var loggedTapFailure = false
@@ -55,8 +59,17 @@ final class AppCore: ObservableObject {
         // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [controller] in controller.toggle() }
         KeyboardShortcuts.onKeyUp(for: .switchLanguage) { [controller] in controller.switchLanguage() }
+        KeyboardShortcuts.onKeyUp(for: .toggleTranslateDictation) { [controller] in
+            controller.toggle(translating: true)
+        }
 
         rightCommandTap = ModifierKeyTap { [controller] in controller.toggle() }
+        // Правый ⌥ — та же диктовка, но переводящая: решение принимается на старте сессии,
+        // а остановить запись вправе любая из двух клавиш.
+        rightOptionTap = ModifierKeyTap(
+            keyCode: ModifierTapDetector.rightOptionKeyCode,
+            deviceFlag: ModifierTapDetector.rightOptionFlag
+        ) { [controller] in controller.toggle(translating: true) }
         // `@Published` отдаёт текущее значение при подписке — режим применится и на старте.
         hotkeyModeSubscription = settings.$dictationHotkeyMode
             .receive(on: DispatchQueue.main)
@@ -72,18 +85,23 @@ final class AppCore: ObservableObject {
     }
 
     private func applyHotkeyMode(_ mode: HotkeyMode) {
-        guard let rightCommandTap else { return }
+        guard let rightCommandTap, let rightOptionTap else { return }
         switch mode {
         case .rightCommand:
+            // Оба тапа поднимаем всегда: `&&` пропустил бы второй вызов, а состояния тапов
+            // должны совпадать. Разрешение у них общее — падают и поднимаются они вместе.
+            let commandStarted = rightCommandTap.start()
+            let optionStarted = rightOptionTap.start()
             // Без Accessibility тап не поднимется — настройки показывают это подсказкой.
-            if rightCommandTap.start() {
+            if commandStarted, optionStarted {
                 loggedTapFailure = false
             } else if !loggedTapFailure {
                 loggedTapFailure = true
-                logger.error("Правый ⌘ не подключён: нет разрешения Accessibility")
+                logger.error("Правые ⌘/⌥ не подключены: нет разрешения Accessibility")
             }
         case .custom:
             rightCommandTap.stop()
+            rightOptionTap.stop()
         }
     }
 

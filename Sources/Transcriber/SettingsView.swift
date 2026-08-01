@@ -39,6 +39,9 @@ private struct GeneralTab: View {
 
             switch settings.dictationHotkeyMode {
             case .rightCommand:
+                Text("Правый ⌥ — диктовка с переводом на английский")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if !accessibilityGranted {
                     Text("Нужно разрешение Accessibility")
                         .font(.caption)
@@ -46,6 +49,7 @@ private struct GeneralTab: View {
                 }
             case .custom:
                 KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
+                KeyboardShortcuts.Recorder("Диктовка с переводом:", name: .toggleTranslateDictation)
             }
 
             KeyboardShortcuts.Recorder("Сменить язык:", name: .switchLanguage)

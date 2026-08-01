@@ -10,6 +10,9 @@ public struct ModifierTapDetector {
     /// Правый ⌘: keyCode 54, device-бит `NX_DEVICERCMDKEYMASK` во флагах события.
     public static let rightCommandKeyCode: Int64 = 54
     public static let rightCommandFlag: UInt64 = 0x10
+    /// Правый ⌥: keyCode 61 (`kVK_RightOption`), device-бит `NX_DEVICERALTKEYMASK`.
+    public static let rightOptionKeyCode: Int64 = 61
+    public static let rightOptionFlag: UInt64 = 0x40
     /// Дольше — это долгий аккорд с ⌘, а не намеренный тап.
     public static let holdLimit: TimeInterval = 0.6
 
