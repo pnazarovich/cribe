@@ -93,6 +93,7 @@ struct MenuBarView: View {
         case .transcribing: return "Распознаю…"
         case .cleaning: return "✨ Чищу…"
         case .inserted: return "✓ Вставлено"
+        case .cancelled: return "✕ Отменено"
         case .degraded(let reason): return "⚠️ \(reason)"
         case .error(let message): return "⚠️ \(message)"
         }

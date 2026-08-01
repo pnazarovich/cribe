@@ -40,9 +40,12 @@ final class AppCore: ObservableObject {
     private var panel: LivePanel?
     private var rightCommandTap: ModifierKeyTap?
     private var rightOptionTap: ModifierKeyTap?
+    private var escTap: KeyDownTap?
     private var hotkeyModeSubscription: AnyCancellable?
+    private var escTapSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
     private var loggedTapFailure = false
+    private var loggedEscFailure = false
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Hotkey")
 
     private init() {
@@ -81,6 +84,47 @@ final class AppCore: ObservableObject {
             .sink { [weak self] mode in
                 MainActor.assumeIsolated { self?.applyHotkeyMode(mode) }
             }
+
+        // Esc отменяет диктовку — это выход из идущей сессии, а не второй способ её запустить,
+        // поэтому от режима хоткеев он не зависит и живёт в обоих.
+        escTap = KeyDownTap(keyCode: KeyDownTap.escapeKeyCode) { [controller] in
+            controller.cancelDictation()
+        }
+        // Тап поднимаем только на живой сессии: слушать всю клавиатуру, когда отменять нечего,
+        // незачем. Поток уровня записи (~12 обновлений в секунду) до тапа не доходит —
+        // состояние свёрнуто в один флаг.
+        escTapSubscription = controller.$state
+            .map(Self.sessionIsLive)
+            .removeDuplicates()
+            .sink { [weak self] live in
+                // `state` мутируется только на MainActor (DictationController — @MainActor).
+                MainActor.assumeIsolated { self?.applyEscTap(live: live) }
+            }
+    }
+
+    /// Сессия, которую есть что отменять. Терминальные состояния (включая саму вспышку
+    /// «Отменено») сюда не входят: там Esc уже ничего не делает.
+    private static func sessionIsLive(_ state: DictationState) -> Bool {
+        switch state {
+        case .preparingModel, .recording, .transcribing, .cleaning: return true
+        case .idle, .inserted, .cancelled, .degraded, .error: return false
+        }
+    }
+
+    private func applyEscTap(live: Bool) {
+        guard let escTap else { return }
+        guard live else {
+            escTap.stop()
+            return
+        }
+        // Разрешение то же, что у остальных тапов и у вставки, — пишем о его отсутствии
+        // один раз на серию сессий, а не на каждую.
+        if escTap.start() {
+            loggedEscFailure = false
+        } else if !loggedEscFailure {
+            loggedEscFailure = true
+            logger.error("Esc не отменяет диктовку: нет разрешения Accessibility")
+        }
     }
 
     /// Повторная попытка после выдачи Accessibility: разрешение дают в System Settings уже

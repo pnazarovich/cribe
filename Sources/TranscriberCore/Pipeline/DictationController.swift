@@ -14,6 +14,9 @@ public enum DictationState: Sendable, Equatable {
     case transcribing
     case cleaning
     case inserted
+    /// Диктовку отменили (Esc): результата нет и не будет. Это не сбой, а осознанный отказ,
+    /// поэтому и состояние своё — предупреждающего значка отмене не положено.
+    case cancelled
     /// Текст вставлен, но с оговоркой (без AI-чистки / только в буфер обмена).
     case degraded(String)
     case error(String)
@@ -214,6 +217,9 @@ public final class DictationController: ObservableObject {
     private static let insertedLinger: TimeInterval = 1.5
     private static let degradedLinger: TimeInterval = 2.5
     private static let errorLinger: TimeInterval = 2
+    /// Вспышка «отменено» короче остальных: сообщать не о чем, надо лишь показать,
+    /// что Esc дошёл и диктовки больше нет.
+    private static let cancelledLinger: TimeInterval = 1.2
     /// Сообщение действий меню (перевод последней диктовки) поверх простоя.
     private static let flashLinger: TimeInterval = 2
     /// Через столько простоя отпускаем микрофон (гаснет индикатор записи). Пересборка
@@ -258,6 +264,9 @@ public final class DictationController: ObservableObject {
     /// Второй хоткей на `.preparingModel` отменяет сессию. Саму загрузку прервать нельзя
     /// (WhisperKit её не отменяет) — она спокойно дойдёт до кэша, но запись не начнётся.
     private var pendingCancel = false
+    /// Esc нажали, пока конвейер уже считал. Прервать идущий проход (или запрос к GPT)
+    /// нечем — он досчитает в никуда, а конвейер посмотрит флаг перед вставкой.
+    private var cancelRequested = false
 
     /// Подтверждённая часть диктовки: все сегменты последнего фонового прохода, кроме
     /// последнего (его следующий проход почти всегда переписывает), и конец последнего
@@ -322,13 +331,33 @@ public final class DictationController: ObservableObject {
         switch state {
         case .recording:
             stopAndProcess()
-        case .idle, .inserted, .degraded, .error:
+        case .idle, .inserted, .cancelled, .degraded, .error:
             begin(translating: translating)
         case .preparingModel:
             // Первая загрузка модели идёт минутами — хоткей отменяет сессию, а не ждёт впустую.
             pendingCancel = true
         case .transcribing, .cleaning:
             break  // конвейер занят — хоткей игнорируем
+        }
+    }
+
+    /// Esc снимает идущую диктовку на любом её шаге: записанное выбрасывается целиком —
+    /// ни распознавания, ни вставки, ни истории, ни «последней диктовки».
+    ///
+    /// Чайм остановки здесь намеренно не играем: он означает «записал, обрабатываю»,
+    /// а отмена — это «ничего не было». Тишина честнее звука.
+    public func cancelDictation() {
+        switch state {
+        case .recording:
+            discardRecording()
+        case .preparingModel:
+            // Ровно то же, что делает второй хоткей: саму загрузку прервать нечем,
+            // но записи после неё не будет.
+            pendingCancel = true
+        case .transcribing, .cleaning:
+            cancelRequested = true
+        case .idle, .inserted, .cancelled, .degraded, .error:
+            break  // сессии нет — отменять нечего
         }
     }
 
@@ -373,7 +402,9 @@ public final class DictationController: ObservableObject {
     private func begin(translating: Bool?) {
         guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
         isStarting = true
-        pendingCancel = false  // отмена прошлой сессии новую не трогает
+        // Отмена прошлой сессии новую не трогает — оба флага снимаем на старте.
+        pendingCancel = false
+        cancelRequested = false
 
         idleTask?.cancel()
         idleTask = nil
@@ -629,6 +660,24 @@ public final class DictationController: ObservableObject {
         Task { await runPipeline(samples: samples, language: language) }
     }
 
+    /// Отмена на живой записи: захват сворачиваем так же, как на обычном стопе, но буфер
+    /// выбрасываем — он никуда не уезжает, поэтому и бэкап-WAV писать незачем.
+    private func discardRecording() {
+        chunks?.finish()
+        chunks = nil
+        vadTask?.cancel()
+        vadTask = nil
+        rollingTask?.cancel()
+        rollingTask = nil
+        recorder.onLevel = nil
+        recorder.onFailure = nil
+        _ = recorder.stop()
+        // Микрофон отпускаем по обычному расписанию: отмена — не повод держать индикатор
+        // записи, но и не повод рвать прогрев для следующей диктовки.
+        scheduleMicRelease()
+        cancelled()
+    }
+
     // MARK: - Конвейер
 
     private func runPipeline(samples: [Float], language: Language) async {
@@ -650,6 +699,9 @@ public final class DictationController: ObservableObject {
                 raw = try await gate.transcribe(speech, language: language, prompt: sessionPrompt)
             }
             var text = ReplacementEngine.apply(raw, entries: entries)
+            // Esc уже нажали — круг к GPT отменённой диктовке не нужен: это секунды ожидания
+            // и оплаченные токены ради текста, который никто не увидит.
+            if consumeCancel() { return }
             var degradations: [String] = []
             // Хоткей сессии сильнее настройки; без него всё как раньше — решает тумблер.
             let wantsTranslation = activeSessionTranslate ?? settings.translateToEnglish
@@ -701,6 +753,10 @@ public final class DictationController: ObservableObject {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw DictationError.noSpeech
             }
+            // Последняя точка отмены: дальше идут вставка, буфер обмена и история — ровно то,
+            // чего отменённая диктовка оставить не должна. Бэкап-WAV при этом остаётся лежать
+            // на диске: он безвреден и его перезапишет следующая запись.
+            if consumeCancel() { return }
             lastOriginal = text
             lastOriginalLanguage = language
             lastTranslation = translation
@@ -722,6 +778,9 @@ public final class DictationController: ObservableObject {
                 scheduleIdle(after: Self.degradedLinger)
             }
         } catch {
+            // Отменённая диктовка не ругается: пользователь уже сказал, что результат ему
+            // не нужен, и сбой досчитанного впустую конвейера — не его новость.
+            if consumeCancel() { return }
             fail(message(for: error))
         }
     }
@@ -818,7 +877,7 @@ public final class DictationController: ObservableObject {
     /// Короткое сообщение поверх простоя: работающий конвейер не перебиваем.
     private func flash(_ message: String) {
         switch state {
-        case .idle, .inserted, .degraded, .error:
+        case .idle, .inserted, .cancelled, .degraded, .error:
             state = .degraded(message)
             scheduleIdle(after: Self.flashLinger)
         case .preparingModel, .recording, .transcribing, .cleaning:
@@ -862,6 +921,20 @@ public final class DictationController: ObservableObject {
     private func fail(_ message: String) {
         state = .error(message)
         scheduleIdle(after: Self.errorLinger)
+    }
+
+    /// Вспышка «отменено» и возврат в простой. Отдельно от `fail`: отмена — не сбой.
+    private func cancelled() {
+        cancelRequested = false
+        state = .cancelled
+        scheduleIdle(after: Self.cancelledLinger)
+    }
+
+    /// `true` — Esc нажали, пока конвейер считал: показываем вспышку, дальше не идём.
+    private func consumeCancel() -> Bool {
+        guard cancelRequested else { return false }
+        cancelled()
+        return true
     }
 
     /// Сессию отменили хоткеем на загрузке модели (Whisper или VAD): записи не было,

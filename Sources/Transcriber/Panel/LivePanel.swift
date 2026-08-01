@@ -32,7 +32,9 @@ public final class LivePanel {
             switch state {
             case .idle: self = .hidden
             case .preparingModel, .recording: self = .starting
-            case .transcribing, .cleaning, .inserted, .degraded, .error: self = .processing
+            // `.cancelled` — тоже видимая фаза: вспышку «Отменено» надо успеть показать,
+            // а панель прячет только `.idle` следом за ней.
+            case .transcribing, .cleaning, .inserted, .cancelled, .degraded, .error: self = .processing
             }
         }
     }

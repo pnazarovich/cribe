@@ -76,6 +76,11 @@ struct PanelPill: View {
                     TranslationBadge()
                 }
                 EqualizerView(level: level)
+                // Единственная подсказка про отмену. Тише всего, что есть в пилюле, и
+                // постоянной ширины — на потоке уровня (~12 раз в секунду) она не дёргается.
+                Text("esc")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
         case .transcribing:
@@ -86,6 +91,9 @@ struct PanelPill: View {
 
         case .inserted:
             Text("✓ Вставлено")
+
+        case .cancelled:
+            Text("✕ Отменено")
 
         case .degraded(let reason):
             Text("⚠️ \(Self.reasonText(reason))")
