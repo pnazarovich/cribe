@@ -17,9 +17,15 @@ public struct AudioInputDevice: Identifiable, Equatable, Sendable {
 /// Перечисление устройств ввода через CoreAudio HAL.
 public enum AudioDeviceList {
 
+    /// Служебные агрегаты macOS: система заводит их сама, чтобы следовать за устройством
+    /// по умолчанию. Выбирать их пользователю незачем — в списке им не место.
+    private static let hiddenUIDPrefix = "CADefaultDeviceAggregate"
+
     /// Все устройства системы, у которых есть входные каналы.
     public static func inputDevices() -> [AudioInputDevice] {
-        allDeviceIDs().compactMap(inputDevice(for:))
+        allDeviceIDs()
+            .compactMap(inputDevice(for:))
+            .filter { !$0.uid.hasPrefix(hiddenUIDPrefix) && !$0.name.hasPrefix(hiddenUIDPrefix) }
     }
 
     /// Устройство по UID; nil, если такого больше нет (например, отключили).

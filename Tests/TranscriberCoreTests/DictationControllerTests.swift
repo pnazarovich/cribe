@@ -24,6 +24,25 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
     }
 }
 
+/// Захват-заглушка: живой микрофон в тестах не поднимаем, а конвейеру от захвата нужен
+/// только сам факт вызовов. Заодно видно, доезжает ли выбор устройства из настроек.
+private final class StubRecorder: AudioCapturing, @unchecked Sendable {
+    var onLevel: (@Sendable (Float) -> Void)?
+    var onFailure: (@Sendable (String) -> Void)?
+    /// UID последнего `setInputDevice`; двойная опциональность отличает «не вызывали» от «nil».
+    private(set) var appliedUID: String??
+
+    var capturedSamples: [Float] { [] }
+    var capturedSampleCount: Int { 0 }
+    var capturedSilence: Bool { false }
+
+    func setInputDevice(uid: String?) { appliedUID = .some(uid) }
+    func prepare() {}
+    func start(onChunk: @escaping @Sendable ([Float]) -> Void) throws {}
+    func stop() -> [Float] { [] }
+    func teardown() {}
+}
+
 @MainActor
 final class DictationControllerTests: XCTestCase {
     private var dictionaryURL: URL!
@@ -134,13 +153,34 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionTranslate)
     }
 
+    /// Выбор микрофона из меню доезжает до захвата: пункт пишет UID в настройки, а подписка
+    /// контроллера отдаёт его записи. Стартовое значение применяется прямо в `init`.
+    func testInputDeviceSelectionReachesRecorder() async throws {
+        let recorder = StubRecorder()
+        let settings = AppSettings(defaults: UserDefaults(suiteName: suiteName)!)
+        let controller = DictationController(
+            engine: GatedEngine(),
+            dictionary: UserDictionary(url: dictionaryURL),
+            settings: settings,
+            recorder: recorder
+        )
+        XCTAssertEqual(recorder.appliedUID, .some(nil))
+
+        settings.inputDeviceUID = "TestMicrophoneUID"
+        try await wait(for: "передачу UID в захват") {
+            recorder.appliedUID == .some("TestMicrophoneUID")
+        }
+        withExtendedLifetime(controller) {}
+    }
+
     // MARK: - Обвязка
 
     private func makeController(engine: TranscriptionEngine) -> DictationController {
         DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),
-            settings: AppSettings(defaults: UserDefaults(suiteName: suiteName)!)
+            settings: AppSettings(defaults: UserDefaults(suiteName: suiteName)!),
+            recorder: StubRecorder()
         )
     }
 

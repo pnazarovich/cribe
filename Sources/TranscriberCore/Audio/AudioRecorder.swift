@@ -25,17 +25,37 @@ public enum AudioRecorderError: Error, LocalizedError {
 /// Захват микрофона: AVAudioEngine → AVAudioConverter → 16 кГц mono Float32.
 /// Публичный API вызывается с главного потока, tap приходит с аудиопотока —
 /// общее состояние закрыто `lock`.
-public final class AudioRecorder {
+///
+/// Запасной путь: конвейер работает на `CaptureRecorder` (AVCaptureSession), потому что
+/// выбор конкретного микрофона здесь возможен только пином аудиоюнита, а он не пережил поля.
+public final class AudioRecorder: AudioCapturing {
 
     /// Частота дискретизации, которую ждут VAD и Whisper.
-    public static let sampleRate: Double = 16_000
+    public static let sampleRate: Double = AudioCaptureFormat.sampleRate
     /// Размер чанка для Silero VAD — 4096 сэмплов (256 мс).
-    public static let chunkSize = 4096
+    public static let chunkSize = AudioCaptureFormat.chunkSize
 
     /// Уровень сигнала (RMS 0…1) на каждый блок tap-а, ~10 Гц. Речь обычно даёт 0.02…0.2.
     public var onLevel: (@Sendable (Float) -> Void)? {
         get { lock.withLock { levelHandler } }
         set { lock.withLock { levelHandler = newValue } }
+    }
+
+    public var onFailure: (@Sendable (String) -> Void)? {
+        get { lock.withLock { failureHandler } }
+        set { lock.withLock { failureHandler = newValue } }
+    }
+
+    /// Тот же порог, что у `CaptureRecorder`: −70 dBFS — это уже не тихая комната, а мёртвый вход.
+    private static let silenceThreshold: Float = 0.0003
+
+    public var capturedSilence: Bool {
+        lock.withLock {
+            guard !samples.isEmpty else { return false }
+            var peak: Float = 0
+            vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
+            return peak < Self.silenceThreshold
+        }
     }
 
     private static let targetFormat = AVAudioFormat(
@@ -55,6 +75,7 @@ public final class AudioRecorder {
     private var pending: [Float] = []
     private var chunkHandler: (@Sendable ([Float]) -> Void)?
     private var levelHandler: (@Sendable (Float) -> Void)?
+    private var failureHandler: (@Sendable (String) -> Void)?
     private var isRecording = false
 
     // Только главный поток (converter читается с аудиопотока, но меняется
@@ -370,6 +391,8 @@ public final class AudioRecorder {
         }
         if wasRecording {
             logger.error("Запись прервана: движок остался без входа")
+            let handler = lock.withLock { failureHandler }
+            handler?("микрофон отключился")
         }
     }
 

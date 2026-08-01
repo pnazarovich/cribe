@@ -207,6 +207,9 @@ public final class DictationController: ObservableObject {
     /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
     private static let rollingMaxSamples = Int(AudioRecorder.sampleRate * 50)
 
+    /// Меньше этого записанного при сорвавшемся захвате — распознавать нечего.
+    private static let minimumUsefulSamples = Int(AudioRecorder.sampleRate * 0.5)
+
     /// Сколько держим финальное состояние перед возвратом в `.idle`.
     private static let insertedLinger: TimeInterval = 1.5
     private static let degradedLinger: TimeInterval = 2.5
@@ -241,7 +244,7 @@ public final class DictationController: ObservableObject {
     private let dictionary: UserDictionary
     private let settings: AppSettings
     private let history: HistoryStore
-    private let recorder = AudioRecorder()
+    private let recorder: AudioCapturing
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Dictation")
 
     private var vad: VadGate?
@@ -279,15 +282,34 @@ public final class DictationController: ObservableObject {
     private var rollingTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
+    private var deviceSubscription: AnyCancellable?
 
-    public init(engine: TranscriptionEngine, dictionary: UserDictionary, settings: AppSettings) {
+    public init(
+        engine: TranscriptionEngine,
+        dictionary: UserDictionary,
+        settings: AppSettings,
+        recorder: AudioCapturing = CaptureRecorder()
+    ) {
         self.gate = EngineGate(engine)
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
-        // Микрофон намеренно не пиним: `AudioRecorder.setInputDevice` не вызывается нигде,
-        // поэтому вход всегда системный по умолчанию. Пиннинг через AUHAL воевал с системой
-        // (перебор устройства раз в секунду на BT-гарнитуре) и будет переделан отдельно.
+        self.recorder = recorder
+
+        recorder.setInputDevice(uid: settings.inputDeviceUID)
+        // Текущее значение уже применено выше — подписка нужна только на последующие смены.
+        deviceSubscription = settings.$inputDeviceUID
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] uid in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // На живой записи устройство не меняем: середина диктовки — не место
+                    // для дырки в звуке. Новый микрофон применит `begin()` следующей.
+                    if case .recording = self.state { return }
+                    self.recorder.setInputDevice(uid: uid)
+                }
+            }
     }
 
     // MARK: - Вход хоткеев
@@ -376,7 +398,9 @@ public final class DictationController: ObservableObject {
                 }
                 // Микрофон поднимаем только здесь: первая загрузка модели идёт минутами,
                 // и всё это время индикатор записи гореть не должен.
-                recorder.prepare()  // движок поднимается прямо перед стартом — запись начнётся мгновенно
+                // Выбор устройства дёшев: это запись UID, само устройство резолвится на старте сессии.
+                recorder.setInputDevice(uid: settings.inputDeviceUID)
+                recorder.prepare()  // сессия поднимается прямо перед стартом — запись начнётся мгновенно
                 try await startCapture()
             } catch {
                 fail(error.localizedDescription)
@@ -426,6 +450,9 @@ public final class DictationController: ObservableObject {
         let stream = AsyncStream<[Float]> { continuation in chunks = continuation }
         recorder.onLevel = { [weak self] value in
             Task { @MainActor in self?.updateLevel(value) }
+        }
+        recorder.onFailure = { [weak self] reason in
+            Task { @MainActor in self?.captureFailed(reason) }
         }
 
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
@@ -549,6 +576,30 @@ public final class DictationController: ObservableObject {
         stopAndProcess()
     }
 
+    /// Захват сорвался на живой записи: микрофон не отдал ни одного блока, устройство
+    /// исчезло, сессию прервали. Записанное до сбоя не выбрасываем — если там есть что
+    /// распознавать, идём обычным стопом; если нет, честно говорим о микрофоне вместо
+    /// бессмысленного «речь не обнаружена».
+    private func captureFailed(_ reason: String) {
+        guard case .recording = state else { return }
+        // Обрывок короче полусекунды распознавать нечего — на нём конвейер выдал бы
+        // «речь не обнаружена» вместо настоящей причины (микрофон отвалился).
+        if recorder.capturedSampleCount >= Self.minimumUsefulSamples {
+            logger.error("Захват сорвался (\(reason, privacy: .public)) — обрабатываю записанное")
+            stopAndProcess()
+            return
+        }
+        chunks?.finish()
+        chunks = nil
+        vadTask?.cancel()
+        vadTask = nil
+        rollingTask?.cancel()
+        rollingTask = nil
+        recorder.onLevel = nil
+        _ = recorder.stop()
+        fail(reason)
+    }
+
     private func stopAndProcess() {
         chunks?.finish()
         chunks = nil
@@ -558,6 +609,7 @@ public final class DictationController: ObservableObject {
         // зато снимает передышку между проходами — иначе финал ждал бы её впустую.
         rollingTask?.cancel()
         recorder.onLevel = nil
+        recorder.onFailure = nil
 
         let samples = recorder.stop()
         if settings.soundsEnabled { SoundPlayer.shared.playStop() }
@@ -659,8 +711,15 @@ public final class DictationController: ObservableObject {
                 scheduleIdle(after: Self.degradedLinger)
             }
         } catch {
-            fail(error.localizedDescription)
+            fail(message(for: error))
         }
+    }
+
+    /// «Речь не обнаружена» на цифровой тишине — неправда: молчал не человек, а микрофон
+    /// (так ведёт себя мёртвый HFP-вход Bluetooth-гарнитуры). Говорим то, что помогает.
+    private func message(for error: Error) -> String {
+        guard error is DictationError, recorder.capturedSilence else { return error.localizedDescription }
+        return "микрофон молчит — выберите другой вход в меню «Микрофон»"
     }
 
     /// Финал по потоковому пути: подтверждённая фоном часть уже распознана, осталось
