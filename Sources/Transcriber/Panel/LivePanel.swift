@@ -3,6 +3,15 @@ import Combine
 import SwiftUI
 import TranscriberCore
 
+/// Что панель показывает прямо сейчас. Видимостью управляет `LivePanel`, а не состояние
+/// конвейера напрямую: на `.idle` капсула ещё доигрывает уход, и кадр ей нужен последний
+/// непустой — иначе она гасла бы пустой.
+@MainActor
+final class PanelPresentation: ObservableObject {
+    @Published var isVisible = false
+    @Published var state: DictationState = .idle
+}
+
 /// Плавающая панель прогресса: сама подписана на состояние конвейера,
 /// появляется на любом состоянии кроме `.idle` и уходит на `.idle`.
 /// Ключевой инвариант — панель никогда не становится key/main, иначе Cmd-V уйдёт не в то окно.
@@ -18,6 +27,22 @@ public final class LivePanel {
     private static let bottomInset: CGFloat = 80
     /// Небольшая задержка на скрытии, чтобы «✓ Вставлено» не мигало.
     private static let hideDelay: Duration = .milliseconds(300)
+    /// Окно живёт, пока капсула доигрывает уход: убрать его раньше — обрезать анимацию.
+    /// Чуть больше самой анимации (0.3), с запасом на кадр.
+    private static let exitDuration: Duration = .milliseconds(350)
+
+    /// Появление — пружина с лёгким перелётом: капсула всплывает снизу и «садится» на место.
+    /// Уход — без пружины: короткое гладкое оседание. При «Уменьшить движение» и то, и другое
+    /// вырождается в обычное перекрёстное затухание.
+    private static var appearAnimation: Animation {
+        HUDAccessibility.shared.reduceMotion
+            ? .easeInOut(duration: 0.2)
+            : .spring(response: 0.35, dampingFraction: 0.72)
+    }
+
+    private static var disappearAnimation: Animation {
+        HUDAccessibility.shared.reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.3)
+    }
 
     /// Всё, что панели нужно знать о состоянии конвейера. `.starting` наступает ровно один раз
     /// за сессию: вернуться в `.preparingModel`/`.recording` можно только новой сессией —
@@ -41,6 +66,7 @@ public final class LivePanel {
     }
 
     private let panel: NSPanel
+    private let presentation = PanelPresentation()
     private var cancellable: AnyCancellable?
     private var hideTask: Task<Void, Never>?
     private var phase: Phase = .hidden
@@ -65,16 +91,14 @@ public final class LivePanel {
         panel.animationBehavior = .utilityWindow
         // Панель чисто информационная: клики должны доходить до окна под ней.
         panel.ignoresMouseEvents = true
-        panel.contentView = NSHostingView(rootView: PanelView(controller: controller, settings: settings))
+        panel.contentView = NSHostingView(
+            rootView: PanelView(presentation: presentation, controller: controller, settings: settings)
+        )
 
-        // Окно трогаем только на смене фазы: поток уровня (~12 обновлений в секунду)
-        // целиком укладывается в одну фазу и до окна не доходит.
         cancellable = controller.$state
-            .map(Phase.init)
-            .removeDuplicates()
-            .sink { [weak self] phase in
+            .sink { [weak self] state in
                 // `state` мутируется только на MainActor (DictationController — @MainActor).
-                MainActor.assumeIsolated { self?.apply(phase) }
+                MainActor.assumeIsolated { self?.handle(state) }
             }
     }
 
@@ -83,12 +107,26 @@ public final class LivePanel {
         hideTask = nil
         moveToCursorScreen()
         panel.orderFrontRegardless()  // именно так: makeKey увёл бы фокус с целевого поля
+        // Анимируем содержимое, а не окно: окно просто есть, капсула в нём всплывает.
+        withAnimation(Self.appearAnimation) { presentation.isVisible = true }
     }
 
+    /// Немедленное скрытие без анимации — на случай принудительного вызова извне.
     public func hide() {
         hideTask?.cancel()
         hideTask = nil
+        presentation.isVisible = false
         panel.orderOut(nil)
+    }
+
+    private func handle(_ state: DictationState) {
+        // Последний непустой кадр остаётся на экране, пока капсула уходит.
+        if case .idle = state {} else { presentation.state = state }
+        // Окно трогаем только на смене фазы: поток уровня (~12 обновлений в секунду)
+        // целиком укладывается в одну фазу и до окна не доходит.
+        let next = Phase(state)
+        guard next != phase else { return }
+        apply(next)
     }
 
     private func apply(_ next: Phase) {
@@ -110,8 +148,15 @@ public final class LivePanel {
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: Self.hideDelay)
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(Self.disappearAnimation) { self.presentation.isVisible = false }
+            try? await Task.sleep(for: Self.exitDuration)
             guard !Task.isCancelled else { return }
-            self?.hide()
+            // Окно убираем, только когда капсула уже растаяла. Показ, случившийся до этого
+            // момента, отменяет задачу — и капсула возвращается тем же движением назад,
+            // без мигания окна.
+            panel.orderOut(nil)
+            hideTask = nil
         }
     }
 
