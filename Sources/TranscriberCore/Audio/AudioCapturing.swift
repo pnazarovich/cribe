@@ -7,6 +7,14 @@ public enum AudioCaptureFormat {
     public static let sampleRate: Double = 16_000
     /// Размер чанка для Silero VAD — 4096 сэмплов (256 мс).
     public static let chunkSize = 4096
+
+    /// Сколько сэмплов в секундах записи.
+    public static func samples(seconds: Double) -> Int {
+        Int(sampleRate * seconds)
+    }
+
+    /// Короче полусекунды судить о тишине на входе нельзя: микрофон мог только открыться.
+    public static let silenceVerdictMinimumSamples = samples(seconds: 0.5)
 }
 
 /// Поверхность захвата микрофона, на которую опирается `DictationController`.

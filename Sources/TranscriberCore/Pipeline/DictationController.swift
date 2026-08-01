@@ -110,7 +110,7 @@ enum StreamingMerge {
 
         let text = stable.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
         guard !text.isEmpty else { return nil }
-        return (text, Int(last.end * AudioRecorder.sampleRate))
+        return (text, Int(last.end * AudioCaptureFormat.sampleRate))
     }
 
     static func merge(confirmed: String, tail: String) -> String {
@@ -157,7 +157,7 @@ enum ShortDictation {
 
 /// Минимальный WAV: 16-bit PCM mono. Нужен только для бэкапа последней записи.
 public enum WavEncoder {
-    public static func encode(_ samples: [Float], sampleRate: Int = Int(AudioRecorder.sampleRate)) -> Data {
+    public static func encode(_ samples: [Float], sampleRate: Int = Int(AudioCaptureFormat.sampleRate)) -> Data {
         let bytesPerSample = 2
         let dataSize = samples.count * bytesPerSample
         var data = Data(capacity: 44 + dataSize)
@@ -196,19 +196,19 @@ public final class DictationController: ObservableObject {
     /// `rollingGrowth` звука — иначе проходы шли бы сплошняком без нового материала.
     private static let rollingGap: TimeInterval = 0.5
     private static let rollingPoll: TimeInterval = 0.1
-    private static let rollingGrowth = Int(AudioRecorder.sampleRate * 2)
+    private static let rollingGrowth = AudioCaptureFormat.samples(seconds: 2)
     /// Нахлёст хвоста назад: даёт склейке общие слова на стыке.
-    private static let tailOverlap = Int(AudioRecorder.sampleRate * 0.5)
+    private static let tailOverlap = AudioCaptureFormat.samples(seconds: 0.5)
     /// Короче этого потоковый путь не включаем: полный проход и так быстрый,
     /// а лишний риск на коротких диктовках не окупается.
-    private static let streamingMinSamples = Int(AudioRecorder.sampleRate * 6)
+    private static let streamingMinSamples = AudioCaptureFormat.samples(seconds: 6)
     /// Дальше этого новые проходы не стартуют. Каждый проход переписывает весь буфер, а буфер
     /// только растёт — на длинной записи это квадратичное сжигание ANE, и вдобавок стоп ждал бы
     /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
-    private static let rollingMaxSamples = Int(AudioRecorder.sampleRate * 50)
+    private static let rollingMaxSamples = AudioCaptureFormat.samples(seconds: 50)
 
     /// Меньше этого записанного при сорвавшемся захвате — распознавать нечего.
-    private static let minimumUsefulSamples = Int(AudioRecorder.sampleRate * 0.5)
+    private static let minimumUsefulSamples = AudioCaptureFormat.samples(seconds: 0.5)
 
     /// Сколько держим финальное состояние перед возвратом в `.idle`.
     private static let insertedLinger: TimeInterval = 1.5
@@ -396,11 +396,10 @@ public final class DictationController: ObservableObject {
                     cancelSession()
                     return
                 }
-                // Микрофон поднимаем только здесь: первая загрузка модели идёт минутами,
-                // и всё это время индикатор записи гореть не должен.
-                // Выбор устройства дёшев: это запись UID, само устройство резолвится на старте сессии.
+                // Выбор устройства дёшев: это запись UID, само устройство резолвится на старте
+                // сессии. Микрофон здесь ещё не поднимаем — это делает `startCapture()` прямо
+                // перед записью, иначе индикатор загорится на секунды раньше первого звука.
                 recorder.setInputDevice(uid: settings.inputDeviceUID)
-                recorder.prepare()  // сессия поднимается прямо перед стартом — запись начнётся мгновенно
                 try await startCapture()
             } catch {
                 fail(error.localizedDescription)
@@ -455,6 +454,11 @@ public final class DictationController: ObservableObject {
             Task { @MainActor in self?.captureFailed(reason) }
         }
 
+        // Микрофон поднимаем ровно здесь: подъём VAD (CoreML/ANE) выше занимает секунды,
+        // и всё это время индикатор записи гореть не должен. Сам подъём асинхронный —
+        // главный поток на нём не ждёт.
+        recorder.prepare()
+
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
         state = .recording(live: "", level: 0)
         // Хвост чайма попадает в запись — VAD обрезает не-речь.
@@ -467,6 +471,7 @@ public final class DictationController: ObservableObject {
             chunks?.finish()
             chunks = nil
             recorder.onLevel = nil
+            recorder.onFailure = nil
             throw error
         }
 
@@ -596,7 +601,9 @@ public final class DictationController: ObservableObject {
         rollingTask?.cancel()
         rollingTask = nil
         recorder.onLevel = nil
+        recorder.onFailure = nil
         _ = recorder.stop()
+        scheduleMicRelease()
         fail(reason)
     }
 
@@ -612,6 +619,10 @@ public final class DictationController: ObservableObject {
         recorder.onFailure = nil
 
         let samples = recorder.stop()
+        // Микрофон дальше не нужен: распознавание и GPT-чистка занимают секунды, и всё это
+        // время индикатор записи гореть не должен. Диктовки подряд ничего не теряют —
+        // `begin()` снимает этот таймер первым делом.
+        scheduleMicRelease()
         if settings.soundsEnabled { SoundPlayer.shared.playStop() }
         let language = sessionLanguage
         state = .transcribing
@@ -717,7 +728,8 @@ public final class DictationController: ObservableObject {
 
     /// «Речь не обнаружена» на цифровой тишине — неправда: молчал не человек, а микрофон
     /// (так ведёт себя мёртвый HFP-вход Bluetooth-гарнитуры). Говорим то, что помогает.
-    private func message(for error: Error) -> String {
+    /// Не private: подмена сообщения проверяется тестом напрямую.
+    func message(for error: Error) -> String {
         guard error is DictationError, recorder.capturedSilence else { return error.localizedDescription }
         return "микрофон молчит — выберите другой вход в меню «Микрофон»"
     }
@@ -859,9 +871,9 @@ public final class DictationController: ObservableObject {
         state = .idle
         activeSessionLanguage = nil
         activeSessionTranslate = nil
-        // Микрофон к этому моменту мог быть уже прогрет (отмена на подъёме VAD идёт после
-        // `recorder.prepare()`), а `begin()` снял таймер отпускания — возвращаем его,
-        // иначе индикатор записи останется гореть.
+        // Эта сессия микрофон поднять не успела, но прошлая могла оставить его прогретым,
+        // а `begin()` снял таймер отпускания — возвращаем его, иначе индикатор записи
+        // останется гореть.
         scheduleMicRelease()
     }
 

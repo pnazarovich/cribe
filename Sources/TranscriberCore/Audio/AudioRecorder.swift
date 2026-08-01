@@ -30,11 +30,6 @@ public enum AudioRecorderError: Error, LocalizedError {
 /// выбор конкретного микрофона здесь возможен только пином аудиоюнита, а он не пережил поля.
 public final class AudioRecorder: AudioCapturing {
 
-    /// Частота дискретизации, которую ждут VAD и Whisper.
-    public static let sampleRate: Double = AudioCaptureFormat.sampleRate
-    /// Размер чанка для Silero VAD — 4096 сэмплов (256 мс).
-    public static let chunkSize = AudioCaptureFormat.chunkSize
-
     /// Уровень сигнала (RMS 0…1) на каждый блок tap-а, ~10 Гц. Речь обычно даёт 0.02…0.2.
     public var onLevel: (@Sendable (Float) -> Void)? {
         get { lock.withLock { levelHandler } }
@@ -60,7 +55,7 @@ public final class AudioRecorder: AudioCapturing {
 
     private static let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
-        sampleRate: AudioRecorder.sampleRate,
+        sampleRate: AudioCaptureFormat.sampleRate,
         channels: 1,
         interleaved: false
     )!  // параметры константны и валидны
@@ -343,7 +338,7 @@ public final class AudioRecorder: AudioCapturing {
             throw AudioRecorderError.unstableInputFormat
         }
         self.converter = converter
-        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(Self.chunkSize), format: format) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(AudioCaptureFormat.chunkSize), format: format) { [weak self] buffer, _ in
             self?.handle(buffer)
         }
         tapInstalled = true
@@ -409,9 +404,9 @@ public final class AudioRecorder: AudioCapturing {
             guard isRecording else { return }
             samples.append(contentsOf: converted)
             pending.append(contentsOf: converted)
-            while pending.count >= Self.chunkSize {
-                chunks.append(Array(pending.prefix(Self.chunkSize)))
-                pending.removeFirst(Self.chunkSize)
+            while pending.count >= AudioCaptureFormat.chunkSize {
+                chunks.append(Array(pending.prefix(AudioCaptureFormat.chunkSize)))
+                pending.removeFirst(AudioCaptureFormat.chunkSize)
             }
             chunkSink = chunkHandler
             levelSink = levelHandler

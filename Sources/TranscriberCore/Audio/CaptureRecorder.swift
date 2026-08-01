@@ -11,8 +11,14 @@ import OSLog
 /// У AVCaptureSession выбор устройства — штатная операция: сессия сама согласует формат
 /// с устройством, поэтому вся машинерия вокруг уведомлений о смене конфигурации не нужна.
 ///
-/// Публичный API вызывается с главного потока, сэмплы приходят на `sampleQueue` —
-/// общий буфер закрыт `lock`, состояние конвертера живёт только на `sampleQueue`.
+/// Три потока и строгое разделение владения:
+/// - публичный API зовут с главного потока, и он **никогда не ждёт аудиосистему**:
+///   все операции над сессией уезжают на `sessionQueue`. `startRunning`/`stopRunning`
+///   блокируют вызывающий поток до конца (на холодном Bluetooth-входе замерено 1.8 с) —
+///   на главном потоке это застывший интерфейс;
+/// - `sessionQueue` (последовательная) владеет сессией, входом и выбранным UID;
+/// - `sampleQueue` (последовательная) владеет конвертером и получает сэмплы.
+/// Общий буфер закрыт `lock`.
 public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     public var onLevel: (@Sendable (Float) -> Void)? {
@@ -45,6 +51,9 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     /// Своя последовательная очередь доставки: делить её с чем-либо нельзя — блок конвертации
     /// идёт по расписанию аудио, и любой чужой долгий блок означал бы пропуск сэмплов.
     private let sampleQueue = DispatchQueue(label: "online.nazarovych.transcriber.capture")
+    /// Очередь сессии: все `startRunning`/`stopRunning`/подмены входа строго здесь и по
+    /// порядку вызовов — поэтому «выбрал микрофон → прогрел → начал запись» не разъезжается.
+    private let sessionQueue = DispatchQueue(label: "online.nazarovych.transcriber.capture.session")
     private let lock = NSLock()
 
     // Под lock:
@@ -56,12 +65,15 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     private var isRecording = false
     /// Номер записи: сторож первого блока, опоздавший к следующей записи, не должен её ронять.
     private var recordingGeneration = 0
-    /// Пришёл ли хоть один блок с начала текущей записи — это и проверяет сторож.
+    /// Пришёл ли с начала записи хоть один буфер от сессии (до конвертации).
+    private var receivedSampleBuffer = false
+    /// …и хоть один блок после конвертации. Расхождение этих двух — сломанная конвертация,
+    /// а не мёртвый микрофон: у сбоев разные причины, значит и сообщения разные.
     private var receivedBuffer = false
     /// Сессию прервала система (микрофон забрал кто-то другой): сторожу тут ругаться не на что.
     private var isInterrupted = false
 
-    // Только главный поток:
+    // Только sessionQueue:
     private var deviceInput: AVCaptureDeviceInput?
     /// UID выбранного микрофона; nil — системный по умолчанию. Само устройство резолвится
     /// в момент сборки сессии, поэтому смена системного входа на простое ничего не требует.
@@ -146,44 +158,51 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     /// AVCaptureSession поддерживает сама, никакой пересборки форматов руками не нужно.
     /// Вызов до первого `prepare()` только запоминает UID: устройство резолвится на старте.
     public func setInputDevice(uid: String?) {
-        guard uid != inputDeviceUID else { return }
-        inputDeviceUID = uid
-        guard deviceInput != nil else { return }  // сессии ещё нет — применится на старте
+        sessionQueue.async { [self] in
+            guard uid != inputDeviceUID else { return }
+            inputDeviceUID = uid
+            guard deviceInput != nil else { return }  // сессии ещё нет — применится на старте
 
-        let wasRunning = session.isRunning
-        if wasRunning { session.stopRunning() }
-        attachInput()
-        if wasRunning { session.startRunning() }
+            let wasRunning = session.isRunning
+            if wasRunning { session.stopRunning() }
+            attachInput()
+            if wasRunning { session.startRunning() }
+        }
     }
 
     public func prepare() {
-        startSession()
+        sessionQueue.async { [self] in startSession() }
     }
 
+    /// Возврата из `start()` ждать нечего: сессия поднимается на своей очереди. Проверку
+    /// «поднялась ли» синхронно здесь делать нельзя (это ожидание аудиосистемы на главном
+    /// потоке) — за неё отвечает сторож первого блока, который заводится ровно тогда, когда
+    /// сессия действительно пошла.
     public func start(onChunk: @escaping @Sendable ([Float]) -> Void) throws {
         let generation: Int = lock.withLock {
             samples.removeAll(keepingCapacity: true)
             pending.removeAll(keepingCapacity: true)
             chunkHandler = onChunk
             isRecording = true
+            receivedSampleBuffer = false
             receivedBuffer = false
+            // Пропущенное `interruptionEnded` (прошлая сессия умерла прерванной) не должно
+            // глушить сторожа навсегда — каждая запись начинается непрерванной.
+            isInterrupted = false
             recordingGeneration += 1
             return recordingGeneration
         }
-        startSession()
-        guard session.isRunning else {
-            lock.withLock {
-                isRecording = false
-                chunkHandler = nil
-            }
-            throw AudioRecorderError.noInputDevice
+        sessionQueue.async { [self] in
+            startSession()
+            startWatchdog(generation: generation)
         }
-        startWatchdog(generation: generation)
     }
 
     /// Сторож первого блока: сессия может честно «работать» и не отдавать ни одного буфера
     /// (устройство исчезло между сборкой и стартом, вход занят). Молчать об этом нельзя —
-    /// иначе диктовка кончится бессмысленным «речь не обнаружена».
+    /// иначе диктовка кончится бессмысленным «речь не обнаружена». Отсчёт идёт от момента,
+    /// когда сессия поднялась, а не от вызова `start()`: холодный Bluetooth-вход поднимается
+    /// почти две секунды, и сторож не должен ловить эту паузу.
     private func startWatchdog(generation: Int) {
         sampleQueue.asyncAfter(deadline: .now() + Self.watchdogTimeout) { [weak self] in
             self?.checkFirstBuffer(generation: generation)
@@ -191,12 +210,13 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     }
 
     private func checkFirstBuffer(generation: Int) {
-        enum Verdict { case ignore, dead, silent, healthy }
+        enum Verdict { case ignore, dead, unconverted, silent, healthy }
         let verdict: Verdict = lock.withLock {
             guard isRecording, generation == recordingGeneration else { return .ignore }
             if isInterrupted { return .ignore }  // прерывание уже отправило свою ошибку
-            guard receivedBuffer else { return .dead }
-            return peakLocked() < Self.silenceThreshold ? .silent : .healthy
+            guard receivedSampleBuffer else { return .dead }
+            guard receivedBuffer else { return .unconverted }
+            return isSilentLocked() ? .silent : .healthy
         }
         switch verdict {
         case .ignore, .healthy:
@@ -204,6 +224,10 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
         case .dead:
             logger.error("Микрофон не отдал ни одного блока за \(Self.watchdogTimeout, privacy: .public) с")
             reportFailure("микрофон не отдаёт звук — выберите другой вход")
+        case .unconverted:
+            // Буферы идут, а на выходе пусто — это сломанная конвертация, а не мёртвый вход.
+            logger.error("Звук приходит, но не преобразуется в 16 кГц")
+            reportFailure("звук с микрофона не преобразуется — переподключите устройство")
         case .silent:
             // Не обрываем: тихая комната бывает. Но в поле именно эта строка объясняет,
             // почему диктовка кончилась ничем — вход отдаёт цифровую тишину.
@@ -225,16 +249,17 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     }
 
     public var capturedSilence: Bool {
-        lock.withLock { !samples.isEmpty && peakLocked() < Self.silenceThreshold }
+        lock.withLock { isSilentLocked() }
     }
 
-    /// Пик модуля по всему буферу. Только под `lock` и без копии массива: буфер длинной
-    /// диктовки — это мегабайты, а зовут это раз на диктовку.
-    private func peakLocked() -> Float {
-        guard !samples.isEmpty else { return 0 }
+    /// Цифровая тишина на входе. Меньше полусекунды звука не судим вовсе: на обрывке
+    /// в пару блоков «тихо» ничего не значит — микрофон мог только-только открыться.
+    /// Пик считаем без копии массива: буфер длинной диктовки — это мегабайты.
+    private func isSilentLocked() -> Bool {
+        guard samples.count >= AudioCaptureFormat.silenceVerdictMinimumSamples else { return false }
         var peak: Float = 0
         vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
-        return peak
+        return peak < Self.silenceThreshold
     }
 
     public func stop() -> [Float] {
@@ -255,17 +280,24 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
             chunkHandler = nil
             pending.removeAll(keepingCapacity: false)
         }
-        if session.isRunning { session.stopRunning() }
-        detachInput()
+        sessionQueue.async { [self] in
+            if session.isRunning { session.stopRunning() }
+            detachInput()
+        }
     }
 
-    // MARK: - Сессия
+    // MARK: - Сессия (только sessionQueue)
 
+    /// Сессия без входа звука не отдаёт и сама не чинится, поэтому «работает» — не повод
+    /// ничего не делать: вход отсутствует (сборка не удалась, устройство отцепили после
+    /// сбоя) — останавливаемся и собираем заново.
     private func startSession() {
-        guard !session.isRunning else { return }
-        if deviceInput == nil { attachInput() }
+        if deviceInput == nil {
+            if session.isRunning { session.stopRunning() }
+            attachInput()
+        }
         guard deviceInput != nil else { return }
-        session.startRunning()
+        if !session.isRunning { session.startRunning() }
     }
 
     /// Ставит в сессию вход выбранного (или системного) микрофона. Вызывать только на
@@ -340,9 +372,11 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
     private func handleRuntimeError(_ note: Notification) {
         let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
         logger.error("Сессия захвата упала: \(error?.localizedDescription ?? "неизвестная ошибка", privacy: .public)")
-        if session.isRunning { session.stopRunning() }
-        detachInput()
         reportFailure("микрофон отключился")
+        sessionQueue.async { [self] in
+            if session.isRunning { session.stopRunning() }
+            detachInput()
+        }
     }
 
     // MARK: - Аудиопоток
@@ -352,6 +386,7 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        lock.withLock { if isRecording { receivedSampleBuffer = true } }
         guard let converted = convert(sampleBuffer), !converted.isEmpty else { return }
 
         var chunks: [[Float]] = []

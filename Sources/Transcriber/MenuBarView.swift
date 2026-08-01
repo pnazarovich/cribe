@@ -126,7 +126,9 @@ struct MenuBarView: View {
 private struct MicrophoneMenu: View {
     @ObservedObject var settings: AppSettings
 
-    @State private var devices = AudioDeviceList.inputDevices()
+    /// Источник тот же, из которого захват резолвит устройство (`AVCaptureDevice`), а не HAL:
+    /// иначе в списке оказались бы строки, на которых галочка стоит, а запись идёт мимо.
+    @State private var devices = AudioDeviceList.captureInputDevices()
 
     /// Панель «Звук» → вкладка «Вход».
     private static let soundSettings = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension")
@@ -141,6 +143,11 @@ private struct MicrophoneMenu: View {
                     settings.inputDeviceUID = device.uid
                 }
             }
+            // Выбранного микрофона в системе больше нет: захват пишет с системного входа,
+            // и молчать об этом нельзя — иначе непонятно, почему звук идёт «не оттуда».
+            if let uid = settings.inputDeviceUID, !devices.contains(where: { $0.uid == uid }) {
+                Text("⚠️ Выбранный микрофон недоступен — пишу с системного")
+            }
 
             Divider()
 
@@ -149,7 +156,7 @@ private struct MicrophoneMenu: View {
                 NSWorkspace.shared.open(soundSettings)
             }
         }
-        .onAppear { devices = AudioDeviceList.inputDevices() }
+        .onAppear { devices = AudioDeviceList.captureInputDevices() }
     }
 
     /// Галочка префиксом: у кнопки в NSMenu своего состояния выбора нет, а отступ у

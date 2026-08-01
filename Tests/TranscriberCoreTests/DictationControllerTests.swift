@@ -32,14 +32,14 @@ private final class StubRecorder: AudioCapturing, @unchecked Sendable {
     /// UID последнего `setInputDevice`; двойная опциональность отличает «не вызывали» от «nil».
     private(set) var appliedUID: String??
 
-    var capturedSamples: [Float] { [] }
-    var capturedSampleCount: Int { 0 }
-    var capturedSilence: Bool { false }
+    var capturedSamples: [Float] = []
+    var capturedSilence = false
+    var capturedSampleCount: Int { capturedSamples.count }
 
     func setInputDevice(uid: String?) { appliedUID = .some(uid) }
     func prepare() {}
     func start(onChunk: @escaping @Sendable ([Float]) -> Void) throws {}
-    func stop() -> [Float] { [] }
+    func stop() -> [Float] { capturedSamples }
     func teardown() {}
 }
 
@@ -173,14 +173,40 @@ final class DictationControllerTests: XCTestCase {
         withExtendedLifetime(controller) {}
     }
 
+    /// Цифровая тишина на входе — это не «речь не обнаружена»: на такой записи молчал
+    /// микрофон, и сообщение должно говорить про вход, а не про пользователя.
+    func testSilentInputRewritesNoSpeechMessage() throws {
+        let recorder = StubRecorder()
+        recorder.capturedSilence = true
+        let controller = makeController(engine: GatedEngine(), recorder: recorder)
+
+        XCTAssertEqual(
+            controller.message(for: DictationError.noSpeech),
+            "микрофон молчит — выберите другой вход в меню «Микрофон»"
+        )
+        // Живой вход оставляет исходное сообщение — подмена не должна врать в обратную сторону.
+        recorder.capturedSilence = false
+        XCTAssertEqual(
+            controller.message(for: DictationError.noSpeech),
+            DictationError.noSpeech.localizedDescription
+        )
+        // Чужие ошибки не трогаем даже на тишине.
+        recorder.capturedSilence = true
+        let other = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "что-то своё"])
+        XCTAssertEqual(controller.message(for: other), "что-то своё")
+    }
+
     // MARK: - Обвязка
 
-    private func makeController(engine: TranscriptionEngine) -> DictationController {
+    private func makeController(
+        engine: TranscriptionEngine,
+        recorder: AudioCapturing = StubRecorder()
+    ) -> DictationController {
         DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),
             settings: AppSettings(defaults: UserDefaults(suiteName: suiteName)!),
-            recorder: StubRecorder()
+            recorder: recorder
         )
     }
 

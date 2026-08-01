@@ -1,5 +1,21 @@
+import AVFoundation
 import CoreAudio
 import Foundation
+
+/// Микрофон глазами захвата (AVCaptureSession). Отдельно от `AudioInputDevice` намеренно:
+/// HAL перечисляет устройства, которых захват не видит, и такая строка в меню была бы
+/// мёртвой — галочка стоит, а запись всё равно идёт с системного входа.
+public struct CaptureInputDevice: Identifiable, Equatable, Sendable {
+    public let uid: String
+    public let name: String
+
+    public var id: String { uid }
+
+    public init(uid: String, name: String) {
+        self.uid = uid
+        self.name = name
+    }
+}
 
 /// Микрофон в системе: `id` нужен аудиоюниту, `uid` стабилен между перезапусками и хранится в настройках.
 public struct AudioInputDevice: Identifiable, Equatable, Sendable {
@@ -26,6 +42,16 @@ public enum AudioDeviceList {
         allDeviceIDs()
             .compactMap(inputDevice(for:))
             .filter { !$0.uid.hasPrefix(hiddenUIDPrefix) && !$0.name.hasPrefix(hiddenUIDPrefix) }
+    }
+
+    /// Микрофоны так, как их видит захват, — тот же источник, из которого `CaptureRecorder`
+    /// резолвит устройство по UID. Список меню обязан строиться именно отсюда.
+    public static func captureInputDevices() -> [CaptureInputDevice] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices.map { CaptureInputDevice(uid: $0.uniqueID, name: $0.localizedName) }
     }
 
     /// Устройство по UID; nil, если такого больше нет (например, отключили).

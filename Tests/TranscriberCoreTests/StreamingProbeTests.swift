@@ -11,7 +11,7 @@ final class StreamingProbeTests: XCTestCase {
             throw XCTSkip("нет TRANSCRIBER_PROBE_WAV")
         }
         let samples = try Self.load(URL(fileURLWithPath: path))
-        let rate = AudioRecorder.sampleRate
+        let rate = AudioCaptureFormat.sampleRate
         print("PROBE: аудио \(samples.count) сэмплов = \(Double(samples.count) / rate) c")
 
         let engine = WhisperEngine()
@@ -73,7 +73,7 @@ final class StreamingProbeTests: XCTestCase {
         let file = try AVAudioFile(forReading: url)
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioRecorder.sampleRate,
+            sampleRate: AudioCaptureFormat.sampleRate,
             channels: 1,
             interleaved: false
         )!
