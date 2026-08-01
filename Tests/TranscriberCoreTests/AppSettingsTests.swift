@@ -45,4 +45,39 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(reloaded.skipGPTForShort)
         XCTAssertEqual(reloaded.shortDictationWordLimit, 3)
     }
+
+    /// У перевода своя пара «модель + усилие» с собственными дефолтами.
+    func testTranslateModelDefaults() {
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.translateModel, AppSettings.defaultTranslateModel)
+        XCTAssertEqual(settings.translateEffort, GPTConfig.defaultEffort)
+    }
+
+    func testTranslateModelSettingsPersist() {
+        let settings = AppSettings(defaults: defaults)
+        settings.translateModel = "gpt-5.6-sol"
+        settings.translateEffort = "high"
+
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.translateModel, "gpt-5.6-sol")
+        XCTAssertEqual(reloaded.translateEffort, "high")
+    }
+
+    /// Конфигурация перевода берёт свою модель и своё усилие, но общий режим доступа —
+    /// и при этом не задевает конфигурацию обычной чистки.
+    func testTranslateGPTConfigIsSeparateFromCleanupConfig() {
+        let settings = AppSettings(defaults: defaults)
+        settings.gptMode = .apiKey
+        settings.gptModel = "gpt-5.6-luna"
+        settings.gptEffort = "none"
+        settings.translateModel = "gpt-5.6-sol"
+        settings.translateEffort = "medium"
+
+        XCTAssertEqual(settings.translateGPTConfig.mode, .apiKey)
+        XCTAssertEqual(settings.translateGPTConfig.model, "gpt-5.6-sol")
+        XCTAssertEqual(settings.translateGPTConfig.effort, "medium")
+
+        XCTAssertEqual(settings.gptConfig.model, "gpt-5.6-luna")
+        XCTAssertEqual(settings.gptConfig.effort, "none")
+    }
 }

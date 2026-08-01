@@ -152,24 +152,30 @@ private struct AITab: View {
             case .codex: codexSection
             }
 
-            HStack {
-                Picker("Модель:", selection: $settings.gptModel) {
-                    ForEach(modelOptions, id: \.self) { Text($0).tag($0) }
-                }
-                Button {
-                    Task { await refreshModels() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(isLoadingModels)
-                .help("Обновить список моделей")
-            }
+            modelPicker(selection: $settings.gptModel)
 
-            recommendations
+            recommendations(model: $settings.gptModel, effort: $settings.gptEffort)
 
             Picker("Усилие рассуждения:", selection: $settings.gptEffort) {
                 ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
             }
+
+            // Перевод — отдельный вызов и другая нагрузка, чем простая чистка: ему
+            // и модель нужна своя (чистке обычно хватает самой быстрой).
+            Section("Перевод на английский") {
+                modelPicker(selection: $settings.translateModel)
+
+                recommendations(model: $settings.translateModel, effort: $settings.translateEffort)
+
+                Picker("Усилие рассуждения:", selection: $settings.translateEffort) {
+                    ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
+                }
+            }
+
+            // Оговорка одна на оба блока — таблица рекомендаций у них общая.
+            Text(ModelRecommendations.disclaimer)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .task {
@@ -253,22 +259,23 @@ private struct AITab: View {
     // MARK: Рекомендации
 
     /// Строки пересобираются из `settings.gptMode`: у режимов разные усилия и пояснения.
-    @ViewBuilder
-    private var recommendations: some View {
+    /// Ведут они ту пару «модель + усилие», которую им передали, — таблица одна и та же
+    /// и для чистки, и для перевода.
+    private func recommendations(model: Binding<String>, effort: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Рекомендации").font(.caption).foregroundStyle(.secondary)
 
             ForEach(ModelRecommendations.list(for: settings.gptMode)) { recommendation in
-                recommendationRow(recommendation)
+                recommendationRow(recommendation, model: model, effort: effort)
             }
-
-            Text(ModelRecommendations.disclaimer)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
-    private func recommendationRow(_ recommendation: ModelRecommendation) -> some View {
+    private func recommendationRow(
+        _ recommendation: ModelRecommendation,
+        model: Binding<String>,
+        effort: Binding<String>
+    ) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(recommendation.tier.emoji)
 
@@ -288,14 +295,14 @@ private struct AITab: View {
             Spacer(minLength: 8)
 
             // Выбранной модели кнопка не нужна — вместо неё галочка.
-            if settings.gptModel == recommendation.model {
+            if model.wrappedValue == recommendation.model {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .help("Уже выбрана")
             } else {
                 Button("Выбрать") {
-                    settings.gptModel = recommendation.model
-                    settings.gptEffort = recommendation.effort
+                    model.wrappedValue = recommendation.model
+                    effort.wrappedValue = recommendation.effort
                 }
             }
         }
@@ -303,9 +310,25 @@ private struct AITab: View {
 
     // MARK: Модели
 
+    /// Пикер модели с кнопкой обновления списка: список моделей общий для чистки и перевода.
+    private func modelPicker(selection: Binding<String>) -> some View {
+        HStack {
+            Picker("Модель:", selection: selection) {
+                ForEach(modelOptions(selected: selection.wrappedValue), id: \.self) { Text($0).tag($0) }
+            }
+            Button {
+                Task { await refreshModels() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .disabled(isLoadingModels)
+            .help("Обновить список моделей")
+        }
+    }
+
     /// Сохранённая модель может отсутствовать в свежем списке — иначе пикер показал бы пустоту.
-    private var modelOptions: [String] {
-        models.contains(settings.gptModel) ? models : [settings.gptModel] + models
+    private func modelOptions(selected: String) -> [String] {
+        models.contains(selected) ? models : [selected] + models
     }
 
     private func refreshModels() async {

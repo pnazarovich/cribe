@@ -602,11 +602,12 @@ public final class DictationController: ObservableObject {
                 state = .cleaning
                 do {
                     // Перевод делает тот же вызов: GPT чистит текст и сразу отдаёт английский.
+                    // Поэтому и модель берём переводческую — вызов целиком принадлежит переводу.
                     let processed = try await PostProcessor.cleanup(
                         text: text,
                         entries: entries,
                         language: language,
-                        config: settings.gptConfig,
+                        config: wantsTranslation ? settings.translateGPTConfig : settings.gptConfig,
                         translateToEnglish: wantsTranslation
                     )
                     if wantsTranslation {
@@ -722,7 +723,7 @@ public final class DictationController: ObservableObject {
                 entries: dictionary.entries,
                 // Именно язык `lastOriginal`: с прошлой диктовки язык могли переключить.
                 language: lastOriginalLanguage,
-                config: settings.gptConfig,
+                config: settings.translateGPTConfig,
                 translateToEnglish: true
             )
             // Пока переводили, могла закончиться новая диктовка — её кэш чужим переводом

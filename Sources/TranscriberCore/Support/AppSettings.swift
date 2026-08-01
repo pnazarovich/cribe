@@ -12,12 +12,17 @@ public enum HotkeyMode: String, Codable, CaseIterable, Sendable {
 public final class AppSettings: ObservableObject {
     public static let shared = AppSettings()
 
+    /// Модель перевода по умолчанию.
+    public static let defaultTranslateModel = "gpt-5.6-terra"
+
     private enum Key {
         static let language = "language"
         static let gptEnabled = "gptEnabled"
         static let gptMode = "gptMode"
         static let gptModel = "gptModel"
         static let gptEffort = "gptEffort"
+        static let translateModel = "translateModel"
+        static let translateEffort = "translateEffort"
         static let inputDeviceUID = "inputDeviceUID"
         static let translateToEnglish = "translateToEnglish"
         static let soundsEnabled = "soundsEnabled"
@@ -53,6 +58,17 @@ public final class AppSettings: ObservableObject {
     /// Диктовка вставляется переводом на английский (GPT-слой переводит вместо простой чистки).
     @Published public var translateToEnglish: Bool {
         didSet { defaults.set(translateToEnglish, forKey: Key.translateToEnglish) }
+    }
+
+    /// Модель для перевода — своя: чистке хватает быстрой модели, а перевод (тот же вызов
+    /// чистит и переводит) выигрывает от модели покрупнее.
+    @Published public var translateModel: String {
+        didSet { defaults.set(translateModel, forKey: Key.translateModel) }
+    }
+
+    /// Усилие рассуждения на переводе; шкала та же, что у `gptEffort`.
+    @Published public var translateEffort: String {
+        didSet { defaults.set(translateEffort, forKey: Key.translateEffort) }
     }
 
     /// Чаймы старта и окончания записи.
@@ -91,6 +107,11 @@ public final class AppSettings: ObservableObject {
         GPTConfig(mode: gptMode, model: gptModel, effort: gptEffort)
     }
 
+    /// Конфигурация переводящего вызова: доступ общий, модель и усилие — свои.
+    public var translateGPTConfig: GPTConfig {
+        GPTConfig(mode: gptMode, model: translateModel, effort: translateEffort)
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         language = defaults.string(forKey: Key.language).flatMap(Language.init(rawValue:)) ?? .ru
@@ -100,6 +121,10 @@ public final class AppSettings: ObservableObject {
         gptModel = defaults.string(forKey: Key.gptModel) ?? GPTConfig.defaultModel(for: mode)
         gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
+        // Дефолт перевода не зависит от режима доступа: terra есть у обоих бэкендов и на
+        // переводе надёжнее быстрой модели, которой обычно хватает для одной лишь чистки.
+        translateModel = defaults.string(forKey: Key.translateModel) ?? Self.defaultTranslateModel
+        translateEffort = defaults.string(forKey: Key.translateEffort) ?? GPTConfig.defaultEffort
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
