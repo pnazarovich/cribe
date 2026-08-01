@@ -10,9 +10,10 @@ import TranscriberCore
 public final class LivePanel {
 
     /// Окно с запасом вокруг пилюли (190×44, до 320 на длинной ошибке): она висит по центру,
-    /// остальное прозрачно. Запас нужен, чтобы широкая ошибка не обрезалась по краям.
-    private static let width: CGFloat = 360
-    private static let height: CGFloat = 80
+    /// остальное прозрачно. Запас нужен, чтобы широкая ошибка не обрезалась по краям,
+    /// а мягкая тень (радиус 12 со сдвигом вниз) уместилась целиком — отсюда ~24 pt на сторону.
+    private static let width: CGFloat = 380
+    private static let height: CGFloat = 92
     /// Отступ окна от нижнего края экрана.
     private static let bottomInset: CGFloat = 80
     /// Небольшая задержка на скрытии, чтобы «✓ Вставлено» не мигало.
@@ -52,13 +53,16 @@ public final class LivePanel {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Ярус HUD: панель диктовки должна лежать поверх обычных плавающих окон.
+        panel.level = .statusBar
+        // `.stationary` — чтобы пилюля не разъезжалась вместе с окнами на Mission Control.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // Тень рисовалась бы по прямоугольнику окна, а не по капсуле.
+        // Тень рисовалась бы по прямоугольнику окна, а не по капсуле: тени рисует SwiftUI.
         panel.hasShadow = false
+        panel.animationBehavior = .utilityWindow
         // Панель чисто информационная: клики должны доходить до окна под ней.
         panel.ignoresMouseEvents = true
         panel.contentView = NSHostingView(rootView: PanelView(controller: controller, settings: settings))

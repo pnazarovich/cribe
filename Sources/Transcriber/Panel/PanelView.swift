@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TranscriberCore
 
@@ -7,11 +8,14 @@ struct PanelView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var settings: AppSettings
 
+    private var isVisible: Bool {
+        if case .idle = controller.state { return false }
+        return true
+    }
+
     var body: some View {
         Group {
-            if case .idle = controller.state {
-                EmptyView()
-            } else {
+            if isVisible {
                 PanelPill(
                     state: controller.state,
                     // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
@@ -20,19 +24,64 @@ struct PanelView: View {
                     // тумблеру. Без переопределения (nil) всё как раньше — по тумблеру.
                     translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish
                 )
+                // Не подмена вью, а морф той же капсулы: она вырастает из себя и в себя уходит.
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
         }
+        // Появление резче ухода: снаппи на входе, гладко на выходе.
+        .animation(isVisible ? .snappy(duration: 0.4) : .smooth(duration: 0.4), value: isVisible)
         // Окно больше пилюли: лишнее пространство прозрачно, пилюля висит по центру.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
+/// Настройки Универсального доступа, от которых зависит вид панели. Системное уведомление
+/// приходит и когда приложение неактивно, поэтому подложка переключается вживую.
+@MainActor
+final class HUDAccessibility: ObservableObject {
+    static let shared = HUDAccessibility()
+
+    @Published private(set) var reduceTransparency: Bool
+    @Published private(set) var reduceMotion: Bool
+    @Published private(set) var increaseContrast: Bool
+
+    private init() {
+        let workspace = NSWorkspace.shared
+        reduceTransparency = workspace.accessibilityDisplayShouldReduceTransparency
+        reduceMotion = workspace.accessibilityDisplayShouldReduceMotion
+        increaseContrast = workspace.accessibilityDisplayShouldIncreaseContrast
+        // Наблюдателя не снимаем: объект живёт столько же, сколько приложение.
+        workspace.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Уведомление доставляется на главную очередь — это и есть MainActor.
+            MainActor.assumeIsolated { self?.reload() }
+        }
+    }
+
+    private func reload() {
+        let workspace = NSWorkspace.shared
+        reduceTransparency = workspace.accessibilityDisplayShouldReduceTransparency
+        reduceMotion = workspace.accessibilityDisplayShouldReduceMotion
+        increaseContrast = workspace.accessibilityDisplayShouldIncreaseContrast
+    }
+}
+
 /// Пилюля без наблюдаемых объектов: то же дерево рисует и проба ImageRenderer,
 /// которой неоткуда взять контроллер в нужном состоянии.
+///
+/// Стек слоёв снизу вверх: материал за окном → тёмный скрим → контент → волосяной кант →
+/// верхний блик → двойная тень. Один слой стекла, без шума и без стекла на стекле.
+/// Радиус — строго половина высоты (22), его даёт сама `Capsule()`; вложенные скругления
+/// концентрические: 22 минус отступ от края.
 struct PanelPill: View {
     let state: DictationState
     let language: Language
     let translateToEnglish: Bool
+
+    @ObservedObject private var accessibility = HUDAccessibility.shared
 
     /// Габарит пилюли: один и тот же для записи и всех состояний обработки —
     /// панель не должна «дышать» размером на каждом шаге конвейера.
@@ -43,7 +92,8 @@ struct PanelPill: View {
 
     var body: some View {
         content
-            .font(.system(size: 12))
+            // Средний вес, а не тонкий: на полупрозрачном фоне тонкий шрифт плывёт.
+            .font(.system(size: 12, weight: .medium))
             // Длинная ошибка переносится, но выше двух строк пилюля не растёт.
             .lineLimit(2)
             .padding(.horizontal, 14)
@@ -51,7 +101,81 @@ struct PanelPill: View {
             // Без `fixedSize` рамка забирает всю предложенную ширину окна и пилюля всегда
             // раздувается до потолка: измерено пробой (190/320 против 320/320).
             .fixedSize(horizontal: true, vertical: false)
-            .background(.ultraThinMaterial, in: Capsule())
+            .background { glass }
+            .overlay { rim }
+            .overlay { sheen }
+            // Без группировки тень рисовалась бы от каждого сабвью отдельно.
+            .compositingGroup()
+            // Две тени: широкая мягкая продаёт парение, плотная контактная даёт кромку.
+            .shadow(color: .black.opacity(0.30), radius: 12, y: 4)
+            .shadow(color: .black.opacity(0.20), radius: 2.5, y: 1)
+            // Схема фиксированно тёмная: только она читается над любым фоном — и над белым
+            // документом, и над видео. Адаптивная полярность здесь только мигала бы.
+            .environment(\.colorScheme, .dark)
+            // Ширина меняется на смене состояния — и только на ней: поток уровня не морфит.
+            .animation(.snappy(duration: 0.4), value: morphKey)
+    }
+
+    /// Слои 1–2: материал, сэмплирующий содержимое за окном, и тёмный скрим поверх него.
+    /// Скрим — то, что делает контент читаемым над белым фоном; выше 0.25 стекло умирает.
+    @ViewBuilder
+    private var glass: some View {
+        if accessibility.reduceTransparency {
+            // Фолбэк без прозрачности: сплошная тёмная пилюля, всё остальное как было.
+            Capsule().fill(Color(white: 0.12))
+        } else {
+            ZStack {
+                HUDBackdrop()
+                Capsule().fill(.black.opacity(accessibility.increaseContrast ? 0.30 : 0.22))
+            }
+        }
+    }
+
+    /// Слой 4: волосяной кант в 1 px, светлый сверху и почти прозрачный снизу.
+    /// Именно асимметрия отличает стекло от «картинной рамы» равномерной обводки.
+    @ViewBuilder
+    private var rim: some View {
+        if accessibility.reduceTransparency || accessibility.increaseContrast {
+            Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1)
+        } else {
+            Capsule().strokeBorder(
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.45), location: 0),
+                        .init(color: .white.opacity(0.12), location: 0.4),
+                        .init(color: .white.opacity(0.06), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
+        }
+    }
+
+    /// Слой 5: внутренний блик — размытая дуга по верхней кромке, гаснущая к середине.
+    private var sheen: some View {
+        Capsule()
+            .inset(by: 1)
+            .stroke(.white.opacity(0.15), lineWidth: 0.5)
+            .blur(radius: 1)
+            .mask { LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center) }
+    }
+
+    /// Ключ морфа: различает состояния, но не уровень внутри `.recording` —
+    /// иначе анимация ширины перезапускалась бы 12 раз в секунду.
+    private var morphKey: Int {
+        switch state {
+        case .idle: 0
+        case .preparingModel: 1
+        case .recording: 2
+        case .transcribing: 3
+        case .cleaning: 4
+        case .inserted: 5
+        case .cancelled: 6
+        case .degraded: 7
+        case .error: 8
+        }
     }
 
     @ViewBuilder
@@ -69,8 +193,9 @@ struct PanelPill: View {
             }
 
         case .recording(_, let level):
-            // Живого текста в панели нет: только язык, метка перевода и эквалайзер.
+            // Живого текста в панели нет: только индикатор, язык, метка перевода и эквалайзер.
             HStack(spacing: 8) {
+                RecordingDot(reduceMotion: accessibility.reduceMotion)
                 Text(Self.flag(language))
                 if translateToEnglish {
                     TranslationBadge()
@@ -78,9 +203,10 @@ struct PanelPill: View {
                 EqualizerView(level: level)
                 // Единственная подсказка про отмену. Тише всего, что есть в пилюле, и
                 // постоянной ширины — на потоке уровня (~12 раз в секунду) она не дёргается.
+                // Белый с прозрачностью, не акцентный цвет: мелкий цветной текст на стекле грязнит.
                 Text("esc")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
             }
 
         case .transcribing:
@@ -90,7 +216,10 @@ struct PanelPill: View {
             spinnerRow("✨ Чищу…")
 
         case .inserted:
+            // Зелёная вспышка удачи: цвет плюс короткое свечение по контуру текста.
             Text("✓ Вставлено")
+                .foregroundStyle(Color.green)
+                .shadow(color: .green.opacity(0.45), radius: 4)
 
         case .cancelled:
             Text("✕ Отменено")
@@ -100,6 +229,7 @@ struct PanelPill: View {
 
         case .error(let message):
             Text("⚠️ \(message)")
+                .foregroundStyle(Color.red)
         }
     }
 
@@ -108,6 +238,7 @@ struct PanelPill: View {
             ProgressView()
                 .progressViewStyle(.circular)
                 .controlSize(.small)
+                .tint(.blue)
             Text(text)
         }
     }
@@ -127,15 +258,89 @@ struct PanelPill: View {
     }
 }
 
+/// Слой 1: единственный слой стекла — системный материал, который блюрит содержимое ЗА окном.
+/// SwiftUI-материалы (`.ultraThinMaterial` и прочие) на macOS фон за окном не видят и дают
+/// плоскую серую плашку, поэтому подложка тут именно AppKit-овая.
+private struct HUDBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = CapsuleEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        // Ключевая строка: панель никогда не становится key, а `.active` не даёт стеклу потухнуть.
+        view.state = .active
+        view.isEmphasized = true
+        // Материал берёт вариант из оформления вью, а пилюля всегда тёмная.
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+/// Форму материалу задаёт только `maskImage`: слой, который рисует WindowServer, надёжно не режут
+/// ни `clipShape`, ни CALayer-маска. Маска — растягиваемая 9-частная капсула, поэтому одна
+/// картинка годится на любую ширину пилюли; пересобираем её лишь при смене высоты.
+private final class CapsuleEffectView: NSVisualEffectView {
+    private var maskedHeight: CGFloat = 0
+
+    override func layout() {
+        super.layout()
+        guard bounds.height > 0, abs(bounds.height - maskedHeight) > 0.5 else { return }
+        maskedHeight = bounds.height
+        maskImage = .capsuleMask(height: bounds.height)
+    }
+}
+
+extension NSImage {
+    /// Сторона 2r+1: центральная полоса шириной в точку, её растяжение и даёт капсулу
+    /// любой ширины с неискажёнными торцами.
+    fileprivate static func capsuleMask(height: CGFloat) -> NSImage {
+        let radius = height / 2
+        let side = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
+    }
+}
+
+/// Индикатор записи: настоящий красный, а не семантический стиль — иерархические стили на стекле
+/// обесцвечиваются. Белое свечение держит точку заметной и поверх тёмного видео.
+private struct RecordingDot: View {
+    let reduceMotion: Bool
+
+    @State private var pulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.red)
+            .frame(width: 8, height: 8)
+            .shadow(color: .white.opacity(0.25), radius: 3)
+            // Пульс только по трансформации и прозрачности; покой — полный красный кружок,
+            // поэтому при «Уменьшить движение» точка просто остаётся статичной.
+            // Дно прозрачности высокое (0.8): на просвет точка не должна тускнеть до бурой.
+            .scaleEffect(pulsing ? 1.18 : 1)
+            .opacity(pulsing ? 0.8 : 1)
+            .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: pulsing)
+            .onAppear { pulsing = !reduceMotion }
+    }
+}
+
 /// Метка «перевод на английский включён»: результат придёт не на языке записи.
 private struct TranslationBadge: View {
     var body: some View {
         Text("→ EN")
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.8))
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
+            // Плоская подложка, не второй материал: стекло на стекле выглядит дёшево.
+            // Высота чипа 14 → его радиус 7 = 22 − 15 отступа от края капсулы, концентрично.
+            .background(.white.opacity(0.10), in: Capsule())
             .fixedSize()
     }
 }
@@ -207,6 +412,8 @@ private struct EqualizerView: View {
         return 0.35 + CGFloat(x >> 40) / CGFloat(1 << 24) * 0.65
     }
 
+    /// Акцентный градиент остаётся настоящим цветом поверх стекла — вибрантным его делать нельзя,
+    /// иначе полоски выцветут в серые штрихи.
     private static let fill = LinearGradient(
         colors: [Color.accentColor, Color.accentColor.opacity(0.5)],
         startPoint: .top,
