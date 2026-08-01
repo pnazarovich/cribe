@@ -1,15 +1,42 @@
-import AVFoundation
 import XCTest
 @testable import TranscriberCore
 
 /// Движок-заглушка: `prepare` сообщает о загрузке и висит, пока тест его не отпустит —
 /// как первая загрузка WhisperKit, которая специализируется под ANE минутами.
+/// Фоновый проход по растущему буферу держится отдельным замком: так Esc попадает ровно
+/// в окно «проход уже считает».
 private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
+    private var passStartedFlag = false
+    private var passReleased = false
+    private var passContinuation: CheckedContinuation<Void, Never>?
+
+    /// Сегменты, которые отдаст фоновый проход. Пустой массив — движок сегментов не умеет
+    /// (как и по умолчанию в протоколе), и потокового пути в сессии не будет вовсе.
+    private let segments: [ASRSegment]
+
+    init(segments: [ASRSegment] = []) {
+        self.segments = segments
+    }
+
+    /// Фоновый проход дошёл до движка.
+    var passStarted: Bool { lock.withLock { passStartedFlag } }
+    /// Проход начался и всё ещё считает.
+    var passRunning: Bool { lock.withLock { passStartedFlag && !passReleased } }
 
     /// Отпускает загрузку: `prepare` доходит до конца, как и в жизни (прервать его нечем).
     func release() { lock.withLock { released = true } }
+
+    /// Отпускает фоновый проход — он досчитывает и отдаёт сегменты.
+    func releasePass() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            passReleased = true
+            defer { passContinuation = nil }
+            return passContinuation
+        }
+        continuation?.resume()
+    }
 
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         onState(.loading)
@@ -23,6 +50,31 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
         XCTFail("отменённая сессия не должна доходить до распознавания")
         return ""
     }
+
+    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
+        guard !segments.isEmpty else { throw TranscriptionEngineError.segmentsUnsupported }
+        lock.withLock { passStartedFlag = true }
+        // Ждём через продолжение, а не `Task.sleep`: отмену задачи живой WhisperKit
+        // не смотрит, и проход обязан досчитать вопреки `rollingTask.cancel()`.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let alreadyReleased = lock.withLock { () -> Bool in
+                if passReleased { return true }
+                passContinuation = continuation
+                return false
+            }
+            if alreadyReleased { continuation.resume() }
+        }
+        return segments
+    }
+}
+
+/// VAD-заглушка: настоящий гейт поднимает CoreML-модель и на чистой машине тянет её из сети,
+/// а конвейеру от него нужен только вердикт. Здесь он всегда «речь есть, обрезать нечего»,
+/// поэтому прогон обходится без модели и без единого сетевого запроса.
+private final class PassThroughVad: SpeechGating, @unchecked Sendable {
+    func trimmed(_ samples: [Float]) async throws -> [Float]? { samples.isEmpty ? nil : samples }
+    func resetStream() async {}
+    func feedStream(_ chunk: [Float]) async throws -> Bool { false }
 }
 
 /// Движок, который держит распознавание, пока тест его не отпустит: так Esc успевает
@@ -240,7 +292,7 @@ final class DictationControllerTests: XCTestCase {
 
         controller.toggle()
         engine.release()
-        try await wait(for: "старт записи", timeout: 30) {
+        try await wait(for: "старт записи") {
             if case .recording = controller.state { return true }
             return false
         }
@@ -255,18 +307,69 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionLanguage)
     }
 
+    /// Esc на длинной записи, когда фоновый проход уже считает: прервать проход нечем,
+    /// но отмена его не ждёт, а досчитанные сегменты уже мертвы — поколение сессии сдвинуто.
+    func testEscapeDuringRecordingKillsInFlightStreamingPass() async throws {
+        let recorder = StubRecorder()
+        // Длиннее порога потокового пути (6 с) — короче фоновых проходов не бывает вовсе.
+        recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 8))
+        // Два сегмента: первый устоявшийся, второй проход обычно переписывает — значит,
+        // подтвердить есть что, и молчание `confirm` не может быть случайным.
+        let engine = GatedEngine(segments: [
+            ASRSegment(text: "первый кусок", start: 0, end: 3),
+            ASRSegment(text: "второй кусок", start: 3, end: 6),
+        ])
+        let controller = makeController(engine: engine, recorder: recorder)
+
+        controller.toggle()
+        engine.release()
+        try await wait(for: "старт записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        try await wait(for: "старт фонового прохода") { engine.passStarted }
+
+        controller.cancelDictation()
+        // Отмена мгновенная: проход ещё считает, а сессии уже нет.
+        XCTAssertEqual(controller.state, .cancelled)
+        XCTAssertTrue(engine.passRunning)
+
+        engine.releasePass()
+        try await wait(for: "возврат в простой") { controller.state == .idle }
+        // Проход досчитал уже после отмены — подтверждать ему нечего.
+        XCTAssertEqual(controller.confirmedText, "")
+        XCTAssertEqual(controller.confirmedEndSample, 0)
+    }
+
+    /// Esc на загрузке модели отменяет сессию так же, как второй хоткей, но мигает
+    /// «Отменено»: без вспышки непонятно, дошло нажатие или загрузка просто идёт дальше.
+    func testEscapeDuringModelLoadFlashesCancel() async throws {
+        let engine = GatedEngine()
+        let controller = makeController(engine: engine)
+
+        controller.toggle()
+        try await wait(for: "загрузку модели") {
+            if case .preparingModel = controller.state { return true }
+            return false
+        }
+
+        controller.cancelDictation()
+        engine.release()
+        try await wait(for: "вспышку отмены") { controller.state == .cancelled }
+        try await wait(for: "возврат в простой") { controller.state == .idle }
+        XCTAssertNil(controller.activeSessionLanguage)
+    }
+
     /// Esc, нажатый пока конвейер уже считает: проход досчитывается в никуда — ни вставки,
     /// ни «последней диктовки», ни истории.
     func testEscapeDuringPipelineDiscardsResult() async throws {
         let recorder = StubRecorder()
-        recorder.capturedSamples = try await Self.spokenSamples()
+        recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 3))
         let engine = HoldingEngine()
-        let settings = makeSettings()
-        settings.gptEnabled = false  // слой 3 в тестах в сеть не ходит
-        let controller = makeController(engine: engine, recorder: recorder, settings: settings)
+        let controller = makeController(engine: engine, recorder: recorder)
 
         controller.toggle()
-        try await wait(for: "старт записи", timeout: 30) {
+        try await wait(for: "старт записи") {
             if case .recording = controller.state { return true }
             return false
         }
@@ -277,10 +380,10 @@ final class DictationControllerTests: XCTestCase {
         controller.cancelDictation()
 
         // Движок держит проход до этого момента, поэтому Esc гарантированно раньше вставки.
-        try await wait(for: "начало распознавания", timeout: 30) { engine.isTranscribing }
+        try await wait(for: "начало распознавания") { engine.isTranscribing }
         engine.release()
 
-        try await wait(for: "вспышку отмены", timeout: 30) { controller.state == .cancelled }
+        try await wait(for: "вспышку отмены") { controller.state == .cancelled }
         // `lastOriginal` присваивается ровно перед вставкой: раз его нет, не было и вставки
         // с буфером обмена.
         XCTAssertNil(controller.lastOriginal)
@@ -300,14 +403,15 @@ final class DictationControllerTests: XCTestCase {
 
     private func makeController(
         engine: TranscriptionEngine,
-        recorder: AudioCapturing = StubRecorder(),
-        settings: AppSettings? = nil
+        recorder: AudioCapturing = StubRecorder()
     ) -> DictationController {
         DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),
-            settings: settings ?? makeSettings(),
-            recorder: recorder
+            settings: makeSettings(),
+            recorder: recorder,
+            // Заглушка вместо Silero: прогон не поднимает CoreML-модель и не ходит за ней в сеть.
+            makeVad: { PassThroughVad() }
         )
     }
 
@@ -315,65 +419,10 @@ final class DictationControllerTests: XCTestCase {
         let settings = AppSettings(defaults: UserDefaults(suiteName: suiteName)!)
         // Тесты доходят до живой записи, а прогон звенеть чаймами не должен.
         settings.soundsEnabled = false
+        // И не должен ходить в сеть: с включённым слоем 3 старт записи шлёт прогревочный
+        // запрос к GPT (`prewarmGPT`), а конвейер — саму чистку.
+        settings.gptEnabled = false
         return settings
-    }
-
-    /// Настоящая речь в PCM 16 кГц mono. Нужна затем, что синтетические сигналы Silero VAD
-    /// речью не считает, а без вердикта VAD конвейер до распознавания не доходит вовсе.
-    /// Синтез офлайновый и беззвучный (`write`, а не `speak`); что именно сказано — неважно,
-    /// текст всё равно отдаёт движок-заглушка.
-    private static func spokenSamples() async throws -> [Float] {
-        let synthesizer = AVSpeechSynthesizer()
-        let utterance = AVSpeechUtterance(string: "Testing dictation cancel")
-        // Английский голос есть на любой macOS; без него синтез идёт голосом по умолчанию.
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-
-        let target = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioCaptureFormat.sampleRate,
-            channels: 1,
-            interleaved: false
-        )!
-        var samples: [Float] = []
-        var converter: AVAudioConverter?
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            var finished = false
-            synthesizer.write(utterance) { buffer in
-                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-                // Пустой буфер — признак конца синтеза.
-                guard pcm.frameLength > 0 else {
-                    if !finished {
-                        finished = true
-                        continuation.resume()
-                    }
-                    return
-                }
-                if converter == nil { converter = AVAudioConverter(from: pcm.format, to: target) }
-                guard let converter else { return }
-                let capacity = AVAudioFrameCount(
-                    Double(pcm.frameLength) * target.sampleRate / pcm.format.sampleRate + 1024
-                )
-                guard let converted = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
-                var fed = false
-                var error: NSError?
-                converter.convert(to: converted, error: &error) { _, status in
-                    if fed {
-                        status.pointee = .noDataNow
-                        return nil
-                    }
-                    fed = true
-                    status.pointee = .haveData
-                    return pcm
-                }
-                guard let channel = converted.floatChannelData else { return }
-                samples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: Int(converted.frameLength)))
-            }
-        }
-        withExtendedLifetime(synthesizer) {}
-        // Молчаливый синтез превратился бы в непонятное «речь не обнаружена» посреди теста.
-        XCTAssertGreaterThan(samples.count, AudioCaptureFormat.samples(seconds: 0.5))
-        return samples
     }
 
     private func wait(for description: String, timeout: TimeInterval = 5, until: () -> Bool) async throws {

@@ -1,10 +1,25 @@
 import FluidAudio
 import Foundation
 
+/// Поверхность VAD, на которую опирается `DictationController`: вердикт по готовой записи
+/// и стрим для автостопа.
+///
+/// Протокол нужен ровно затем же, зачем `AudioCapturing` и `TranscriptionEngine`: конвейер
+/// не должен знать, кто выносит вердикт, а тесты подставляют заглушку вместо CoreML-модели —
+/// иначе прогон тянул бы её из сети на чистой машине.
+public protocol SpeechGating: Sendable {
+    /// Обрезает тишину по краям записи. `nil` — речи нет.
+    func trimmed(_ samples: [Float]) async throws -> [Float]?
+    /// Сбрасывает состояние стрима перед новой записью.
+    func resetStream() async
+    /// Скармливает чанк записи. `true` — пора останавливаться по тишине.
+    func feedStream(_ chunk: [Float]) async throws -> Bool
+}
+
 /// Silero VAD через FluidAudio (CoreML/ANE): автостоп по 2 с тишины в стриме
 /// и обрезка тишины по краям готовой записи.
 /// Модель (~2 МБ) скачивается лениво при первом создании гейта.
-public actor VadGate {
+public actor VadGate: SpeechGating {
 
     /// Отсечка коротких записей — 0.5 c (защита от галлюцинаций и prompt-leak).
     private static let minSpeechSamples = VadManager.sampleRate / 2

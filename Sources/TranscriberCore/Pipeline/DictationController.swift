@@ -251,9 +251,10 @@ public final class DictationController: ObservableObject {
     private let settings: AppSettings
     private let history: HistoryStore
     private let recorder: AudioCapturing
+    private let makeVad: @Sendable () async throws -> SpeechGating
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Dictation")
 
-    private var vad: VadGate?
+    private var vad: SpeechGating?
     private var sessionLanguage: Language = .ru
     /// Язык, на котором распознана `lastOriginal`: перевод из меню должен идти с него,
     /// а не с языка, который к тому моменту стоит в настройках.
@@ -264,6 +265,9 @@ public final class DictationController: ObservableObject {
     /// Второй хоткей на `.preparingModel` отменяет сессию. Саму загрузку прервать нельзя
     /// (WhisperKit её не отменяет) — она спокойно дойдёт до кэша, но запись не начнётся.
     private var pendingCancel = false
+    /// Отмену на загрузке запросил Esc, а не второй хоткей: он обязан мигнуть «Отменено».
+    /// Второй хоткей гасит сессию молча — он же её и завёл, спрашивать там нечего.
+    private var pendingCancelFlashes = false
     /// Esc нажали, пока конвейер уже считал. Прервать идущий проход (или запрос к GPT)
     /// нечем — он досчитает в никуда, а конвейер посмотрит флаг перед вставкой.
     private var cancelRequested = false
@@ -271,8 +275,11 @@ public final class DictationController: ObservableObject {
     /// Подтверждённая часть диктовки: все сегменты последнего фонового прохода, кроме
     /// последнего (его следующий проход почти всегда переписывает), и конец последнего
     /// подтверждённого сегмента в сэмплах от начала записи.
-    private var confirmedText = ""
-    private var confirmedEndSample = 0
+    ///
+    /// Не private: тест отмены проверяет напрямую, что проход отменённой сессии сюда
+    /// не доезжает (как и подмена сообщения в `message(for:)`).
+    var confirmedText = ""
+    var confirmedEndSample = 0
     /// Фоновый проход упал — на этой сессии потоковый путь выключен.
     private var rollingFailed = false
     /// Язык переключили прямо на записи — фоновые проходы и хвост могли бы разъехаться.
@@ -297,13 +304,17 @@ public final class DictationController: ObservableObject {
         engine: TranscriptionEngine,
         dictionary: UserDictionary,
         settings: AppSettings,
-        recorder: AudioCapturing = CaptureRecorder()
+        recorder: AudioCapturing = CaptureRecorder(),
+        // Не сам гейт, а фабрика: подъём VAD (CoreML/ANE) занимает секунды и делается лениво,
+        // при первой записи. Тесты подставляют сюда заглушку и обходятся без модели.
+        makeVad: @escaping @Sendable () async throws -> SpeechGating = { try await VadGate() }
     ) {
         self.gate = EngineGate(engine)
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
         self.recorder = recorder
+        self.makeVad = makeVad
 
         recorder.setInputDevice(uid: settings.inputDeviceUID)
         // Текущее значение уже применено выше — подписка нужна только на последующие смены.
@@ -351,9 +362,11 @@ public final class DictationController: ObservableObject {
         case .recording:
             discardRecording()
         case .preparingModel:
-            // Ровно то же, что делает второй хоткей: саму загрузку прервать нечем,
-            // но записи после неё не будет.
+            // Тот же путь, что у второго хоткея: саму загрузку прервать нечем, но записи
+            // после неё не будет. Разница одна — Esc мигает отменой на любом шаге, иначе
+            // непонятно, дошло нажатие или нет.
             pendingCancel = true
+            pendingCancelFlashes = true
         case .transcribing, .cleaning:
             cancelRequested = true
         case .idle, .inserted, .cancelled, .degraded, .error:
@@ -402,8 +415,9 @@ public final class DictationController: ObservableObject {
     private func begin(translating: Bool?) {
         guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
         isStarting = true
-        // Отмена прошлой сессии новую не трогает — оба флага снимаем на старте.
+        // Отмена прошлой сессии новую не трогает — все её флаги снимаем на старте.
         pendingCancel = false
+        pendingCancelFlashes = false
         cancelRequested = false
 
         idleTask?.cancel()
@@ -593,7 +607,7 @@ public final class DictationController: ObservableObject {
     }
 
     /// 2 с тишины после речи → автостоп, если он включён в настройках.
-    private func startVadLoop(stream: AsyncStream<[Float]>, vad: VadGate) {
+    private func startVadLoop(stream: AsyncStream<[Float]>, vad: SpeechGating) {
         vadTask = Task { [weak self] in
             for await chunk in stream {
                 guard let speechEnded = try? await vad.feedStream(chunk) else { continue }
@@ -667,8 +681,13 @@ public final class DictationController: ObservableObject {
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
+        // Идущий фоновый проход не прерывается: `EngineGate` отмену не смотрит, а WhisperKit
+        // не умеет её вовсе — он досчитает в никуда, как и загрузка модели на отмене.
+        // Сдвинутое поколение делает его результат заведомо мёртвым: `confirm` отбросит
+        // сегменты, даже если они придут раньше, чем начнётся следующая запись.
         rollingTask?.cancel()
         rollingTask = nil
+        sessionGeneration += 1
         recorder.onLevel = nil
         recorder.onFailure = nil
         _ = recorder.stop()
@@ -908,10 +927,10 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    private func ensureVad() async throws -> VadGate {
+    private func ensureVad() async throws -> SpeechGating {
         if let vad { return vad }
         state = .preparingModel(1)
-        let created = try await VadGate()
+        let created = try await makeVad()
         vad = created
         return created
     }
@@ -940,7 +959,15 @@ public final class DictationController: ObservableObject {
     /// Сессию отменили хоткеем на загрузке модели (Whisper или VAD): записи не было,
     /// поэтому тихо возвращаемся в простой — без сообщения об ошибке.
     private func cancelSession() {
+        let flashes = pendingCancelFlashes
         pendingCancel = false
+        pendingCancelFlashes = false
+        // Отмену по Esc показываем так же, как на записи и на конвейере: `cancelled()` сам
+        // вернёт в простой и отпустит микрофон через `scheduleIdle`.
+        guard !flashes else {
+            cancelled()
+            return
+        }
         state = .idle
         activeSessionLanguage = nil
         activeSessionTranslate = nil
