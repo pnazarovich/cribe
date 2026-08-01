@@ -70,6 +70,40 @@ final class ModifierTapDetectorTests: XCTestCase {
         XCTAssertTrue(detector.flagsChanged(keyCode: ralt, flags: released, at: 0.3))
     }
 
+    /// Аккорд двух хоткей-модификаторов: ⌘ удержан, поверх него тапнули ⌥. Удержанный ⌘
+    /// своего события не шлёт, поэтому узнать о нём можно только по флагам нажатия ⌥ —
+    /// иначе отпускание ⌥ запустило бы диктовку с переводом прямо посреди чужого аккорда.
+    func testHeldCommandBlocksOptionTap() {
+        var detector = ModifierTapDetector(
+            keyCode: ModifierTapDetector.rightOptionKeyCode,
+            deviceFlag: ModifierTapDetector.rightOptionFlag,
+            blockingFlags: ModifierTapDetector.rightCommandFlag
+        )
+        let ralt = ModifierTapDetector.rightOptionKeyCode
+        let raltDown = ModifierTapDetector.rightOptionFlag
+
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: rcmdDown, at: 0))
+        // Нажатие ⌥ несёт оба device-бита: ⌘ всё ещё зажат.
+        XCTAssertFalse(detector.flagsChanged(keyCode: ralt, flags: rcmdDown | raltDown, at: 0.1))
+        XCTAssertFalse(detector.flagsChanged(keyCode: ralt, flags: rcmdDown, at: 0.2))
+
+        // Аккорд кончился — чистый тап ⌥ снова работает (детектор не «залипает»).
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: released, at: 0.3))
+        XCTAssertFalse(detector.flagsChanged(keyCode: ralt, flags: raltDown, at: 0.4))
+        XCTAssertTrue(detector.flagsChanged(keyCode: ralt, flags: released, at: 0.5))
+    }
+
+    /// То же в обратную сторону: ⌥ удержан, тапнули ⌘ — обычная диктовка не стартует.
+    func testHeldOptionBlocksCommandTap() {
+        var detector = ModifierTapDetector(blockingFlags: ModifierTapDetector.rightOptionFlag)
+        let ralt = ModifierTapDetector.rightOptionKeyCode
+        let raltDown = ModifierTapDetector.rightOptionFlag
+
+        XCTAssertFalse(detector.flagsChanged(keyCode: ralt, flags: raltDown, at: 0))
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: raltDown | rcmdDown, at: 0.1))
+        XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: raltDown, at: 0.2))
+    }
+
     /// После сброса (тап отключали и включали) ожидание не воскресает.
     func testResetDropsPendingTap() {
         var detector = ModifierTapDetector()

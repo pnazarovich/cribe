@@ -32,12 +32,19 @@ final class ModifierKeyTap {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
 
+    /// `blockingFlags` — device-биты остальных хоткей-модификаторов: при удержанном соседе
+    /// тап не начинается, иначе аккорд двух хоткеев запускал бы диктовку.
     init(
         keyCode: Int64 = ModifierTapDetector.rightCommandKeyCode,
         deviceFlag: UInt64 = ModifierTapDetector.rightCommandFlag,
+        blockingFlags: UInt64 = 0,
         onTap: @escaping () -> Void
     ) {
-        self.detector = ModifierTapDetector(keyCode: keyCode, deviceFlag: deviceFlag)
+        self.detector = ModifierTapDetector(
+            keyCode: keyCode,
+            deviceFlag: deviceFlag,
+            blockingFlags: blockingFlags
+        )
         self.onTap = onTap
     }
 

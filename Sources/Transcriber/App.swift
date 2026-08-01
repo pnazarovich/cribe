@@ -63,12 +63,17 @@ final class AppCore: ObservableObject {
             controller.toggle(translating: true)
         }
 
-        rightCommandTap = ModifierKeyTap { [controller] in controller.toggle() }
+        // Каждый тап знает device-бит соседа: аккорд «⌘ удержан + тап ⌥» (и наоборот)
+        // диктовку не запускает — это две хоткей-клавиши друг с другом, а не тап.
+        rightCommandTap = ModifierKeyTap(
+            blockingFlags: ModifierTapDetector.rightOptionFlag
+        ) { [controller] in controller.toggle() }
         // Правый ⌥ — та же диктовка, но переводящая: решение принимается на старте сессии,
         // а остановить запись вправе любая из двух клавиш.
         rightOptionTap = ModifierKeyTap(
             keyCode: ModifierTapDetector.rightOptionKeyCode,
-            deviceFlag: ModifierTapDetector.rightOptionFlag
+            deviceFlag: ModifierTapDetector.rightOptionFlag,
+            blockingFlags: ModifierTapDetector.rightCommandFlag
         ) { [controller] in controller.toggle(translating: true) }
         // `@Published` отдаёт текущее значение при подписке — режим применится и на старте.
         hotkeyModeSubscription = settings.$dictationHotkeyMode
@@ -93,11 +98,17 @@ final class AppCore: ObservableObject {
             let commandStarted = rightCommandTap.start()
             let optionStarted = rightOptionTap.start()
             // Без Accessibility тап не поднимется — настройки показывают это подсказкой.
+            // Пишем поимённо: так видно, отвалилась одна клавиша или обе сразу.
             if commandStarted, optionStarted {
                 loggedTapFailure = false
             } else if !loggedTapFailure {
                 loggedTapFailure = true
-                logger.error("Правые ⌘/⌥ не подключены: нет разрешения Accessibility")
+                if !commandStarted {
+                    logger.error("Правый ⌘ не подключён: нет разрешения Accessibility")
+                }
+                if !optionStarted {
+                    logger.error("Правый ⌥ не подключён: нет разрешения Accessibility")
+                }
             }
         case .custom:
             rightCommandTap.stop()
