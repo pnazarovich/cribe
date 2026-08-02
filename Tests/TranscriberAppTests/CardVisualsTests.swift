@@ -86,6 +86,30 @@ final class CardVisualsTests: XCTestCase {
         XCTAssertEqual(CardFlight.dampingFraction, 0.78, accuracy: 0.001)
     }
 
+    /// После перелёта капсула молчит: «⤷ В карточку» посреди экрана — это второй раз про то,
+    /// что и так показал перелёт. Вернуть её вправе только новая сессия.
+    func testPillStaysSilentAfterHandingOffToTheCard() {
+        XCTAssertFalse(
+            LivePanel.wakesUp(handedOffToCard: true, next: .processing),
+            "вспышка «В карточку» после перелёта читается как мигание"
+        )
+        XCTAssertFalse(LivePanel.wakesUp(handedOffToCard: true, next: .hidden))
+        XCTAssertTrue(
+            LivePanel.wakesUp(handedOffToCard: true, next: .starting),
+            "новая диктовка обязана вернуть капсулу"
+        )
+        // Обычная доставка (вставка, отмена, ошибка) капсулу не глушит.
+        for phase in [LivePanel.Phase.hidden, .starting, .processing] {
+            XCTAssertTrue(LivePanel.wakesUp(handedOffToCard: false, next: phase))
+        }
+    }
+
+    /// Перелёт и молчание капсулы — одна сделка: нет перелёта (Уменьшить движение) —
+    /// значит, вспышка «⤷ В карточку» остаётся единственным ответом и глушить её нельзя.
+    func testFlightAndSilenceGoTogether() {
+        XCTAssertEqual(CardFlight.flies, !HUDAccessibility.shared.reduceMotion)
+    }
+
     /// Оба окна HUD носят один рецепт: и капсула, и карточки обязаны появляться поверх
     /// чужого полноэкранного пространства. Расхождение здесь — это ровно та поломка,
     /// с которой начался раунд.

@@ -50,7 +50,9 @@ public final class LivePanel {
     /// во время распознавания и чистки хоткей игнорируется, а из `.inserted`/`.degraded`/`.error`
     /// конвейер уходит туда только через `begin()`. Поэтому смена фазы на `.starting` —
     /// надёжный признак новой сессии, даже если `.idle` между ними не было.
-    private enum Phase {
+    /// Не private: раскладку «эстафета отдана + фаза → возвращаться ли капсуле» проверяет тест,
+    /// а живая панель тянет за собой весь конвейер.
+    enum Phase {
         case hidden
         case starting
         case processing
@@ -72,6 +74,8 @@ public final class LivePanel {
     private var cancellable: AnyCancellable?
     private var hideTask: Task<Void, Never>?
     private var phase: Phase = .hidden
+    /// Эстафета отдана карточке: капсула улетела и до конца сессии молчит.
+    private var handedOffToCard = false
 
     public init(controller: DictationController, settings: AppSettings) {
         panel = NonActivatingPanel(
@@ -138,6 +142,7 @@ public final class LivePanel {
     public func handOffToCard() {
         hideTask?.cancel()
         hideTask = nil
+        handedOffToCard = true
         presentation.isVisible = false
         panel.orderOut(nil)
         // Фаза возвращается в «скрыто» руками: следующая сессия обязана снова показать
@@ -153,12 +158,26 @@ public final class LivePanel {
         panel.orderOut(nil)
     }
 
+    /// Возвращается ли капсула на экран после того, как эстафету приняла карточка.
+    ///
+    /// Чистая функция — её и проверяет тест. Правило одно: пока сессия не началась заново,
+    /// улетевшая капсула не показывается НИ НА ЧЁМ. Иначе следом за перелётом вспыхивало
+    /// «⤷ В карточку» — второй раз про то же самое, да ещё и посреди экрана, где карточки
+    /// уже нет: на глаз это читается как мигание.
+    static func wakesUp(handedOffToCard: Bool, next phase: Phase) -> Bool {
+        guard handedOffToCard else { return true }
+        return phase == .starting
+    }
+
     private func handle(_ state: DictationState) {
         // Последний непустой кадр остаётся на экране, пока капсула уходит.
         if case .idle = state {} else { presentation.state = state }
         // Окно трогаем только на смене фазы: поток уровня (~12 обновлений в секунду)
         // целиком укладывается в одну фазу и до окна не доходит.
         let next = Phase(state)
+        guard Self.wakesUp(handedOffToCard: handedOffToCard, next: next) else { return }
+        // Новая сессия — эстафета снова у капсулы.
+        handedOffToCard = false
         guard next != phase else { return }
         apply(next)
     }

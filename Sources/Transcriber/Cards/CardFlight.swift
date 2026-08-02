@@ -19,6 +19,10 @@ enum CardFlight {
     /// Обе половины стыка идут одной длительностью — иначе на кадре виден провал.
     static let handoff: TimeInterval = 0.12
 
+    /// Летим ли вообще. При «Уменьшить движение» перелёта нет — и тогда капсула ОБЯЗАНА
+    /// сказать «⤷ В карточку» сама: другого ответа пользователю не остаётся.
+    static var flies: Bool { !HUDAccessibility.shared.reduceMotion }
+
     /// Служебное окно живёт чуть дольше самого перелёта: снять его ровно в конце — значит
     /// обрезать затухание.
     private static let windowLinger: Duration = .milliseconds(120)
@@ -50,7 +54,7 @@ enum CardFlight {
     /// При «Уменьшить движение» перелёта нет вовсе: карточка просто появляется, а пилюля
     /// гаснет — `landed` зовётся сразу.
     static func fly(from source: CGRect, to target: CGRect, landed: @escaping () -> Void) {
-        guard !HUDAccessibility.shared.reduceMotion else {
+        guard flies else {
             landed()
             return
         }

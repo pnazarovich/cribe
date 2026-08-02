@@ -71,7 +71,11 @@ final class AppCore: ObservableObject {
             guard let self, let cards = self.cards else { return false }
             let source = panel?.pillFrame
             guard cards.push(text, flyingFrom: source) else { return false }
-            if source != nil { panel?.handOffToCard() }
+            // Капсула замолкает, только если эстафету и правда приняла летящая фигура:
+            // перелёт САМ показывает, куда уехал текст, и вспышка «⤷ В карточку» следом —
+            // второй раз про то же самое. При «Уменьшить движение» перелёта нет, и эта
+            // вспышка остаётся единственным ответом — тогда капсула договаривает.
+            if source != nil, CardFlight.flies { panel?.handOffToCard() }
             return true
         }
         // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
