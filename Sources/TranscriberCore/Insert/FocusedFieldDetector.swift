@@ -50,8 +50,11 @@ public enum FocusedFieldDetector {
 
     /// Сколько ждём ответа от чужого приложения на один запрос…
     private static let messagingTimeout: Float = 0.25
-    /// …и сколько на весь опрос целиком: запросов четыре, и зависшее приложение не должно
-    /// задерживать вставку на секунду. Просрочка — это `.unavailable`, то есть обычный Cmd-V.
+    /// …и сколько на весь опрос целиком: запросов пять (фокус, роль, записываемость,
+    /// выделение, список атрибутов), и зависшее приложение не должно задерживать вставку
+    /// на секунду с лишним. Дедлайн проверяется перед КАЖДЫМ запросом, включая самый первый,
+    /// поэтому потолок ожидания — дедлайн плюс таймаут одного последнего запроса, а не
+    /// сумма всех пяти. Просрочка — это `.unavailable`, то есть обычный Cmd-V.
     private static let overallDeadline: TimeInterval = 0.3
 
     /// Вердикт по живой системе. Блокирующий вызов (ходит в чужой процесс) — звать с фона.
@@ -96,10 +99,13 @@ public enum FocusedFieldDetector {
         // но спрашивать систему ради заведомо неизвестного ответа незачем.
         guard AXIsProcessTrusted() else { return .unavailable }
         let started = Date()
+        /// Общий бюджет вышел: дальше не спрашиваем, отвечаем «не знаю».
+        func outOfTime() -> Bool { Date().timeIntervalSince(started) > overallDeadline }
 
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, messagingTimeout)
 
+        if outOfTime() { return .unavailable }
         var focused: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(
             system,
@@ -120,31 +126,29 @@ public enum FocusedFieldDetector {
         // swiftlint:disable:next force_cast
         let element = focused as! AXUIElement
 
-        /// Общий бюджет вышел: дальше не спрашиваем, отвечаем «не знаю».
-        func outOfTime() -> Bool { Date().timeIntervalSince(started) > overallDeadline }
-
+        if outOfTime() { return .unavailable }
         var roleValue: CFTypeRef?
         let role = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success
             ? roleValue as? String
             : nil
-        if outOfTime() { return .unavailable }
 
+        if outOfTime() { return .unavailable }
         var settable: DarwinBoolean = false
         let valueSettable =
             AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success
             && settable.boolValue
-        if outOfTime() { return .unavailable }
 
+        if outOfTime() { return .unavailable }
         var range: CFTypeRef?
         let hasSelectedTextRange = AXUIElementCopyAttributeValue(
             element,
             kAXSelectedTextRangeAttribute as CFString,
             &range
         ) == .success
-        if outOfTime() { return .unavailable }
 
         // Текстовые маркеры — расширение WebKit/Blink: у нативных AppKit-вью их не бывает,
         // а любой узел веб-страницы их отдаёт. Это и есть метка «здесь веб-контент».
+        if outOfTime() { return .unavailable }
         var names: CFArray?
         let isWebContext = AXUIElementCopyAttributeNames(element, &names) == .success
             && ((names as? [String])?.contains("AXStartTextMarker") ?? false)

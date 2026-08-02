@@ -39,6 +39,28 @@ final class CardStackControllerTests: XCTestCase {
         XCTAssertEqual(cardWindows.count, 5, "вытесненная карточка обязана убрать своё окно")
     }
 
+    /// Две диктовки подряд, обе в окно вытеснения: потолок обязан выстоять.
+    ///
+    /// Регрессия, ради которой тест и написан: вытеснение откладывало саму вставку, и вторая
+    /// диктовка попадала в момент, когда стопка выглядела неполной, — обе вставки проходили
+    /// «без вытеснения», и карточек становилось шесть.
+    func testOverlappingPushesKeepTheCap() async throws {
+        let stack = CardStackController()
+        for index in 1...5 {
+            XCTAssertTrue(stack.push("карточка \(index)"))
+        }
+        XCTAssertEqual(stack.count, 5)
+
+        // Обе — внутри 240 мс, отведённых на уход вытесненной.
+        XCTAssertTrue(stack.push("шестая"))
+        XCTAssertTrue(stack.push("седьмая"))
+        XCTAssertLessThanOrEqual(stack.count, 5, "учёт не имеет права разъезжаться даже на миг")
+
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(stack.count, 5, "потолок стопки — пять карточек")
+        XCTAssertEqual(cardWindows.count, 5, "и ровно столько же окон на экране")
+    }
+
     /// Обычный уход карточки тоже освобождает окно — тот же путь, но со ссылкой в стопке.
     func testDismissedCardReleasesItsWindow() async throws {
         let stack = CardStackController()

@@ -11,8 +11,12 @@ final class CardStackController {
     /// Снизу вверх: нулевая — самая свежая, у самого низа экрана.
     private var cards: [CardPanel] = []
 
-    /// Экран, на котором живёт стопка. Пересчитывается на каждой новой карточке — как панель
-    /// диктовки, которая на каждой сессии заново ищет экран под курсором.
+    /// Экран, на котором живёт стопка.
+    ///
+    /// Замысел: монитор выбирается один раз — когда стопка заводится с нуля, по курсору
+    /// (там же, где и окно, в которое диктовали). Пока карточки висят, следующая
+    /// присоединяется к ним на том же экране, а уже висящие не переезжают НИКОГДА:
+    /// стопка, скачущая между мониторами вслед за мышью, — это потерянные карточки.
     private var screenFrame: CGRect?
 
     /// Сколько карточек стопка считает своими. Нужен пробе и тесту вытеснения.
@@ -27,32 +31,39 @@ final class CardStackController {
     /// текст обычным путём, иначе диктовка молча пропадёт.
     @discardableResult
     func push(_ text: String) -> Bool {
-        guard let frame = Self.cursorScreenFrame() else { return false }
-        screenFrame = frame
+        // Новая стопка — новый монитор; у живой стопки экран не трогаем (см. `screenFrame`).
+        if cards.isEmpty { screenFrame = Self.cursorScreenFrame() }
+        guard screenFrame != nil else { return false }
 
-        guard cards.count >= Self.limit, let oldest = cards.last else {
-            add(text)
-            return true
-        }
-        // Вытеснение самой старой: пока она уходит, оставшиеся стоят на месте — иначе
-        // они наезжали бы на уходящую по дороге вверх.
-        cards.removeLast()
-        oldest.dismiss()
-        Task { [weak self] in
-            try? await Task.sleep(for: CardPanel.exitDuration)
-            self?.add(text)
-        }
-        return true
-    }
-
-    private func add(_ text: String) {
         let card = CardPanel(text: text)
         card.onDismiss = { [weak self] card in self?.remove(card) }
         cards.insert(card, at: 0)
-        // Новая карточка встаёт на своё место сразу: ехать ей неоткуда, она выезжает
-        // собственной анимацией слева. Двигаются только те, что уже висели.
-        layout(animated: true, placing: card)
-        card.present()
+
+        // Потолок считаем прямо здесь и безусловно. Отложить эту проверку нельзя: две
+        // диктовки подряд попадали бы обе в «стопка ещё не полна», и отложенная вставка
+        // делала бы шестую карточку. Инвариант «не больше пяти» держится на каждой вставке.
+        var evicted = false
+        while cards.count > Self.limit {
+            cards.removeLast().dismiss()
+            evicted = true
+        }
+
+        guard evicted else {
+            // Новая карточка встаёт на своё место сразу: ехать ей неоткуда, она выезжает
+            // собственной анимацией слева. Двигаются только те, что уже висели.
+            layout(animated: true, placing: card)
+            card.present()
+            return true
+        }
+        // Вытесненной надо дать уйти: иначе оставшиеся наезжают на неё по дороге вверх.
+        // Учёт при этом уже закончен — ждёт только картинка.
+        Task { [weak self] in
+            try? await Task.sleep(for: CardPanel.exitDuration)
+            guard let self, cards.contains(where: { $0 === card }) else { return }
+            layout(animated: true, placing: card)
+            card.present()
+        }
+        return true
     }
 
     private func remove(_ card: CardPanel) {
