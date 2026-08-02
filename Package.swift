@@ -35,5 +35,11 @@ let package = Package(
             name: "TranscriberCoreTests",
             dependencies: ["TranscriberCore"]
         ),
+        // Тесты самого приложения: стопка карточек живёт окнами, и её поведение
+        // (вытеснение, освобождение окна) проверяется только здесь.
+        .testTarget(
+            name: "TranscriberAppTests",
+            dependencies: ["Transcriber"]
+        ),
     ]
 )

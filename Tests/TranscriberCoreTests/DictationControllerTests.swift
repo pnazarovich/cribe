@@ -122,7 +122,7 @@ private final class SpyDelivery: @unchecked Sendable {
 
     var delivery: TextDelivery {
         TextDelivery(
-            focusState: { self.focus },
+            focus: { FocusVerdict(state: self.focus, role: nil) },
             insert: { text in
                 self.lock.withLock { self.insertedTexts.append(text) }
                 return .pasted
@@ -133,8 +133,10 @@ private final class SpyDelivery: @unchecked Sendable {
 }
 
 /// Приёмник карточек: замыкание живёт дольше вызова, поэтому текст копим в объекте.
+/// `accepts` изображает стопку, которой некуда встать (не нашла экрана).
 private final class CardSink {
     var texts: [String] = []
+    var accepts = true
 }
 
 /// Захват-заглушка: живой микрофон в тестах не поднимаем, а конвейеру от захвата нужен
@@ -440,8 +442,7 @@ final class DictationControllerTests: XCTestCase {
         let sink = CardSink()
         let engine = HoldingEngine()
         let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
-        controller.onCardText = { sink.texts.append($0) }
-        let historyBefore = HistoryStore.shared.items.count
+        controller.onCardText = { sink.texts.append($0); return sink.accepts }
 
         try await runDictation(controller: controller, engine: engine)
         try await wait(for: "карточку") { controller.state == .carded }
@@ -449,8 +450,9 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(sink.texts, [HoldingEngine.text])
         XCTAssertTrue(spy.inserted.isEmpty, "вставки быть не должно — вставлять некуда")
         XCTAssertEqual(spy.copied, [HoldingEngine.text])
-        // Карточка истории не отменяет: выпавшую из стопки диктовку надо где-то найти.
-        XCTAssertEqual(HistoryStore.shared.items.count, historyBefore + 1)
+        // Карточка истории не отменяет: вытесненную из стопки диктовку надо где-то найти.
+        // Сравниваем верхнюю запись, а не длину: история упирается в свой потолок.
+        XCTAssertEqual(HistoryStore.shared.items.first?.text, HoldingEngine.text)
         XCTAssertEqual(controller.lastOriginal, HoldingEngine.text)
     }
 
@@ -461,7 +463,7 @@ final class DictationControllerTests: XCTestCase {
         let sink = CardSink()
         let engine = HoldingEngine()
         let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
-        controller.onCardText = { sink.texts.append($0) }
+        controller.onCardText = { sink.texts.append($0); return sink.accepts }
 
         try await runDictation(controller: controller, engine: engine)
         try await wait(for: "вставку") { controller.state == .inserted }
@@ -482,7 +484,7 @@ final class DictationControllerTests: XCTestCase {
             delivery: spy,
             cardsWhenNoField: false
         )
-        controller.onCardText = { sink.texts.append($0) }
+        controller.onCardText = { sink.texts.append($0); return sink.accepts }
 
         try await runDictation(controller: controller, engine: engine)
         try await wait(for: "вставку") { controller.state == .inserted }
@@ -501,6 +503,38 @@ final class DictationControllerTests: XCTestCase {
         try await wait(for: "вставку") { controller.state == .inserted }
 
         XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+    }
+
+    /// Поле ввода есть — карточку не трогаем вовсе: обычная вставка, как до этой функции.
+    func testEditableFieldRoutesToInsert() async throws {
+        let spy = SpyDelivery(focus: .editable)
+        let sink = CardSink()
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+        controller.onCardText = { sink.texts.append($0); return sink.accepts }
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "вставку") { controller.state == .inserted }
+
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+        XCTAssertTrue(sink.texts.isEmpty)
+    }
+
+    /// Стопка карточку не приняла (не нашла экрана): текст обязан уехать обычной вставкой.
+    /// Иначе состояние сказало бы «в карточку», а карточки бы не было — диктовка пропала.
+    func testRefusedCardFallsBackToInsert() async throws {
+        let spy = SpyDelivery(focus: .notEditable)
+        let sink = CardSink()
+        sink.accepts = false
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+        controller.onCardText = { sink.texts.append($0); return sink.accepts }
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "вставку") { controller.state == .inserted }
+
+        XCTAssertEqual(sink.texts, [HoldingEngine.text], "стопку всё-таки спросили")
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text], "и вставили, раз она отказала")
     }
 
     // MARK: - Обвязка

@@ -64,7 +64,7 @@ final class AppCore: ObservableObject {
         // из этого делает уже приложение.
         let cards = CardStackController()
         self.cards = cards
-        controller.onCardText = { [weak cards] text in cards?.push(text) }
+        controller.onCardText = { [weak cards] text in cards?.push(text) ?? false }
         // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [controller] in controller.toggle() }
         KeyboardShortcuts.onKeyUp(for: .switchLanguage) { [controller] in controller.switchLanguage() }

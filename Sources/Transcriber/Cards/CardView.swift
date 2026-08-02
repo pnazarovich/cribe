@@ -88,11 +88,11 @@ struct CardView: View {
         .overlay { GlassRim(shape: shape) }
         .overlay { GlassSheen(shape: shape) }
         .overlay { if !accessibility.reduceMotion { SpecularSweep(shape: shape) } }
-        // Без группировки тень рисовалась бы от каждого сабвью отдельно.
+        // Без группировки эффекты считались бы от каждого сабвью отдельно.
         .compositingGroup()
-        // Две тени: широкая мягкая продаёт парение, плотная контактная даёт кромку.
-        .shadow(color: .black.opacity(0.30), radius: 12, y: 4)
-        .shadow(color: .black.opacity(0.20), radius: 2.5, y: 1)
+        // Тени тут нет намеренно: её рисует окно (`panel.hasShadow`). Своя тень красила бы
+        // прозрачный запас вокруг карточки, а мышь WindowServer маршрутизирует по альфе —
+        // полупрозрачный ореол ловил бы клики, не пропуская их в окно под карточкой.
         // Пока карточку тащат, оригинал слегка отступает: тянут «её», а не копию.
         .opacity(model.isDragging ? 0.35 : 1)
         .scaleEffect(model.isDragging ? 0.97 : 1)

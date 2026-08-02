@@ -71,22 +71,22 @@ public enum TextInserter {
 /// поля ввода. Живая реализация ходит в AppKit и AX; тесты подставляют свою — прогон
 /// не имеет права ни затирать буфер обмена пользователя, ни слать Cmd-V в чужое окно.
 public struct TextDelivery: Sendable {
-    public var focusState: @Sendable () -> FocusState
+    public var focus: @Sendable () -> FocusVerdict
     public var insert: @Sendable (String) -> InsertOutcome
     public var copy: @Sendable (String) -> Void
 
     public init(
-        focusState: @escaping @Sendable () -> FocusState,
+        focus: @escaping @Sendable () -> FocusVerdict,
         insert: @escaping @Sendable (String) -> InsertOutcome,
         copy: @escaping @Sendable (String) -> Void
     ) {
-        self.focusState = focusState
+        self.focus = focus
         self.insert = insert
         self.copy = copy
     }
 
     public static let system = TextDelivery(
-        focusState: { FocusedFieldDetector.current() },
+        focus: { FocusedFieldDetector.current() },
         insert: { TextInserter.insert($0) },
         copy: { TextInserter.copy($0) }
     )

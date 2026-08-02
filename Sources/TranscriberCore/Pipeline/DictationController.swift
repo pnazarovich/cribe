@@ -251,8 +251,9 @@ public final class DictationController: ObservableObject {
     /// Текст, которому не нашлось поля ввода, — его забирает стопка карточек в приложении.
     /// Замыкание, а не `@Published`: ядро остаётся без UI, а карточка должна появиться
     /// ровно один раз на диктовку, а не на каждую пересборку подписчика.
-    /// Не назначен — конвейер вставляет по-старому (так живёт CLI).
-    public var onCardText: ((String) -> Void)?
+    /// Возвращает `false`, если карточку показать не удалось, — тогда конвейер вставляет
+    /// текст обычным путём. Не назначен — конвейер вставляет по-старому (так живёт CLI).
+    public var onCardText: ((String) -> Bool)?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -802,6 +803,11 @@ public final class DictationController: ObservableObject {
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
                 degradations.append(Self.clipboardMessage(reason))
             }
+            // Оговорка про AI-чистку не должна съедать главную новость: текст не в документе,
+            // а в карточке — без этого пользователь пойдёт искать его не там.
+            if case .card = destination, !degradations.isEmpty {
+                degradations.append("текст в карточке")
+            }
             if !degradations.isEmpty {
                 state = .degraded(degradations.joined(separator: "; "))
                 scheduleIdle(after: Self.degradedLinger)
@@ -926,19 +932,41 @@ public final class DictationController: ObservableObject {
 
     /// Последний шаг: либо обычная вставка, либо — если вставлять некуда — карточка.
     ///
-    /// Карточка появляется только при трёх «да» разом: настройка включена, стопка карточек
-    /// вообще есть (в CLI её нет) и детектор уверенно говорит, что поля ввода нет.
-    /// Любое сомнение (`.unknown`) — это прежний Cmd-V: терять текст в карточке там, где
-    /// его ждали в документе, нельзя.
+    /// Карточка появляется только при четырёх «да» разом: настройка включена, стопка карточек
+    /// вообще есть (в CLI её нет), детектор уверенно говорит, что поля ввода нет, и сама
+    /// стопка карточку приняла. Любое сомнение (`.unknown`) — это прежний Cmd-V: терять
+    /// текст в карточке там, где его ждали в документе, нельзя.
     private func deliver(_ text: String) async -> Destination {
         guard settings.cardsWhenNoField, let onCardText else { return .pasteboard(await insert(text)) }
-        guard await focusState() == .notEditable else { return .pasteboard(await insert(text)) }
+
+        let verdict = await focusVerdict()
+        guard verdict.state == .notEditable else {
+            logRouting(verdict, path: "вставка")
+            return .pasteboard(await insert(text))
+        }
 
         // Контракт буфера обмена прежний: текст остаётся в пастборде в любом случае —
         // карточку можно и не трогать, а просто нажать Cmd-V самому.
         delivery.copy(text)
-        onCardText(text)
+        // Стопка может отказать (не нашла экрана) — тогда текст обязан уехать обычным путём,
+        // иначе он молча пропадёт: состояние скажет «в карточку», а карточки не будет.
+        guard onCardText(text) else {
+            logRouting(verdict, path: "вставка (стопка отказала)")
+            return .pasteboard(await insert(text))
+        }
+        logRouting(verdict, path: "карточка")
         return .card
+    }
+
+    /// Единственная строка, по которой полевой отчёт «карточка не появилась» вообще можно
+    /// разобрать: что ответил AX, какая была роль и куда в итоге уехал текст.
+    private func logRouting(_ verdict: FocusVerdict, path: String) {
+        logger.info(
+            """
+            Доставка: фокус=\(String(describing: verdict.state), privacy: .public) \
+            роль=\(verdict.role ?? "—", privacy: .public) → \(path, privacy: .public)
+            """
+        )
     }
 
     /// `TextInserter.insert` синхронно спит 20 мс — уводим с главного потока.
@@ -948,9 +976,9 @@ public final class DictationController: ObservableObject {
     }
 
     /// Опрос AX ходит в чужой процесс и блокирует поток — главный на это не занимаем.
-    private func focusState() async -> FocusState {
+    private func focusVerdict() async -> FocusVerdict {
         let delivery = self.delivery
-        return await Task.detached(priority: .userInitiated) { delivery.focusState() }.value
+        return await Task.detached(priority: .userInitiated) { delivery.focus() }.value
     }
 
     private static func clipboardMessage(_ reason: String) -> String {

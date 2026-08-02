@@ -28,9 +28,12 @@ final class CardPanel {
     }
 
     /// Окно живёт, пока карточка доигрывает уход: убрать его раньше — обрезать анимацию.
-    private static let exitDuration: Duration = .milliseconds(240)
+    /// Не private: на эту же паузу стопка откладывает приезд карточки, вытеснившей соседку.
+    static let exitDuration: Duration = .milliseconds(240)
     /// Сколько держится вспышка «Скопировано».
     private static let copyFlash: Duration = .milliseconds(1200)
+    /// Когда появление отыграно и тень можно пересчитать по готовому кадру.
+    private static let appearSettle: Duration = .milliseconds(420)
 
     private let model: CardModel
     private let panel: NSPanel
@@ -63,15 +66,21 @@ final class CardPanel {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .floating
+        // Ярус HUD, тот же, что у панели диктовки: `.floating` (3) перекрывается окнами
+        // приложений в режиме презентации и полноэкранного видео, а `.statusBar` (25) — нет.
+        // Рецепт живой панели проверен полным экраном в бою, поэтому карточки носят его же.
+        panel.level = .statusBar
         // Без `.stationary`: карточки обязаны ехать за пользователем между рабочими столами,
         // как скриншоты CleanShot, — на то они и «висят, пока не уберёшь».
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // Тень рисовалась бы по прямоугольнику окна, а не по карточке: тени рисует SwiftUI.
-        panel.hasShadow = false
+        // Тень рисует AppKit по альфе содержимого и СНАРУЖИ рамки окна — она не стоит ни
+        // одного пикселя запаса и, главное, ни одного проглоченного клика. Своя тень в
+        // SwiftUI красила бы прозрачный запас, а WindowServer маршрутизирует мышь по альфе:
+        // полупрозрачный ореол ловил бы клики, не пропуская их в окно под карточкой.
+        panel.hasShadow = true
         panel.animationBehavior = .none
         panel.isMovableByWindowBackground = false
         // Карточка интерактивна — в отличие от пилюли, клики нужны ей самой.
@@ -103,6 +112,12 @@ final class CardPanel {
         // Именно `orderFrontRegardless`: makeKey увёл бы фокус с целевого поля.
         panel.orderFrontRegardless()
         withAnimation(Self.appearAnimation) { model.isPresented = true }
+        // Тень AppKit кэширует по альфе содержимого, а содержимое как раз приезжает —
+        // без пересчёта после анимации она осталась бы от пустого кадра.
+        Task { [panel] in
+            try? await Task.sleep(for: Self.appearSettle)
+            panel.invalidateShadow()
+        }
     }
 
     /// Уход с анимацией и снятие окна следом. Повторный вызов (двойной клик по ✕, дроп
@@ -111,9 +126,12 @@ final class CardPanel {
         guard !isLeaving else { return }
         isLeaving = true
         withAnimation(Self.disappearAnimation) { model.isPresented = false }
-        closeTask = Task { [weak self] in
+        // Ссылка на себя тут ОБЯЗАНА быть сильной. Вытесненная шестой карточка выпадает из
+        // стопки последней ссылкой, и со слабой `self` задача просыпалась в пустоту: окно
+        // при этом остаётся показанным (его держит список окон приложения) — то есть висит
+        // на экране навсегда. Цикла нет: задача заканчивается и отпускает себя сама.
+        closeTask = Task {
             try? await Task.sleep(for: Self.exitDuration)
-            guard let self else { return }
             panel.orderOut(nil)
             onDismiss?(self)
         }
@@ -132,6 +150,9 @@ final class CardPanel {
             // Лёгкий перелёт в конце: то же ощущение пружины, что у появления пилюли.
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1.06)
             panel.animator().setFrame(target, display: true)
+        } completionHandler: { [panel] in
+            // Переезд окна тень не пересчитывает — после него она осталась бы от старого места.
+            panel.invalidateShadow()
         }
     }
 
@@ -324,6 +345,10 @@ private final class CardContainerView: NSView, NSDraggingSource {
         isDragging = false
         downPoint = nil
         pressedControl = nil
+        // Курсор уехал вместе с картинкой и обратно уже не «войдёт» — трекинг события входа
+        // не пришлёт. Без сброса отказавшаяся карточка навсегда осталась бы подсвеченной.
+        model?.isHovered = false
+        model?.hoveredControl = nil
         // Пустая маска — единственный надёжный признак «никто не взял»: конкретную операцию
         // приёмник выбирает сам (кто-то отвечает `.copy`, кто-то `.generic`).
         onDragEnded?(operation != [])

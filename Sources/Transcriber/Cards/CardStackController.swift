@@ -11,24 +11,44 @@ final class CardStackController {
     /// Снизу вверх: нулевая — самая свежая, у самого низа экрана.
     private var cards: [CardPanel] = []
 
-    /// Экран, на котором живёт стопка. Выбирается по курсору при появлении первой карточки —
-    /// как и у панели диктовки. Пока стопка не опустела, она никуда не переезжает: разъезжаться
-    /// по мониторам вслед за мышью карточки не должны.
+    /// Экран, на котором живёт стопка. Пересчитывается на каждой новой карточке — как панель
+    /// диктовки, которая на каждой сессии заново ищет экран под курсором.
     private var screenFrame: CGRect?
 
-    func push(_ text: String) {
-        if cards.isEmpty { screenFrame = Self.cursorScreenFrame() }
-        guard screenFrame != nil else { return }
+    /// Сколько карточек стопка считает своими. Нужен пробе и тесту вытеснения.
+    var count: Int { cards.count }
 
+    /// Убирает всё с экрана — нужен тесту, чтобы прогон не оставлял за собой окон.
+    func dismissAllForTesting() {
+        for card in cards { card.dismiss() }
+    }
+
+    /// `false` — показать карточку не вышло (не нашли экрана): вызывающий обязан вставить
+    /// текст обычным путём, иначе диктовка молча пропадёт.
+    @discardableResult
+    func push(_ text: String) -> Bool {
+        guard let frame = Self.cursorScreenFrame() else { return false }
+        screenFrame = frame
+
+        guard cards.count >= Self.limit, let oldest = cards.last else {
+            add(text)
+            return true
+        }
+        // Вытеснение самой старой: пока она уходит, оставшиеся стоят на месте — иначе
+        // они наезжали бы на уходящую по дороге вверх.
+        cards.removeLast()
+        oldest.dismiss()
+        Task { [weak self] in
+            try? await Task.sleep(for: CardPanel.exitDuration)
+            self?.add(text)
+        }
+        return true
+    }
+
+    private func add(_ text: String) {
         let card = CardPanel(text: text)
         card.onDismiss = { [weak self] card in self?.remove(card) }
         cards.insert(card, at: 0)
-        // Лишние снимаем до раскладки: анимировать уезжающие вверх карточки, которых через
-        // мгновение не станет, незачем.
-        while cards.count > Self.limit {
-            cards.removeLast().dismiss()
-        }
-
         // Новая карточка встаёт на своё место сразу: ехать ей неоткуда, она выезжает
         // собственной анимацией слева. Двигаются только те, что уже висели.
         layout(animated: true, placing: card)
