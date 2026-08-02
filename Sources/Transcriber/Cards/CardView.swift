@@ -60,6 +60,8 @@ final class CardModel: ObservableObject {
     /// Карточка приехала не сама, а перелётом пилюли: тогда она проявляется на месте,
     /// без выезда слева — иначе на стыке видно, как содержимое «дёргается».
     @Published var entersByFading = false
+    /// Сдвиг под пальцами при смахивании: карточка идёт за жестом, а не прыгает по нему.
+    @Published var swipeOffset: CGFloat = 0
 
     init(text: String) {
         self.text = text
@@ -107,8 +109,10 @@ struct CardView: View {
         .animation(.easeOut(duration: 0.15), value: model.isDragging)
         // Вход и уход одним движением: выезжает слева, уходит туда же. После перелёта
         // пилюли — только проявление: ехать карточке неоткуда, она уже «прилетела».
-        .offset(x: model.isPresented || model.entersByFading ? 0 : -CardMetrics.slide)
-        .opacity(model.isPresented ? 1 : 0)
+        // Сдвиг смахивания складывается с этим: жест продолжается тем же движением, каким
+        // карточка и уходит.
+        .offset(x: (model.isPresented || model.entersByFading ? 0 : -CardMetrics.slide) + model.swipeOffset)
+        .opacity(model.isPresented ? CardSwipe.opacity(offset: model.swipeOffset, width: CardMetrics.width) : 0)
         // Схема фиксированно тёмная: только она читается над любым фоном.
         .environment(\.colorScheme, .dark)
         .padding(CardMetrics.bleed)

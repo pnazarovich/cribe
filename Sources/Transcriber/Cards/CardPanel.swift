@@ -101,6 +101,16 @@ final class CardPanel {
         container.dragImage = Self.dragImage(text: text, cardHeight: cardHeight, scale: scale)
         container.onCopy = { [weak self] in self?.copy() }
         container.onClose = { [weak self] in self?.dismiss() }
+        container.onSwipe = { [weak self] offset in self?.model.swipeOffset = offset }
+        container.onSwipeEnded = { [weak self] dismissing in
+            guard let self else { return }
+            guard dismissing else {
+                // Не дотянули: карточка возвращается на место пружиной.
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { self.model.swipeOffset = 0 }
+                return
+            }
+            dismiss(swiped: true)
+        }
         container.onDragBegan = { [weak self] in self?.model.isDragging = true }
         container.onDragEnded = { [weak self] accepted in
             guard let self else { return }
@@ -148,9 +158,17 @@ final class CardPanel {
 
     /// Уход с анимацией и снятие окна следом. Повторный вызов (двойной клик по ✕, дроп
     /// на уже уходящей карточке) ничего не делает.
-    func dismiss() {
+    ///
+    /// `swiped` — карточку смахнули: она не гаснет на месте, а доезжает за левый край
+    /// от того сдвига, где её отпустили. Прыжка на старое место при этом нет.
+    func dismiss(swiped: Bool = false) {
         guard !isLeaving else { return }
         isLeaving = true
+        if swiped, !HUDAccessibility.shared.reduceMotion {
+            withAnimation(.easeOut(duration: 0.18)) {
+                model.swipeOffset = -(CardMetrics.width + CardMetrics.bleed * 2)
+            }
+        }
         withAnimation(Self.disappearAnimation) { model.isPresented = false }
         // Ссылка на себя тут ОБЯЗАНА быть сильной. Вытесненная шестой карточка выпадает из
         // стопки последней ссылкой, и со слабой `self` задача просыпалась в пустоту: окно
@@ -250,6 +268,10 @@ private final class CardContainerView: NSView, NSDraggingSource {
 
     var onCopy: (() -> Void)?
     var onClose: (() -> Void)?
+    /// Текущий сдвиг под пальцами.
+    var onSwipe: ((CGFloat) -> Void)?
+    /// Жест закончился: `true` — карточку смахнули, `false` — вернуть на место.
+    var onSwipeEnded: ((Bool) -> Void)?
     var onDragBegan: (() -> Void)?
     /// `true` — текст приняли; `false` — бросили в пустоту, карточка остаётся.
     var onDragEnded: ((Bool) -> Void)?
@@ -261,6 +283,10 @@ private final class CardContainerView: NSView, NSDraggingSource {
     private var pressedControl: CardControl?
     private var downPoint: NSPoint?
     private var isDragging = false
+    /// Идёт смахивание: путь пальцев с начала жеста и последняя дельта (она же скорость,
+    /// потому что события приходят ровным потоком).
+    private var swipeTravel: CGFloat?
+    private var swipeSpeed: CGFloat = 0
 
     /// Совпадает со SwiftUI: начало координат слева сверху.
     override var isFlipped: Bool { true }
@@ -339,7 +365,9 @@ private final class CardContainerView: NSView, NSDraggingSource {
 
     override func mouseDragged(with event: NSEvent) {
         // Начатое на кнопке движение — не перетаскивание: кнопку либо нажмут, либо уедут с неё.
-        guard !isDragging, pressedControl == nil, let downPoint else { return }
+        // Идущее смахивание перетаскивание тоже не начинает: два жеста разом — это рывок
+        // картинки посреди смахивания.
+        guard !isDragging, pressedControl == nil, swipeTravel == nil, let downPoint else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard hypot(point.x - downPoint.x, point.y - downPoint.y) > Self.dragThreshold else { return }
         isDragging = true
@@ -357,6 +385,46 @@ private final class CardContainerView: NSView, NSDraggingSource {
         switch pressedControl {
         case .copy: onCopy?()
         case .close: onClose?()
+        }
+    }
+
+    // MARK: - Смахивание двумя пальцами
+
+    /// Двумя пальцами влево — карточка уходит.
+    ///
+    /// Знак замерен на живой системе: при естественной прокрутке (значение по умолчанию)
+    /// пальцы влево дают `scrollingDeltaX < 0` — та же дельта, с которой содержимое любого
+    /// NSScrollView едет влево вместе с пальцами. Поэтому сдвиг просто копит дельту.
+    ///
+    /// Мышиное колесо жестом не считается (`hasPreciseScrollingDeltas`), инерционный хвост
+    /// после отпускания — тоже: карточка не должна уезжать сама, когда пальцы уже сняты.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, event.momentumPhase == [], !isDragging else {
+            super.scrollWheel(with: event)
+            return
+        }
+        switch event.phase {
+        case .began:
+            swipeTravel = 0
+            swipeSpeed = 0
+        case .changed:
+            // Поток бывает и без `.began` (жест начался за пределами карточки) — тогда
+            // считаем от первого же события: пропустить смахивание хуже, чем начать позже.
+            let travel = (swipeTravel ?? 0) + event.scrollingDeltaX
+            swipeTravel = travel
+            swipeSpeed = event.scrollingDeltaX
+            onSwipe?(CardSwipe.offset(forFingerTravel: travel, width: CardMetrics.width))
+        case .ended, .cancelled:
+            guard let travel = swipeTravel else { return }
+            swipeTravel = nil
+            let offset = CardSwipe.offset(forFingerTravel: travel, width: CardMetrics.width)
+            onSwipeEnded?(
+                event.phase == .cancelled
+                    ? false
+                    : CardSwipe.dismisses(offset: offset, speed: swipeSpeed, width: CardMetrics.width)
+            )
+        default:
+            break
         }
     }
 
