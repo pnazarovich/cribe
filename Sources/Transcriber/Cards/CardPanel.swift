@@ -27,6 +27,12 @@ final class CardPanel {
         HUDAccessibility.shared.reduceMotion ? .easeInOut(duration: 0.16) : .easeIn(duration: 0.2)
     }
 
+    /// Конец перелёта пилюли: карточка не выезжает, а проявляется ровно за то время, что
+    /// летящая фигура растворяется. Оба конца шва идут одной длительностью — иначе он виден.
+    private static var handoffAnimation: Animation {
+        .easeOut(duration: CardFlight.handoff)
+    }
+
     /// Окно живёт, пока карточка доигрывает уход: убрать его раньше — обрезать анимацию.
     /// Не private: на эту же паузу стопка откладывает приезд карточки, вытеснившей соседку.
     static let exitDuration: Duration = .milliseconds(240)
@@ -66,13 +72,11 @@ final class CardPanel {
             defer: false
         )
         panel.isFloatingPanel = true
-        // Ярус HUD, тот же, что у панели диктовки: `.floating` (3) перекрывается окнами
-        // приложений в режиме презентации и полноэкранного видео, а `.statusBar` (25) — нет.
-        // Рецепт живой панели проверен полным экраном в бою, поэтому карточки носят его же.
-        panel.level = .statusBar
+        // Ярус и поведение — общий рецепт HUD (см. `HUDWindow`), тот же, что у пилюли.
         // Без `.stationary`: карточки обязаны ехать за пользователем между рабочими столами,
         // как скриншоты CleanShot, — на то они и «висят, пока не уберёшь».
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.level = HUDWindow.level
+        panel.collectionBehavior = HUDWindow.spaceBehavior
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -90,7 +94,11 @@ final class CardPanel {
 
         container.model = model
         container.text = text
-        container.dragImage = Self.dragImage(text: text)
+        // Масштаб — того экрана, на котором карточка окажется. Панель ещё не поставлена
+        // на место, поэтому берём экран курсора: стопка выбирает его же.
+        let scale = (NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main)?
+            .backingScaleFactor ?? 2
+        container.dragImage = Self.dragImage(text: text, cardHeight: cardHeight, scale: scale)
         container.onCopy = { [weak self] in self?.copy() }
         container.onClose = { [weak self] in self?.dismiss() }
         container.onDragBegan = { [weak self] in self?.model.isDragging = true }
@@ -108,10 +116,28 @@ final class CardPanel {
         panel.frame.size
     }
 
-    func present() {
-        // Именно `orderFrontRegardless`: makeKey увёл бы фокус с целевого поля.
-        panel.orderFrontRegardless()
-        withAnimation(Self.appearAnimation) { model.isPresented = true }
+    /// Картинка, которая поедет под курсором. Нужна тесту пропорций: сплющивание иначе
+    /// ловится только глазом.
+    var dragImageForTesting: NSImage? { container.dragImage }
+
+    /// Видимый прямоугольник карточки на экране, без прозрачного запаса вокруг: в него
+    /// целится перелёт капсулы.
+    var cardFrameOnScreen: CGRect {
+        CGRect(
+            x: panel.frame.minX + CardMetrics.bleed,
+            y: panel.frame.minY + CardMetrics.bleed,
+            width: CardMetrics.width,
+            height: cardHeight
+        )
+    }
+
+    /// `fading` — карточка не выезжает слева, а проявляется на месте: так заканчивается
+    /// перелёт пилюли, и шов между летящей фигурой и настоящей карточкой не виден.
+    func present(fading: Bool = false) {
+        // Заявка на «все пространства» подтверждается показом (см. `HUDWindow`).
+        HUDWindow.orderFront(panel)
+        model.entersByFading = fading
+        withAnimation(fading ? Self.handoffAnimation : Self.appearAnimation) { model.isPresented = true }
         // Тень AppKit кэширует по альфе содержимого, а содержимое как раз приезжает —
         // без пересчёта после анимации она осталась бы от пустого кадра.
         Task { [panel] in
@@ -169,10 +195,32 @@ final class CardPanel {
 
     /// Картинка под курсором. Рисуем её один раз при создании карточки: во время самого
     /// перетаскивания рендерить уже поздно.
-    private static func dragImage(text: String) -> NSImage? {
-        let renderer = ImageRenderer(content: CardDragPreview(text: text))
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+    ///
+    /// Габарит задаётся ЖЁСТКО — ровно та карточка, что на экране, плюс поле под тень.
+    /// Иначе картинка выходит своей высоты (в превью нет шапки), AppKit растягивает её
+    /// в переданный кадр, и карточка под курсором сплющивается. Пропорция картинки и кадра
+    /// обязана совпадать — это и проверяет тест.
+    private static func dragImage(text: String, cardHeight: CGFloat, scale: CGFloat) -> NSImage? {
+        let renderer = ImageRenderer(
+            content: CardDragPreview(text: text, height: cardHeight)
+        )
+        // Масштаб экрана самой карточки: на Retina картинка иначе была бы мыльной.
+        renderer.scale = scale
         return renderer.nsImage
+    }
+
+    /// Кадр летящей под курсором картинки: карточка плюс поле под тень и лёгкое увеличение —
+    /// стандартный намёк «предмет оторвался от стола». Пропорции при этом не меняются:
+    /// множитель один на обе стороны, поле одинаково со всех сторон.
+    static func dragFrame(cardRect: CGRect) -> CGRect {
+        let withShadow = cardRect.insetBy(dx: -CardMetrics.dragShadow, dy: -CardMetrics.dragShadow)
+        // Увеличение вокруг центра: обе стороны умножаются на одно число, поэтому
+        // пропорция картинки и кадра остаётся общей.
+        let grow = CardMetrics.dragScale - 1
+        return withShadow.insetBy(
+            dx: -withShadow.width * grow / 2,
+            dy: -withShadow.height * grow / 2
+        )
     }
 }
 
@@ -316,7 +364,9 @@ private final class CardContainerView: NSView, NSDraggingSource {
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
         let dragged = NSDraggingItem(pasteboardWriter: item)
-        dragged.setDraggingFrame(cardRect, contents: dragImage)
+        // Кадр считается ровно по картинке (см. `CardPanel.dragFrame`): любое расхождение
+        // пропорций AppKit исправит растяжением — карточка поедет сплющенной.
+        dragged.setDraggingFrame(CardPanel.dragFrame(cardRect: cardRect), contents: dragImage)
 
         let session = beginDraggingSession(with: [dragged], event: event, source: self)
         // Не приняли — картинка возвращается на карточку сама, без нашего участия.

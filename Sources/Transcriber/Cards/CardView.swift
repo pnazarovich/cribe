@@ -21,6 +21,11 @@ enum CardMetrics {
     static let lineLimit = 4
     /// Сдвиг влево на входе и уходе: карточка выезжает из-за левого края экрана.
     static let slide: CGFloat = 16
+    /// Поле вокруг картинки, которую тащат: в нём живёт тень оторвавшейся карточки.
+    static let dragShadow: CGFloat = 10
+    /// Лёгкое увеличение под курсором — предмет «оторвался от стола». Одинаково по обеим
+    /// сторонам: перекос множителей и есть та самая сплюснутость.
+    static let dragScale: CGFloat = 1.02
 
     /// Кнопки в шапке, справа налево. Система координат — карточка, начало слева сверху.
     static func controlRect(_ control: CardControl) -> CGRect {
@@ -52,6 +57,9 @@ final class CardModel: ObservableObject {
     @Published var isDragging = false
     /// Вспышка «Скопировано» вместо подписи в шапке.
     @Published var didCopy = false
+    /// Карточка приехала не сама, а перелётом пилюли: тогда она проявляется на месте,
+    /// без выезда слева — иначе на стыке видно, как содержимое «дёргается».
+    @Published var entersByFading = false
 
     init(text: String) {
         self.text = text
@@ -97,8 +105,9 @@ struct CardView: View {
         .opacity(model.isDragging ? 0.35 : 1)
         .scaleEffect(model.isDragging ? 0.97 : 1)
         .animation(.easeOut(duration: 0.15), value: model.isDragging)
-        // Вход и уход одним движением: выезжает слева, уходит туда же.
-        .offset(x: model.isPresented ? 0 : -CardMetrics.slide)
+        // Вход и уход одним движением: выезжает слева, уходит туда же. После перелёта
+        // пилюли — только проявление: ехать карточке неоткуда, она уже «прилетела».
+        .offset(x: model.isPresented || model.entersByFading ? 0 : -CardMetrics.slide)
         .opacity(model.isPresented ? 1 : 0)
         // Схема фиксированно тёмная: только она читается над любым фоном.
         .environment(\.colorScheme, .dark)
@@ -153,8 +162,13 @@ struct CardView: View {
 
 /// Картинка, которая летит за курсором: системный материал в неё не попадает (его рисует
 /// WindowServer), поэтому подложка здесь сплошная. Форма и текст — те же, что у карточки.
+///
+/// Высота приходит снаружи и равна высоте карточки на экране. Своей высоты у превью быть
+/// не должно: в нём нет шапки, оно вышло бы ниже карточки, AppKit растянул бы картинку
+/// в переданный кадр — и предмет под курсором сплющился бы по горизонтали.
 struct CardDragPreview: View {
     let text: String
+    let height: CGFloat
 
     var body: some View {
         Text(text)
@@ -165,7 +179,7 @@ struct CardDragPreview: View {
             .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(.white)
             .padding(CardMetrics.padding)
-            .frame(width: CardMetrics.width, alignment: .leading)
+            .frame(width: CardMetrics.width, height: height, alignment: .topLeading)
             .background(
                 Color(white: 0.16).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: CardMetrics.corner, style: .continuous)
@@ -174,6 +188,10 @@ struct CardDragPreview: View {
                 RoundedRectangle(cornerRadius: CardMetrics.corner, style: .continuous)
                     .strokeBorder(.white.opacity(0.25), lineWidth: 1)
             }
+            // Тень оторвавшегося предмета живёт в поле вокруг картинки, поэтому габарит
+            // и растёт на `dragShadow` с каждой стороны.
+            .shadow(color: .black.opacity(0.45), radius: CardMetrics.dragShadow * 0.6, y: 2)
+            .padding(CardMetrics.dragShadow)
             .environment(\.colorScheme, .dark)
     }
 }

@@ -64,7 +64,16 @@ final class AppCore: ObservableObject {
         // из этого делает уже приложение.
         let cards = CardStackController()
         self.cards = cards
-        controller.onCardText = { [weak cards] text in cards?.push(text) ?? false }
+        // Текст уехал в карточку — значит, капсула не «вставила», а донесла: она улетает
+        // вниз-влево и там становится карточкой. Порядок важен: сначала запускаем перелёт
+        // (он стартует ровно в кадре капсулы), и только потом убираем саму капсулу.
+        controller.onCardText = { [weak self] text in
+            guard let self, let cards = self.cards else { return false }
+            let source = panel?.pillFrame
+            guard cards.push(text, flyingFrom: source) else { return false }
+            if source != nil { panel?.handOffToCard() }
+            return true
+        }
         // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [controller] in controller.toggle() }
         KeyboardShortcuts.onKeyUp(for: .switchLanguage) { [controller] in controller.switchLanguage() }

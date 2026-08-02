@@ -57,8 +57,11 @@ final class CardStackController {
 
     /// `false` — показать карточку не вышло (не нашли экрана): вызывающий обязан вставить
     /// текст обычным путём, иначе диктовка молча пропадёт.
+    ///
+    /// `flyingFrom` — кадр капсулы HUD: если он есть, карточка не выезжает слева, а
+    /// прилетает из капсулы (та по дороге превращается в её силуэт).
     @discardableResult
-    func push(_ text: String) -> Bool {
+    func push(_ text: String, flyingFrom source: CGRect? = nil) -> Bool {
         // Новая стопка — новый монитор; у живой стопки экран не трогаем (см. `screenFrame`).
         if cards.isEmpty { screenFrame = screenProvider() }
         guard screenFrame != nil else { return false }
@@ -80,7 +83,7 @@ final class CardStackController {
             // Новая карточка встаёт на своё место сразу: ехать ей неоткуда, она выезжает
             // собственной анимацией слева. Двигаются только те, что уже висели.
             layout(animated: true, placing: card)
-            card.present()
+            present(card, flyingFrom: source)
             return true
         }
         // Вытесненной надо дать уйти: иначе оставшиеся наезжают на неё по дороге вверх.
@@ -89,9 +92,23 @@ final class CardStackController {
             try? await Task.sleep(for: CardPanel.exitDuration)
             guard let self, cards.contains(where: { $0 === card }) else { return }
             layout(animated: true, placing: card)
-            card.present()
+            // Перелёт ждать не заставляем: капсула к этому моменту уже отработала своё,
+            // и фигура, стартующая из пустоты, выглядела бы призраком.
+            present(card, flyingFrom: nil)
         }
         return true
+    }
+
+    /// Показ новой карточки: сама выезжает слева — или её приносит перелёт капсулы,
+    /// и тогда она лишь проявляется в точке приземления.
+    private func present(_ card: CardPanel, flyingFrom source: CGRect?) {
+        guard let source else {
+            card.present()
+            return
+        }
+        CardFlight.fly(from: source, to: card.cardFrameOnScreen) { [weak card] in
+            card?.present(fading: true)
+        }
     }
 
     private func remove(_ card: CardPanel) {
