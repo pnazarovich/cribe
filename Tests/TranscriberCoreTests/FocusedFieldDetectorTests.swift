@@ -9,10 +9,17 @@ final class FocusedFieldDetectorTests: XCTestCase {
         role: String?,
         settable: Bool = false,
         range: Bool = false,
-        web: Bool = false
+        web: Bool = false,
+        editableAncestor: Bool = false
     ) -> FocusState {
         FocusedFieldDetector.classify(
-            .element(role: role, valueSettable: settable, hasSelectedTextRange: range, isWebContext: web)
+            .element(
+                role: role,
+                valueSettable: settable,
+                hasSelectedTextRange: range,
+                isWebContext: web,
+                hasEditableAncestor: editableAncestor
+            )
         ).state
     }
 
@@ -43,19 +50,28 @@ final class FocusedFieldDetectorTests: XCTestCase {
         XCTAssertNotEqual(state(role: "AXButton", range: true, web: true), .editable)
     }
 
-    /// Но и карточку веб-контенту не назначаем: замерено, что Chrome отдаёт одно и то же
-    /// с курсором в поле и без него, — значит, отличить нечем, и это честное «не знаю»,
-    /// которое по правилу смещения вставляется как раньше.
-    func testWebContextIsUnknownNotNotEditable() {
-        XCTAssertEqual(state(role: "AXWebArea", range: true, web: true), .unknown)
-        XCTAssertEqual(state(role: "AXButton", range: true, web: true), .unknown)
+    /// Главная поломка ЭТОГО раунда, замеренная на живом Chrome в полном экране: страница
+    /// без полей отдаёт AXWebArea без единого признака редактируемости. Прежнее «веб — это
+    /// всегда не знаю» уводило такую диктовку в слепой Cmd-V, и карточка не появлялась
+    /// никогда — а полноэкранным пользователь держит как раз браузер.
+    func testWebPageWithoutAnyEditableSignalIsNotEditable() {
+        XCTAssertEqual(state(role: "AXWebArea", range: true, web: true), .notEditable)
+        XCTAssertEqual(state(role: "AXButton", range: true, web: true), .notEditable)
+        XCTAssertEqual(state(role: "AXGroup", range: true, web: true), .notEditable)
     }
 
-    /// Настоящее поле внутри веба узнаётся ролью и остаётся полем: разрешившееся
-    /// AX-дерево (Safari, разогретый Chrome) не должно получать карточку вместо вставки.
+    /// Настоящее поле внутри веба узнаётся ролью и остаётся полем: замерено, что
+    /// `<input autofocus>` в Chrome — это AXTextField, а не AXWebArea.
     func testWebTextFieldStaysEditable() {
         XCTAssertEqual(state(role: "AXTextField", range: true, web: true), .editable)
         XCTAssertEqual(state(role: "AXTextArea", settable: true, range: true, web: true), .editable)
+    }
+
+    /// `contenteditable`-композер (Gmail, Slack, ChatGPT): даже если фокус стоит на внутреннем
+    /// узле без «полевой» роли, движок помечает его `AXEditableAncestor` — это поле, не карточка.
+    func testWebNodeInsideEditableAncestorIsEditable() {
+        XCTAssertEqual(state(role: "AXStaticText", range: true, web: true, editableAncestor: true), .editable)
+        XCTAssertEqual(state(role: "AXGroup", web: true, editableAncestor: true), .editable)
     }
 
     /// Нативный элемент, который не поле и ведёт себя не как поле — вот тут и появляется карточка.
@@ -80,7 +96,13 @@ final class FocusedFieldDetectorTests: XCTestCase {
     /// Роль едет в вердикт: без неё полевой отчёт «карточка не появилась» разобрать нечем.
     func testVerdictCarriesRoleForLogging() {
         let verdict = FocusedFieldDetector.classify(
-            .element(role: "AXWebArea", valueSettable: false, hasSelectedTextRange: true, isWebContext: true)
+            .element(
+                role: "AXWebArea",
+                valueSettable: false,
+                hasSelectedTextRange: true,
+                isWebContext: true,
+                hasEditableAncestor: false
+            )
         )
         XCTAssertEqual(verdict.role, "AXWebArea")
     }

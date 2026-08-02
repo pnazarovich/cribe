@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import OSLog
 import SwiftUI
 import TranscriberCore
 
@@ -80,10 +81,11 @@ public final class LivePanel {
             defer: false
         )
         panel.isFloatingPanel = true
-        // Ярус HUD: панель диктовки должна лежать поверх обычных плавающих окон.
-        panel.level = .statusBar
-        // `.stationary` — чтобы пилюля не разъезжалась вместе с окнами на Mission Control.
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Ярус и поведение — общий рецепт HUD (см. `HUDWindow`): панель обязана появляться
+        // поверх чужого полноэкранного пространства. `.stationary` — чтобы пилюля
+        // не разъезжалась вместе с окнами на Mission Control.
+        panel.level = HUDWindow.level
+        panel.collectionBehavior = HUDWindow.spaceBehavior.union(.stationary)
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -107,9 +109,40 @@ public final class LivePanel {
         hideTask?.cancel()
         hideTask = nil
         moveToCursorScreen()
-        panel.orderFrontRegardless()  // именно так: makeKey увёл бы фокус с целевого поля
+        // Заявку на «все пространства» подтверждаем каждым показом: у панели, живущей
+        // часами, она протухает — из-за этого пилюля пропадала над полным экраном.
+        HUDWindow.orderFront(panel, extra: .stationary)
         // Анимируем содержимое, а не окно: окно просто есть, капсула в нём всплывает.
         withAnimation(Self.appearAnimation) { presentation.isVisible = true }
+    }
+
+    /// Кадр капсулы на экране — точка старта перелёта в карточку. `nil`, если капсулы
+    /// сейчас нет: лететь тогда неоткуда, карточка появится обычным выездом слева.
+    ///
+    /// Капсула висит по центру окна панели и в рабочих состояниях держит один габарит
+    /// (190×44) — шире она становится только на длинной ошибке, а туда путь в карточку
+    /// не ведёт.
+    public var pillFrame: CGRect? {
+        guard panel.isVisible, presentation.isVisible else { return nil }
+        let frame = panel.frame
+        return CGRect(
+            x: (frame.midX - PanelPill.width / 2).rounded(),
+            y: (frame.midY - PanelPill.height / 2).rounded(),
+            width: PanelPill.width,
+            height: PanelPill.height
+        )
+    }
+
+    /// Капсула передала эстафету летящей фигуре: убираем её мгновенно и без анимации —
+    /// иначе на экране одновременно и «улетело», и «растаяло на месте».
+    public func handOffToCard() {
+        hideTask?.cancel()
+        hideTask = nil
+        presentation.isVisible = false
+        panel.orderOut(nil)
+        // Фаза возвращается в «скрыто» руками: следующая сессия обязана снова показать
+        // капсулу, а `handle` реагирует только на СМЕНУ фазы.
+        phase = .hidden
     }
 
     /// Немедленное скрытие без анимации — на случай принудительного вызова извне.

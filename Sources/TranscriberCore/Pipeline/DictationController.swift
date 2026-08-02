@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import OSLog
@@ -959,12 +960,20 @@ public final class DictationController: ObservableObject {
     }
 
     /// Единственная строка, по которой полевой отчёт «карточка не появилась» вообще можно
-    /// разобрать: что ответил AX, какая была роль и куда в итоге уехал текст.
+    /// разобрать: что ответил AX, какая была роль, кто был впереди и куда уехал текст.
+    ///
+    /// Уровень строго `.notice` (это `OS_LOG_TYPE_DEFAULT`): он один ложится на диск и виден
+    /// в обычном `log show`. `.info` живёт в кольцевом буфере памяти, и прошлый полевой
+    /// отчёт «в логе пусто» получился ровно из-за этого (плюс `log` в zsh — встроенная
+    /// команда, так что `log show …` из-под zsh отвечает «too many arguments», а не строками;
+    /// звать надо `/usr/bin/log`).
     private func logRouting(_ verdict: FocusVerdict, path: String) {
-        logger.info(
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "—"
+        logger.notice(
             """
             Доставка: фокус=\(String(describing: verdict.state), privacy: .public) \
-            роль=\(verdict.role ?? "—", privacy: .public) → \(path, privacy: .public)
+            роль=\(verdict.role ?? "—", privacy: .public) \
+            впереди=\(app, privacy: .public) → \(path, privacy: .public)
             """
         )
     }

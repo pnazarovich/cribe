@@ -31,8 +31,16 @@ public enum FocusedElementProbe: Sendable, Equatable {
     case noFocus
     /// `valueSettable` — можно ли записать `AXValue`; `hasSelectedTextRange` — отдаёт ли
     /// элемент выделение текстом; `isWebContext` — торчат ли из элемента текстовые маркеры
-    /// WebKit/Blink (`AXStartTextMarker` и родня), которых у нативных вью не бывает.
-    case element(role: String?, valueSettable: Bool, hasSelectedTextRange: Bool, isWebContext: Bool)
+    /// WebKit/Blink (`AXStartTextMarker` и родня), которых у нативных вью не бывает;
+    /// `hasEditableAncestor` — торчит ли `AXEditableAncestor`, которым движок помечает узлы
+    /// ВНУТРИ редактируемой области (поле, `contenteditable`).
+    case element(
+        role: String?,
+        valueSettable: Bool,
+        hasSelectedTextRange: Bool,
+        isWebContext: Bool,
+        hasEditableAncestor: Bool
+    )
 }
 
 /// Проверка «а есть ли куда вставлять» перед синтетическим Cmd-V.
@@ -69,7 +77,8 @@ public enum FocusedFieldDetector {
             return FocusVerdict(state: .unknown, role: nil)
         case .noFocus:
             return FocusVerdict(state: .notEditable, role: nil)
-        case .element(let role, let valueSettable, let hasSelectedTextRange, let isWebContext):
+        case .element(let role, let valueSettable, let hasSelectedTextRange, let isWebContext,
+                      let hasEditableAncestor):
             if let role, editableRoles.contains(role) {
                 return FocusVerdict(state: .editable, role: role)
             }
@@ -78,12 +87,24 @@ public enum FocusedFieldDetector {
             if valueSettable {
                 return FocusVerdict(state: .editable, role: role)
             }
-            // Веб-контент через системный AX неразрешим: замерено, что Chrome отдаёт
-            // AXWebArea/AXGroup/AXButton и с курсором в поле, и без него — одинаково, причём
-            // `AXSelectedTextRange` торчит даже из кнопки. Отличить поле от страницы нечем,
-            // поэтому честный ответ — «не знаю», а он по правилу смещения означает вставку.
+            // Узел внутри редактируемой области: сам он может быть хоть строкой текста, но
+            // курсор стоит в композере (`contenteditable` Gmail, Slack, ChatGPT) — это поле.
+            if hasEditableAncestor {
+                return FocusVerdict(state: .editable, role: role)
+            }
+            // Веб-узел, у которого нет НИ ОДНОГО признака редактируемости, — не поле.
+            //
+            // Замерено на живом Chrome (полный экран, 2026-08-02), одна и та же проба:
+            //   страница без полей   → AXWebArea,  settable=false, AXEditableAncestor нет;
+            //   `<input autofocus>`  → AXTextField, settable=true,  AXEditableAncestor есть;
+            //   `contenteditable`    → AXTextArea,  settable=true,  AXEditableAncestor есть;
+            //   `<button autofocus>` → AXButton,    settable=false, AXEditableAncestor нет.
+            // То есть браузер поле от страницы ОТЛИЧАЕТ, и прежнее «веб — это всегда не знаю»
+            // было неверным: оно уводило в слепой Cmd-V каждую диктовку поверх страницы.
+            // Признак «есть выделение текстом» тут по-прежнему не в счёт — его отдаёт даже
+            // кнопка, ради чего веб и различается отдельно.
             if isWebContext {
-                return FocusVerdict(state: .unknown, role: role)
+                return FocusVerdict(state: .notEditable, role: role)
             }
             // Роли нет вовсе, но элемент отдаёт выделение текстом — нативное поле без роли.
             // Вне веба этот признак не врёт: текстовых маркеров у таких элементов не бывает.
@@ -148,16 +169,19 @@ public enum FocusedFieldDetector {
 
         // Текстовые маркеры — расширение WebKit/Blink: у нативных AppKit-вью их не бывает,
         // а любой узел веб-страницы их отдаёт. Это и есть метка «здесь веб-контент».
+        // Тем же списком приходит `AXEditableAncestor` — метка «узел внутри редактируемого».
         if outOfTime() { return .unavailable }
         var names: CFArray?
-        let isWebContext = AXUIElementCopyAttributeNames(element, &names) == .success
-            && ((names as? [String])?.contains("AXStartTextMarker") ?? false)
+        let attributes = AXUIElementCopyAttributeNames(element, &names) == .success
+            ? ((names as? [String]) ?? [])
+            : []
 
         return .element(
             role: role,
             valueSettable: valueSettable,
             hasSelectedTextRange: hasSelectedTextRange,
-            isWebContext: isWebContext
+            isWebContext: attributes.contains("AXStartTextMarker"),
+            hasEditableAncestor: attributes.contains("AXEditableAncestor")
         )
     }
 }
