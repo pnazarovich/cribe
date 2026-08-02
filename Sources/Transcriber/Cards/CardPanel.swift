@@ -46,11 +46,17 @@ final class CardPanel {
     private let container: CardContainerView
     private var closeTask: Task<Void, Never>?
     private var copyTask: Task<Void, Never>?
+    private var translateTask: Task<Void, Never>?
     private var isLeaving = false
+    /// Перевод текста карточки. Подставляется приложением: ядро о GPT-настройках знает,
+    /// а карточка — нет, и знать не должна.
+    private let translator: CardTranslator
 
-    init(text: String) {
+    init(text: String, translator: CardTranslator = .unavailable) {
         self.text = text
+        self.translator = translator
         model = CardModel(text: text)
+        model.canTranslate = translator.isAvailable()
 
         let host = PassthroughHostingView(rootView: CardView(model: model))
         // Ширину задаёт сама карточка, высоту считает SwiftUI по числу строк текста.
@@ -93,7 +99,9 @@ final class CardPanel {
         panel.contentView = container
 
         container.model = model
-        container.text = text
+        // Payload перетаскивания читается в момент жеста: после перевода уезжает перевод,
+        // а до конца подмены — всё ещё оригинал, ровно как и видно на карточке.
+        container.payload = { [weak model] in model?.displayText ?? text }
         // Масштаб — того экрана, на котором карточка окажется. Панель ещё не поставлена
         // на место, поэтому берём экран курсора: стопка выбирает его же.
         let scale = (NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main)?
@@ -101,6 +109,7 @@ final class CardPanel {
         container.dragImage = Self.dragImage(text: text, cardHeight: cardHeight, scale: scale)
         container.onCopy = { [weak self] in self?.copy() }
         container.onClose = { [weak self] in self?.dismiss() }
+        container.onTranslate = { [weak self] in self?.translate() }
         container.onSwipe = { [weak self] offset in self?.model.swipeOffset = offset }
         container.onSwipeEnded = { [weak self] dismissing in
             guard let self else { return }
@@ -129,6 +138,19 @@ final class CardPanel {
     /// Картинка, которая поедет под курсором. Нужна тесту пропорций: сплющивание иначе
     /// ловится только глазом.
     var dragImageForTesting: NSImage? { container.dragImage }
+
+    // MARK: - Швы для тестов перевода
+    //
+    // Кнопки карточки ведёт AppKit-контейнер, и нажать их из теста нечем: панель никогда
+    // не становится key. Поэтому тест дёргает то же действие напрямую и читает то же,
+    // что видит глаз.
+
+    func translateForTesting() { translate() }
+    var showsTranslationForTesting: Bool { model.showsTranslation }
+    var displayedTextForTesting: String { model.displayText }
+    var dragTextForTesting: String { container.payload?() ?? "" }
+    var canTranslateForTesting: Bool { model.canTranslate }
+    var failureForTesting: String? { model.failure }
 
     /// Видимый прямоугольник карточки на экране, без прозрачного запаса вокруг: в него
     /// целится перелёт капсулы.
@@ -200,8 +222,31 @@ final class CardPanel {
         }
     }
 
+    /// Перевод по кнопке. Второй раз в сеть не ходим: полученный перевод живёт в модели,
+    /// и кнопка после него просто переключает «оригинал ↔ перевод».
+    private func translate() {
+        guard model.canTranslate, !model.isTranslating else { return }
+        guard !model.hasTranslation else {
+            model.toggleTranslation()
+            return
+        }
+        model.beganTranslating()
+        translateTask?.cancel()
+        translateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let translated = try await translator.translate(text)
+                guard !Task.isCancelled else { return }
+                model.apply(translation: translated)
+                } catch {
+                guard !Task.isCancelled else { return }
+                model.failedTranslating()
+            }
+        }
+    }
+
     private func copy() {
-        TextInserter.copy(text)
+        TextInserter.copy(model.displayText)
         copyTask?.cancel()
         model.didCopy = true
         copyTask = Task { [weak self] in
@@ -242,6 +287,20 @@ final class CardPanel {
     }
 }
 
+/// Откуда карточка берёт перевод. Отдельный тип — это шов: приложение подставляет сюда
+/// GPT-путь со своими настройками и словарём, ядро остаётся без UI, а тест — без сети.
+struct CardTranslator {
+    /// Доступен ли перевод прямо сейчас (в настройках включён GPT).
+    var isAvailable: @MainActor () -> Bool
+    var translate: @MainActor (String) async throws -> String
+
+    /// Переводить нечем: так живут CLI и прогон тестов.
+    static let unavailable = CardTranslator(
+        isAvailable: { false },
+        translate: { _ in throw CancellationError() }
+    )
+}
+
 /// `canBecomeKey` / `canBecomeMain` у NSWindow только для чтения — отключаются переопределением.
 /// Ключевой инвариант тот же, что у пилюли: окно не должно забирать фокус у целевого поля.
 private final class NonActivatingCardPanel: NSPanel {
@@ -262,12 +321,14 @@ private final class PassthroughHostingView<Content: View>: NSHostingView<Content
 /// поэтому попадание в кнопки считает точно, а трекинг ставит с `.activeAlways`.
 private final class CardContainerView: NSView, NSDraggingSource {
     var model: CardModel?
-    var text = ""
+    /// Что уезжает в чужое поле: спрашивается в момент жеста, а не кэшируется.
+    var payload: (() -> String)?
     var dragImage: NSImage?
     var cardHeight: CGFloat = 0
 
     var onCopy: (() -> Void)?
     var onClose: (() -> Void)?
+    var onTranslate: (() -> Void)?
     /// Текущий сдвиг под пальцами.
     var onSwipe: ((CGFloat) -> Void)?
     /// Жест закончился: `true` — карточку смахнули, `false` — вернуть на место.
@@ -349,9 +410,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
 
     private func control(at point: NSPoint) -> CardControl? {
         let local = CGPoint(x: point.x - CardMetrics.bleed, y: point.y - CardMetrics.bleed)
-        if CardMetrics.controlRect(.close).contains(local) { return .close }
-        if CardMetrics.controlRect(.copy).contains(local) { return .copy }
-        return nil
+        return CardControl.allCases.first { CardMetrics.controlRect($0).contains(local) }
     }
 
     // MARK: - Клики и перетаскивание
@@ -383,6 +442,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
         // Нажали и отпустили на одной кнопке — как у обычной кнопки AppKit.
         guard control(at: convert(event.locationInWindow, from: nil)) == pressedControl else { return }
         switch pressedControl {
+        case .translate: onTranslate?()
         case .copy: onCopy?()
         case .close: onClose?()
         }
@@ -430,7 +490,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
 
     private func beginDrag(with event: NSEvent) {
         let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
+        item.setString(payload?() ?? "", forType: .string)
         let dragged = NSDraggingItem(pasteboardWriter: item)
         // Кадр считается ровно по картинке (см. `CardPanel.dragFrame`): любое расхождение
         // пропорций AppKit исправит растяжением — карточка поедет сплющенной.

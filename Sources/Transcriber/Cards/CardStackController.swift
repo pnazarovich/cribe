@@ -16,8 +16,15 @@ final class CardStackController {
     /// прямоугольник, иначе «влезает ли десять карточек» зависело бы от монитора машины.
     private let screenProvider: @MainActor () -> CGRect?
 
-    init(screenProvider: @escaping @MainActor () -> CGRect? = CardStackController.cursorScreenFrame) {
+    /// Откуда карточки берут перевод: стопка его не делает, только передаёт.
+    private let translator: CardTranslator
+
+    init(
+        screenProvider: @escaping @MainActor () -> CGRect? = CardStackController.cursorScreenFrame,
+        translator: CardTranslator = .unavailable
+    ) {
         self.screenProvider = screenProvider
+        self.translator = translator
     }
 
     /// Экран, на котором живёт стопка.
@@ -66,7 +73,7 @@ final class CardStackController {
         if cards.isEmpty { screenFrame = screenProvider() }
         guard screenFrame != nil else { return false }
 
-        let card = CardPanel(text: text)
+        let card = CardPanel(text: text, translator: translator)
         card.onDismiss = { [weak self] card in self?.remove(card) }
         cards.insert(card, at: 0)
 

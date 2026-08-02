@@ -61,8 +61,22 @@ final class AppCore: ObservableObject {
         guard panel == nil else { return }
         panel = LivePanel(controller: controller, settings: settings)
         // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
-        // из этого делает уже приложение.
-        let cards = CardStackController()
+        // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
+        // здесь есть и настройки GPT, и словарь.
+        let cards = CardStackController(
+            translator: CardTranslator(
+                isAvailable: { [settings] in settings.gptEnabled },
+                translate: { [settings, dictionary] text in
+                    try await PostProcessor.cleanup(
+                        text: text,
+                        entries: dictionary.entries,
+                        language: settings.language,
+                        config: settings.translateGPTConfig,
+                        translateToEnglish: true
+                    )
+                }
+            )
+        )
         self.cards = cards
         // Текст уехал в карточку — значит, капсула не «вставила», а донесла: она улетает
         // вниз-влево и там становится карточкой. Порядок важен: сначала запускаем перелёт
