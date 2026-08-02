@@ -77,13 +77,41 @@ final class CardVisualsTests: XCTestCase {
     }
 
     /// Стык перелёта: карточка проявляется ВНУТРИ перелёта, а не после него, иначе между
-    /// исчезнувшей фигурой и появившейся карточкой виден пустой кадр.
-    func testFlightHandoffHappensInsideTheFlight() {
+    /// исчезнувшей фигурой и появившейся карточкой виден пустой кадр. Стык обязан лежать
+    /// внутри последнего участка — посадки, — иначе карточка проявится ещё в воздухе.
+    func testFlightHandoffHappensInsideTheLanding() {
         XCTAssertGreaterThan(CardFlight.handoff, 0)
-        XCTAssertLessThan(CardFlight.handoff, CardFlight.duration)
-        XCTAssertEqual(CardFlight.duration, 0.42, accuracy: 0.001)
-        XCTAssertEqual(CardFlight.response, 0.42, accuracy: 0.001)
-        XCTAssertEqual(CardFlight.dampingFraction, 0.78, accuracy: 0.001)
+        XCTAssertLessThan(CardFlight.handoff, CardFlight.land)
+        XCTAssertEqual(
+            CardFlight.duration,
+            CardFlight.gather + CardFlight.detach + CardFlight.fall + CardFlight.land,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(CardFlight.duration, 0.75, accuracy: 0.001, "вся хореография — три четверти секунды")
+    }
+
+    /// Дуга падения: капля идёт не по прямой (иначе это «переезд», а не падение) и
+    /// приходит ровно в карточку.
+    func testFallArcBendsAndLandsExactly() {
+        let start = CGPoint(x: 700, y: 100)
+        let end = CGPoint(x: 100, y: 500)
+        XCTAssertEqual(CardFlight.point(on: 0, from: start, to: end), start)
+        XCTAssertEqual(CardFlight.point(on: 1, from: start, to: end), end)
+
+        let middle = CardFlight.point(on: 0.5, from: start, to: end)
+        let straight = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        XCTAssertLessThan(middle.x, straight.x, "середина пути уведена влево — это и есть дуга")
+    }
+
+    /// Разгон: за первую половину времени капля проходит заметно меньше половины пути.
+    /// Ровно этого и просили — медленный старт, быстрый конец.
+    func testFallAccelerates() {
+        let start = CGPoint(x: 700, y: 100)
+        let end = CGPoint(x: 100, y: 500)
+        let full = hypot(end.x - start.x, end.y - start.y)
+        let atHalf = CardFlight.point(on: 0.35, from: start, to: end)
+        let travelled = hypot(atHalf.x - start.x, atHalf.y - start.y)
+        XCTAssertLessThan(travelled / full, 0.5, "к трети времени пройдено меньше половины пути")
     }
 
     /// После перелёта капсула молчит: «⤷ В карточку» посреди экрана — это второй раз про то,
