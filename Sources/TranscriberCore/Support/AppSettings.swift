@@ -30,6 +30,7 @@ public final class AppSettings: ObservableObject {
         static let dictationHotkeyMode = "dictationHotkeyMode"
         static let skipGPTForShort = "skipGPTForShort"
         static let shortDictationWordLimit = "shortDictationWordLimit"
+        static let cardsWhenNoField = "cardsWhenNoField"
     }
 
     private let defaults: UserDefaults
@@ -93,6 +94,12 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(shortDictationWordLimit, forKey: Key.shortDictationWordLimit) }
     }
 
+    /// Поля ввода в активном приложении нет — показать текст карточкой у нижнего левого угла
+    /// вместо вставки вслепую. Выключено — всё как раньше: Cmd-V летит в любом случае.
+    @Published public var cardsWhenNoField: Bool {
+        didSet { defaults.set(cardsWhenNoField, forKey: Key.cardsWhenNoField) }
+    }
+
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
     @Published public var dictationHotkeyMode: HotkeyMode {
         didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
@@ -129,6 +136,7 @@ public final class AppSettings: ObservableObject {
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
+        cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

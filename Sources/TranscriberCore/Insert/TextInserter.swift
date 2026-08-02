@@ -22,11 +22,16 @@ public enum TextInserter {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
-    @discardableResult
-    public static func insert(_ text: String) -> InsertOutcome {
+    /// Только буфер обмена, без Cmd-V: этим же путём текст уходит в карточку и в пункты меню.
+    public static func copy(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    @discardableResult
+    public static func insert(_ text: String) -> InsertOutcome {
+        copy(text)
 
         // Парольные поля перехватывают ввод — синтетический Cmd-V до них не дойдёт.
         if IsSecureEventInputEnabled() {
@@ -60,4 +65,29 @@ public enum TextInserter {
 
     /// Виртуальный код клавиши V (0x09).
     private static let keyV = CGKeyCode(kVK_ANSI_V)
+}
+
+/// Всё, чем конвейер трогает систему на последнем шаге: буфер обмена, вставка и проверка
+/// поля ввода. Живая реализация ходит в AppKit и AX; тесты подставляют свою — прогон
+/// не имеет права ни затирать буфер обмена пользователя, ни слать Cmd-V в чужое окно.
+public struct TextDelivery: Sendable {
+    public var focusState: @Sendable () -> FocusState
+    public var insert: @Sendable (String) -> InsertOutcome
+    public var copy: @Sendable (String) -> Void
+
+    public init(
+        focusState: @escaping @Sendable () -> FocusState,
+        insert: @escaping @Sendable (String) -> InsertOutcome,
+        copy: @escaping @Sendable (String) -> Void
+    ) {
+        self.focusState = focusState
+        self.insert = insert
+        self.copy = copy
+    }
+
+    public static let system = TextDelivery(
+        focusState: { FocusedFieldDetector.current() },
+        insert: { TextInserter.insert($0) },
+        copy: { TextInserter.copy($0) }
+    )
 }

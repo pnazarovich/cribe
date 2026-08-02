@@ -46,6 +46,15 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.shortDictationWordLimit, 3)
     }
 
+    /// Карточки включены по умолчанию, а выключённый тумблер переживает перезапуск
+    /// (дефолт `true`, поэтому `bool(forKey:)` не отличил бы «выключен» от «не задан»).
+    func testCardsWhenNoFieldDefaultsOnAndPersists() {
+        XCTAssertTrue(AppSettings(defaults: defaults).cardsWhenNoField)
+
+        AppSettings(defaults: defaults).cardsWhenNoField = false
+        XCTAssertFalse(AppSettings(defaults: defaults).cardsWhenNoField)
+    }
+
     /// У перевода своя пара «модель + усилие» с собственными дефолтами.
     func testTranslateModelDefaults() {
         let settings = AppSettings(defaults: defaults)

@@ -60,7 +60,8 @@ public final class LivePanel {
             case .preparingModel, .recording: self = .starting
             // `.cancelled` — тоже видимая фаза: вспышку «Отменено» надо успеть показать,
             // а панель прячет только `.idle` следом за ней.
-            case .transcribing, .cleaning, .inserted, .cancelled, .degraded, .error: self = .processing
+            case .transcribing, .cleaning, .inserted, .carded, .cancelled, .degraded, .error:
+                self = .processing
             }
         }
     }

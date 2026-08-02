@@ -62,6 +62,12 @@ private struct GeneralTab: View {
 
             Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
 
+            Toggle("Карточки, если нет поля ввода", isOn: $settings.cardsWhenNoField)
+            Text("Текст покажется карточкой внизу слева — её можно перетащить в любое поле. "
+                 + "Выключено: Cmd-V уходит в приложение всегда.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("Звуки старта и окончания записи", isOn: $settings.soundsEnabled)
 
             // Тумблер ведомый: значение меняем только после успешного вызова SMAppService,

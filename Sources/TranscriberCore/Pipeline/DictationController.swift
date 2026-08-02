@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 import OSLog
@@ -14,6 +13,9 @@ public enum DictationState: Sendable, Equatable {
     case transcribing
     case cleaning
     case inserted
+    /// Поля ввода не нашлось: текст лежит в буфере обмена и висит карточкой у нижнего
+    /// левого угла экрана. Это удача, а не сбой, — отсюда и своё состояние, а не `.degraded`.
+    case carded
     /// Диктовку отменили (Esc): результата нет и не будет. Это не сбой, а осознанный отказ,
     /// поэтому и состояние своё — предупреждающего значка отмене не положено.
     case cancelled
@@ -246,11 +248,18 @@ public final class DictationController: ObservableObject {
     /// (в том числе прямо на стопе: обычную сессию тумблер меню меняет и на живой записи).
     @Published public private(set) var activeSessionTranslate: Bool?
 
+    /// Текст, которому не нашлось поля ввода, — его забирает стопка карточек в приложении.
+    /// Замыкание, а не `@Published`: ядро остаётся без UI, а карточка должна появиться
+    /// ровно один раз на диктовку, а не на каждую пересборку подписчика.
+    /// Не назначен — конвейер вставляет по-старому (так живёт CLI).
+    public var onCardText: ((String) -> Void)?
+
     private let gate: EngineGate
     private let dictionary: UserDictionary
     private let settings: AppSettings
     private let history: HistoryStore
     private let recorder: AudioCapturing
+    private let delivery: TextDelivery
     private let makeVad: @Sendable () async throws -> SpeechGating
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Dictation")
 
@@ -305,6 +314,9 @@ public final class DictationController: ObservableObject {
         dictionary: UserDictionary,
         settings: AppSettings,
         recorder: AudioCapturing = CaptureRecorder(),
+        // Последний шаг конвейера — единственное место, где ядро трогает чужие окна и общий
+        // буфер обмена. Тесты подставляют сюда свою доставку и обходятся без того и другого.
+        delivery: TextDelivery = .system,
         // Не сам гейт, а фабрика: подъём VAD (CoreML/ANE) занимает секунды и делается лениво,
         // при первой записи. Тесты подставляют сюда заглушку и обходятся без модели.
         makeVad: @escaping @Sendable () async throws -> SpeechGating = { try await VadGate() }
@@ -314,6 +326,7 @@ public final class DictationController: ObservableObject {
         self.settings = settings
         self.history = .shared
         self.recorder = recorder
+        self.delivery = delivery
         self.makeVad = makeVad
 
         recorder.setInputDevice(uid: settings.inputDeviceUID)
@@ -342,7 +355,7 @@ public final class DictationController: ObservableObject {
         switch state {
         case .recording:
             stopAndProcess()
-        case .idle, .inserted, .cancelled, .degraded, .error:
+        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
             begin(translating: translating)
         case .preparingModel:
             // Первая загрузка модели идёт минутами — хоткей отменяет сессию, а не ждёт впустую.
@@ -369,7 +382,7 @@ public final class DictationController: ObservableObject {
             pendingCancelFlashes = true
         case .transcribing, .cleaning:
             cancelRequested = true
-        case .idle, .inserted, .cancelled, .degraded, .error:
+        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
             break  // сессии нет — отменять нечего
         }
     }
@@ -782,19 +795,22 @@ public final class DictationController: ObservableObject {
 
             // Непустой по построению: перевод либо непустой, либо сброшен в nil выше.
             let output = translation ?? text
-            let outcome = await insert(output)
+            let destination = await deliver(output)
             history.add(output, language: language)
             await finishBackup(backup)
 
-            if case .clipboardOnly(let reason) = outcome {
+            if case .pasteboard(.clipboardOnly(let reason)) = destination {
                 degradations.append(Self.clipboardMessage(reason))
             }
-            if degradations.isEmpty {
-                state = .inserted
-                scheduleIdle(after: Self.insertedLinger)
-            } else {
+            if !degradations.isEmpty {
                 state = .degraded(degradations.joined(separator: "; "))
                 scheduleIdle(after: Self.degradedLinger)
+            } else {
+                switch destination {
+                case .card: state = .carded
+                case .pasteboard: state = .inserted
+                }
+                scheduleIdle(after: Self.insertedLinger)
             }
         } catch {
             // Отменённая диктовка не ругается: пользователь уже сказал, что результат ему
@@ -888,15 +904,13 @@ public final class DictationController: ObservableObject {
     }
 
     private func copyToClipboard(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        delivery.copy(text)
     }
 
     /// Короткое сообщение поверх простоя: работающий конвейер не перебиваем.
     private func flash(_ message: String) {
         switch state {
-        case .idle, .inserted, .cancelled, .degraded, .error:
+        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
             state = .degraded(message)
             scheduleIdle(after: Self.flashLinger)
         case .preparingModel, .recording, .transcribing, .cleaning:
@@ -904,9 +918,39 @@ public final class DictationController: ObservableObject {
         }
     }
 
+    /// Куда уехал готовый текст.
+    private enum Destination {
+        case pasteboard(InsertOutcome)
+        case card
+    }
+
+    /// Последний шаг: либо обычная вставка, либо — если вставлять некуда — карточка.
+    ///
+    /// Карточка появляется только при трёх «да» разом: настройка включена, стопка карточек
+    /// вообще есть (в CLI её нет) и детектор уверенно говорит, что поля ввода нет.
+    /// Любое сомнение (`.unknown`) — это прежний Cmd-V: терять текст в карточке там, где
+    /// его ждали в документе, нельзя.
+    private func deliver(_ text: String) async -> Destination {
+        guard settings.cardsWhenNoField, let onCardText else { return .pasteboard(await insert(text)) }
+        guard await focusState() == .notEditable else { return .pasteboard(await insert(text)) }
+
+        // Контракт буфера обмена прежний: текст остаётся в пастборде в любом случае —
+        // карточку можно и не трогать, а просто нажать Cmd-V самому.
+        delivery.copy(text)
+        onCardText(text)
+        return .card
+    }
+
     /// `TextInserter.insert` синхронно спит 20 мс — уводим с главного потока.
     private func insert(_ text: String) async -> InsertOutcome {
-        await Task.detached(priority: .userInitiated) { TextInserter.insert(text) }.value
+        let delivery = self.delivery
+        return await Task.detached(priority: .userInitiated) { delivery.insert(text) }.value
+    }
+
+    /// Опрос AX ходит в чужой процесс и блокирует поток — главный на это не занимаем.
+    private func focusState() async -> FocusState {
+        let delivery = self.delivery
+        return await Task.detached(priority: .userInitiated) { delivery.focusState() }.value
     }
 
     private static func clipboardMessage(_ reason: String) -> String {

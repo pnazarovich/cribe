@@ -105,6 +105,38 @@ private final class HoldingEngine: TranscriptionEngine, @unchecked Sendable {
     }
 }
 
+/// Доставка-заглушка: считает вставки и копирования, но ни разу не трогает ни буфер обмена
+/// пользователя, ни чужие окна. Вердикт детектора задаётся тестом.
+private final class SpyDelivery: @unchecked Sendable {
+    private let lock = NSLock()
+    private var insertedTexts: [String] = []
+    private var copiedTexts: [String] = []
+    private let focus: FocusState
+
+    init(focus: FocusState) {
+        self.focus = focus
+    }
+
+    var inserted: [String] { lock.withLock { insertedTexts } }
+    var copied: [String] { lock.withLock { copiedTexts } }
+
+    var delivery: TextDelivery {
+        TextDelivery(
+            focusState: { self.focus },
+            insert: { text in
+                self.lock.withLock { self.insertedTexts.append(text) }
+                return .pasted
+            },
+            copy: { text in self.lock.withLock { self.copiedTexts.append(text) } }
+        )
+    }
+}
+
+/// Приёмник карточек: замыкание живёт дольше вызова, поэтому текст копим в объекте.
+private final class CardSink {
+    var texts: [String] = []
+}
+
 /// Захват-заглушка: живой микрофон в тестах не поднимаем, а конвейеру от захвата нужен
 /// только сам факт вызовов. Заодно видно, доезжает ли выбор устройства из настроек.
 private final class StubRecorder: AudioCapturing, @unchecked Sendable {
@@ -399,17 +431,114 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .idle)
     }
 
+    // MARK: - Карточки вместо вставки вслепую
+
+    /// Поля ввода нет: текст уходит карточкой, а не Cmd-V вслепую. В буфере обмена он при
+    /// этом остаётся — контракт прежний, карточку можно и не трогать.
+    func testNoFocusedFieldRoutesTextToCard() async throws {
+        let spy = SpyDelivery(focus: .notEditable)
+        let sink = CardSink()
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+        controller.onCardText = { sink.texts.append($0) }
+        let historyBefore = HistoryStore.shared.items.count
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "карточку") { controller.state == .carded }
+
+        XCTAssertEqual(sink.texts, [HoldingEngine.text])
+        XCTAssertTrue(spy.inserted.isEmpty, "вставки быть не должно — вставлять некуда")
+        XCTAssertEqual(spy.copied, [HoldingEngine.text])
+        // Карточка истории не отменяет: выпавшую из стопки диктовку надо где-то найти.
+        XCTAssertEqual(HistoryStore.shared.items.count, historyBefore + 1)
+        XCTAssertEqual(controller.lastOriginal, HoldingEngine.text)
+    }
+
+    /// Детектор не уверен (нет разрешения, приложение молчит) — всё как раньше: Cmd-V.
+    /// Это главное правило: сомнение трактуется в пользу вставки.
+    func testUnknownFocusKeepsNormalInsert() async throws {
+        let spy = SpyDelivery(focus: .unknown)
+        let sink = CardSink()
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+        controller.onCardText = { sink.texts.append($0) }
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "вставку") { controller.state == .inserted }
+
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+        XCTAssertTrue(sink.texts.isEmpty, "карточка не для неуверенного вердикта")
+    }
+
+    /// Выключённая настройка отменяет карточки целиком: детектор даже не спрашивается,
+    /// вставка идёт вслепую, как до этой функции.
+    func testDisabledSettingKeepsNormalInsert() async throws {
+        let spy = SpyDelivery(focus: .notEditable)
+        let sink = CardSink()
+        let engine = HoldingEngine()
+        let controller = makeController(
+            engine: engine,
+            recorder: recordedThreeSeconds(),
+            delivery: spy,
+            cardsWhenNoField: false
+        )
+        controller.onCardText = { sink.texts.append($0) }
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "вставку") { controller.state == .inserted }
+
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+        XCTAssertTrue(sink.texts.isEmpty)
+    }
+
+    /// Стопки карточек нет вовсе (так живёт CLI) — конвейер обязан вставлять, а не терять текст.
+    func testMissingCardSinkKeepsNormalInsert() async throws {
+        let spy = SpyDelivery(focus: .notEditable)
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+
+        try await runDictation(controller: controller, engine: engine)
+        try await wait(for: "вставку") { controller.state == .inserted }
+
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+    }
+
     // MARK: - Обвязка
+
+    /// Полный круг диктовки: старт, стоп, отпущенный движок. Дальше остаётся дождаться
+    /// терминального состояния — оно и есть предмет проверки.
+    private func runDictation(controller: DictationController, engine: HoldingEngine) async throws {
+        controller.toggle()
+        try await wait(for: "старт записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        controller.toggle()
+        engine.release()
+    }
+
+    private func recordedThreeSeconds() -> StubRecorder {
+        let recorder = StubRecorder()
+        recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 3))
+        return recorder
+    }
 
     private func makeController(
         engine: TranscriptionEngine,
-        recorder: AudioCapturing = StubRecorder()
+        recorder: AudioCapturing = StubRecorder(),
+        // По умолчанию — вердикт «не знаю»: ни один прогон не имеет права уехать в живую
+        // систему, даже если тест доберётся до последнего шага конвейера случайно.
+        delivery: SpyDelivery = SpyDelivery(focus: .unknown),
+        cardsWhenNoField: Bool = true
     ) -> DictationController {
-        DictationController(
+        let settings = makeSettings()
+        settings.cardsWhenNoField = cardsWhenNoField
+        return DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),
-            settings: makeSettings(),
+            settings: settings,
             recorder: recorder,
+            delivery: delivery.delivery,
             // Заглушка вместо Silero: прогон не поднимает CoreML-модель и не ходит за ней в сеть.
             makeVad: { PassThroughVad() }
         )

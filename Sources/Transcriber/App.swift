@@ -38,6 +38,7 @@ final class AppCore: ObservableObject {
     private static let onboardingKey = "onboardingShown"
 
     private var panel: LivePanel?
+    private var cards: CardStackController?
     private var rightCommandTap: ModifierKeyTap?
     private var rightOptionTap: ModifierKeyTap?
     private var escTap: KeyDownTap?
@@ -59,6 +60,11 @@ final class AppCore: ObservableObject {
     func start() {
         guard panel == nil else { return }
         panel = LivePanel(controller: controller, settings: settings)
+        // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
+        // из этого делает уже приложение.
+        let cards = CardStackController()
+        self.cards = cards
+        controller.onCardText = { [weak cards] text in cards?.push(text) }
         // Шорткат живёт в обоих режимах: параллельный путь к той же диктовке никому не мешает.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [controller] in controller.toggle() }
         KeyboardShortcuts.onKeyUp(for: .switchLanguage) { [controller] in controller.switchLanguage() }
@@ -107,7 +113,7 @@ final class AppCore: ObservableObject {
     private static func sessionIsLive(_ state: DictationState) -> Bool {
         switch state {
         case .preparingModel, .recording, .transcribing, .cleaning: return true
-        case .idle, .inserted, .cancelled, .degraded, .error: return false
+        case .idle, .inserted, .carded, .cancelled, .degraded, .error: return false
         }
     }
 

@@ -75,47 +75,12 @@ extension AnyTransition {
     )
 }
 
-/// Настройки Универсального доступа, от которых зависит вид панели. Системное уведомление
-/// приходит и когда приложение неактивно, поэтому подложка переключается вживую.
-@MainActor
-final class HUDAccessibility: ObservableObject {
-    static let shared = HUDAccessibility()
-
-    @Published private(set) var reduceTransparency: Bool
-    @Published private(set) var reduceMotion: Bool
-    @Published private(set) var increaseContrast: Bool
-
-    private init() {
-        let workspace = NSWorkspace.shared
-        reduceTransparency = workspace.accessibilityDisplayShouldReduceTransparency
-        reduceMotion = workspace.accessibilityDisplayShouldReduceMotion
-        increaseContrast = workspace.accessibilityDisplayShouldIncreaseContrast
-        // Наблюдателя не снимаем: объект живёт столько же, сколько приложение.
-        workspace.notificationCenter.addObserver(
-            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            // Уведомление доставляется на главную очередь — это и есть MainActor.
-            MainActor.assumeIsolated { self?.reload() }
-        }
-    }
-
-    private func reload() {
-        let workspace = NSWorkspace.shared
-        reduceTransparency = workspace.accessibilityDisplayShouldReduceTransparency
-        reduceMotion = workspace.accessibilityDisplayShouldReduceMotion
-        increaseContrast = workspace.accessibilityDisplayShouldIncreaseContrast
-    }
-}
-
 /// Пилюля без наблюдаемых объектов: то же дерево рисует и проба ImageRenderer,
 /// которой неоткуда взять контроллер в нужном состоянии.
 ///
-/// Стек слоёв снизу вверх: материал за окном → тёмный скрим → контент → волосяной кант →
-/// верхний блик → двойная тень. Один слой стекла, без шума и без стекла на стекле.
-/// Радиус — строго половина высоты (22), его даёт сама `Capsule()`; вложенные скругления
-/// концентрические: 22 минус отступ от края.
+/// Слои стекла общие с карточками и живут в `GlassStyle`; здесь остаётся только форма
+/// (капсула), содержимое и двойная тень. Радиус — строго половина высоты (22), его даёт
+/// сама `Capsule()`; вложенные скругления концентрические: 22 минус отступ от края.
 struct PanelPill: View {
     let state: DictationState
     let language: Language
@@ -129,10 +94,6 @@ struct PanelPill: View {
     static let height: CGFloat = 44
     /// Потолок ширины: сообщение об ошибке длиннее ярлыка, но панель всё равно остаётся маленькой.
     private static let maxWidth: CGFloat = 320
-    /// Плотность тонировки стекла — вкус пользователя: максимально прозрачное.
-    /// Сознательно ниже рекомендованных 0.15–0.25: читаемость держат не заливкой, а блюром
-    /// самого материала, светлым кантом и тенями под контентом. Крутится одной строкой.
-    private static let scrim: Double = 0.06
 
     /// Кант и блик проявляются на 50 мс позже тела: сначала прилетает стекло, потом на нём
     /// зажигается свет. Разница крошечная, но именно она читается как «дорого».
@@ -154,11 +115,11 @@ struct PanelPill: View {
             // Без `fixedSize` рамка забирает всю предложенную ширину окна и пилюля всегда
             // раздувается до потолка: измерено пробой (190/320 против 320/320).
             .fixedSize(horizontal: true, vertical: false)
-            .background { glass }
-            .overlay { rim.opacity(chromeIn ? 1 : 0) }
-            .overlay { sheen.opacity(chromeIn ? 1 : 0) }
+            .background { GlassPlate(shape: Capsule()) }
+            .overlay { GlassRim(shape: Capsule()).opacity(chromeIn ? 1 : 0) }
+            .overlay { GlassSheen(shape: Capsule()).opacity(chromeIn ? 1 : 0) }
             // Блик поверх всего: он проходит и по стеклу, и по содержимому.
-            .overlay { if !accessibility.reduceMotion { SpecularSweep() } }
+            .overlay { if !accessibility.reduceMotion { SpecularSweep(shape: Capsule()) } }
             // Без группировки тень рисовалась бы от каждого сабвью отдельно.
             .compositingGroup()
             // Две тени: широкая мягкая продаёт парение, плотная контактная даёт кромку.
@@ -186,57 +147,11 @@ struct PanelPill: View {
             }
     }
 
-    /// Слои 1–2: материал, сэмплирующий содержимое за окном, и тёмный скрим поверх него.
-    /// Скрим намеренно тоньше рекомендованного диапазона (0.15–0.25): просили больше стекла.
-    /// Читаемость добираем кантом поярче и микротенью под контентом.
-    @ViewBuilder
-    private var glass: some View {
-        if accessibility.reduceTransparency {
-            // Фолбэк без прозрачности: сплошная тёмная пилюля, всё остальное как было.
-            Capsule().fill(Color(white: 0.12))
-        } else {
-            ZStack {
-                HUDBackdrop()
-                Capsule().fill(.black.opacity(accessibility.increaseContrast ? 0.30 : Self.scrim))
-            }
-        }
-    }
-
-    /// Слой 4: волосяной кант в 1 px, светлый сверху и почти прозрачный снизу.
-    /// Именно асимметрия отличает стекло от «картинной рамы» равномерной обводки.
-    @ViewBuilder
-    private var rim: some View {
-        if accessibility.reduceTransparency || accessibility.increaseContrast {
-            Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1)
-        } else {
-            Capsule().strokeBorder(
-                LinearGradient(
-                    stops: [
-                        .init(color: .white.opacity(0.55), location: 0),
-                        .init(color: .white.opacity(0.14), location: 0.4),
-                        .init(color: .white.opacity(0.08), location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ),
-                lineWidth: 1
-            )
-        }
-    }
-
-    /// Слой 5: внутренний блик — размытая дуга по верхней кромке, гаснущая к середине.
-    private var sheen: some View {
-        Capsule()
-            .inset(by: 1)
-            .stroke(.white.opacity(0.15), lineWidth: 0.5)
-            .blur(radius: 1)
-            .mask { LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .center) }
-    }
-
     /// Ступень конвейера: различает состояния, но не уровень внутри `.recording` —
     /// иначе анимация ширины перезапускалась бы 12 раз в секунду.
     private enum Stage {
-        case idle, preparing, recording, transcribing, cleaning, inserted, cancelled, degraded, error
+        case idle, preparing, recording, transcribing, cleaning, inserted, carded, cancelled,
+             degraded, error
     }
 
     private var stage: Stage {
@@ -247,6 +162,7 @@ struct PanelPill: View {
         case .transcribing: .transcribing
         case .cleaning: .cleaning
         case .inserted: .inserted
+        case .carded: .carded
         case .cancelled: .cancelled
         case .degraded: .degraded
         case .error: .error
@@ -327,6 +243,13 @@ struct PanelPill: View {
             .shadow(color: .green.opacity(0.45), radius: 4)
             .transition(ticker)
 
+        case .carded:
+            // Не вставили — значит, некуда: текст ждёт карточкой внизу слева. Тон тот же,
+            // что у удачи (это она и есть), но без зелени: вставки в приложение не было.
+            FlashRow(symbol: "⤷", text: "В карточку", tint: .white, glowing: false,
+                     reduceMotion: accessibility.reduceMotion)
+                .transition(ticker)
+
         case .cancelled:
             FlashRow(symbol: "✕", text: "Отменено", tint: .white, glowing: false,
                      reduceMotion: accessibility.reduceMotion)
@@ -368,84 +291,6 @@ struct PanelPill: View {
         case "no accessibility": return "Нет разрешения Accessibility"
         default: return reason
         }
-    }
-}
-
-/// Блик: одна диагональная полоса света пробегает по капсуле сразу после того, как пружина
-/// её поставила на место. Ровно один раз за появление — это момент «стекло поймало свет»,
-/// а не бесконечный шиммер (тот читался бы рекламой).
-private struct SpecularSweep: View {
-    @State private var travel: CGFloat = -1
-
-    var body: some View {
-        GeometryReader { geometry in
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [.clear, .white.opacity(0.18), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .frame(width: geometry.size.width * 0.45, height: geometry.size.height * 2.4)
-                .rotationEffect(.degrees(20))
-                .offset(x: travel * geometry.size.width * 1.1, y: -geometry.size.height * 0.7)
-        }
-        .clipShape(Capsule())
-        .allowsHitTesting(false)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.5).delay(0.35)) { travel = 1 }
-        }
-    }
-}
-
-/// Слой 1: единственный слой стекла — системный материал, который блюрит содержимое ЗА окном.
-/// SwiftUI-материалы (`.ultraThinMaterial` и прочие) на macOS фон за окном не видят и дают
-/// плоскую серую плашку, поэтому подложка тут именно AppKit-овая.
-private struct HUDBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = CapsuleEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        // Ключевая строка: панель никогда не становится key, а `.active` не даёт стеклу потухнуть.
-        view.state = .active
-        view.isEmphasized = true
-        // Материал берёт вариант из оформления вью, а пилюля всегда тёмная.
-        view.appearance = NSAppearance(named: .darkAqua)
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
-}
-
-/// Форму материалу задаёт только `maskImage`: слой, который рисует WindowServer, надёжно не режут
-/// ни `clipShape`, ни CALayer-маска. Маска — растягиваемая 9-частная капсула, поэтому одна
-/// картинка годится на любую ширину пилюли; пересобираем её лишь при смене высоты.
-private final class CapsuleEffectView: NSVisualEffectView {
-    private var maskedHeight: CGFloat = 0
-
-    override func layout() {
-        super.layout()
-        guard bounds.height > 0, abs(bounds.height - maskedHeight) > 0.5 else { return }
-        maskedHeight = bounds.height
-        maskImage = .capsuleMask(height: bounds.height)
-    }
-}
-
-extension NSImage {
-    /// Сторона 2r+1: центральная полоса шириной в точку, её растяжение и даёт капсулу
-    /// любой ширины с неискажёнными торцами.
-    fileprivate static func capsuleMask(height: CGFloat) -> NSImage {
-        let radius = height / 2
-        let side = radius * 2 + 1
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        image.resizingMode = .stretch
-        return image
     }
 }
 
