@@ -260,6 +260,7 @@ public final class DictationController: ObservableObject {
     private let dictionary: UserDictionary
     private let settings: AppSettings
     private let history: HistoryStore
+    private let suggester: TermSuggester
     private let recorder: AudioCapturing
     private let delivery: TextDelivery
     private let makeVad: @Sendable () async throws -> SpeechGating
@@ -327,6 +328,7 @@ public final class DictationController: ObservableObject {
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
+        self.suggester = .shared
         self.recorder = recorder
         self.delivery = delivery
         self.makeVad = makeVad
@@ -799,6 +801,11 @@ public final class DictationController: ObservableObject {
             let output = translation ?? text
             let destination = await deliver(output)
             history.add(output, language: language)
+            // Кандидаты в словарь считаем по тексту диктовки, а не по тому, что уехало
+            // в поле ввода: у перевода кандидатом оказалось бы каждое английское слово.
+            // Текст уже прошёл словарь — всё, что тот умел заменить, стоит канонической
+            // формой и в подсказки не полезет.
+            suggester.observe(text, entries: entries)
             await finishBackup(backup)
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
