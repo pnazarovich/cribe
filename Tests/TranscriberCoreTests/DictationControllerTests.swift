@@ -20,6 +20,12 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
         self.segments = segments
     }
 
+    /// Выбор модели, который контроллер сделал на старте сессии; nil — не выбирал вовсе.
+    private var mixedSpeechFlag: Bool?
+    var mixedSpeech: Bool? { lock.withLock { mixedSpeechFlag } }
+
+    func setMixedSpeech(_ enabled: Bool) { lock.withLock { mixedSpeechFlag = enabled } }
+
     /// Фоновый проход дошёл до движка.
     var passStarted: Bool { lock.withLock { passStartedFlag } }
     /// Проход начался и всё ещё считает.
@@ -266,6 +272,32 @@ final class DictationControllerTests: XCTestCase {
         }
         XCTAssertEqual(controller.state, .idle)
         XCTAssertNil(controller.activeSessionTranslate)
+    }
+
+    /// Тумблер «Смешанная речь» доезжает до движка ДО загрузки модели: иначе сессия
+    /// прогрела бы turbo и распознала им же, а настройка осталась бы декорацией.
+    func testMixedSpeechSettingReachesEngineBeforeModelLoad() async throws {
+        let engine = GatedEngine()
+        let settings = makeSettings()
+        settings.ruUsesLargeModel = true
+        let controller = DictationController(
+            engine: engine,
+            dictionary: UserDictionary(url: dictionaryURL),
+            settings: settings,
+            recorder: StubRecorder(),
+            delivery: SpyDelivery(focus: .unknown).delivery,
+            makeVad: { PassThroughVad() }
+        )
+
+        controller.toggle()
+        try await wait(for: "выбор модели сессии") { engine.mixedSpeech == true }
+
+        controller.toggle()  // второй хоткей — отмена, до записи не доходим
+        engine.release()
+        try await wait(for: "выход из загрузки") {
+            if case .preparingModel = controller.state { return false }
+            return true
+        }
     }
 
     /// Выбор микрофона из меню доезжает до захвата: пункт пишет UID в настройки, а подписка

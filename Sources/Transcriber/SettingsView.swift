@@ -60,6 +60,12 @@ private struct GeneralTab: View {
                 }
             }
 
+            Toggle("Смешанная речь (RU + UK)", isOn: $settings.ruUsesLargeModel)
+            Text("Использует большую модель для русского — точнее с украинскими словами, "
+                 + "но медленнее на ~1 с")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
 
             Toggle("Карточки, если нет поля ввода", isOn: $settings.cardsWhenNoField)

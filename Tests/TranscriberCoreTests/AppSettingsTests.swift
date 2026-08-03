@@ -55,6 +55,15 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).cardsWhenNoField)
     }
 
+    /// Смешанная речь выключена по умолчанию: большая модель для русского стоит около
+    /// секунды на проход, и платить её всем подряд незачем.
+    func testMixedSpeechIsOffByDefaultAndPersists() {
+        XCTAssertFalse(AppSettings(defaults: defaults).ruUsesLargeModel)
+
+        AppSettings(defaults: defaults).ruUsesLargeModel = true
+        XCTAssertTrue(AppSettings(defaults: defaults).ruUsesLargeModel)
+    }
+
     /// У перевода своя пара «модель + усилие» с собственными дефолтами.
     func testTranslateModelDefaults() {
         let settings = AppSettings(defaults: defaults)

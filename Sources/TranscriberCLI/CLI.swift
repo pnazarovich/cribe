@@ -3,9 +3,10 @@ import TranscriberCore
 import WhisperKit
 
 private let usage = """
-usage: transcriber-cli <audio-file> --lang ru|uk [--no-gpt] [--no-vad] [--translate]
+usage: transcriber-cli <audio-file> --lang ru|uk [--mixed] [--no-gpt] [--no-vad] [--translate]
 
   --lang ru|uk   язык диктовки (обязателен)
+  --mixed        смешанная речь (RU + UK): русский на large-v3 вместо turbo
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (слой 3, несовместим с --no-gpt)
@@ -40,8 +41,10 @@ struct CLI {
         }
 
         let engine = WhisperEngine()
+        engine.setMixedSpeech(options.mixed)
         let progress = ModelProgress()
-        log("модель \(options.language.whisperModel) — подготовка…")
+        let model = WhisperModel.name(for: options.language, mixedSpeech: options.mixed)
+        log("модель \(model) — подготовка…")
         try await engine.prepare(language: options.language) { progress.report($0) }
 
         let entries = UserDictionary(url: UserDictionary.defaultURL).entries
@@ -50,7 +53,11 @@ struct CLI {
         let raw = try await engine.transcribe(
             speech,
             language: options.language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language)
+            prompt: PromptBuilder.initialPrompt(
+                entries: entries,
+                language: options.language,
+                mixedSpeech: options.mixed
+            )
         )
         log("слой 1: \(raw)")
 
@@ -86,6 +93,7 @@ private struct Options {
     let useGPT: Bool
     let useVAD: Bool
     let translate: Bool
+    let mixed: Bool
 
     init(arguments: [String]) throws {
         var path: String?
@@ -93,6 +101,7 @@ private struct Options {
         var useGPT = true
         var useVAD = true
         var translate = false
+        var mixed = false
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
@@ -105,6 +114,7 @@ private struct Options {
             case "--no-gpt": useGPT = false
             case "--no-vad": useVAD = false
             case "--translate": translate = true
+            case "--mixed": mixed = true
             case "-h", "--help": throw CLIError(usage)
             default:
                 guard !argument.hasPrefix("-"), path == nil else {
@@ -123,6 +133,7 @@ private struct Options {
         self.useGPT = useGPT
         self.useVAD = useVAD
         self.translate = translate
+        self.mixed = mixed
     }
 }
 

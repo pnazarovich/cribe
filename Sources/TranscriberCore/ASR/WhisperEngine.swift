@@ -18,10 +18,15 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     private static let previewVariant = "openai_whisper-tiny"
 
     private let queue = DispatchQueue(label: "online.nazarovych.transcriber.whisper")
-    private var pipelines: [Language: WhisperKit] = [:]
+    /// Ключ — вариант модели, а не язык: со «смешанной речью» русский обслуживает large-v3,
+    /// без неё — turbo, и обе модели должны уживаться в кэше (иначе тумблер отдавал бы
+    /// прогретую не ту).
+    private var pipelines: [String: WhisperKit] = [:]
     /// Идущие загрузки. Результат кладётся в `pipelines`, поэтому Task<Void, Error>:
     /// WhisperKit не Sendable и не может быть значением задачи.
-    private var loading: [Language: Task<Void, Error>] = [:]
+    private var loading: [String: Task<Void, Error>] = [:]
+    /// Смешанная речь (RU + UK). Читается и пишется только под `queue`.
+    private var mixedSpeech = false
     /// Отдельный инстанс превью и его загрузка — тот же приём, но ключ один на всё приложение:
     /// tiny мультиязычная, язык форсируется в опциях декодирования.
     private var previewPipeline: WhisperKit?
@@ -29,12 +34,17 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
     public init() {}
 
+    public func setMixedSpeech(_ enabled: Bool) {
+        queue.sync { mixedSpeech = enabled }
+    }
+
     public func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         let pending: (task: Task<Void, Error>, joined: Bool)? = queue.sync {
-            if pipelines[language] != nil { return nil }
-            if let inflight = loading[language] { return (inflight, true) }
-            let started = loadTask(for: language, onState: onState)
-            loading[language] = started
+            let variant = variantLocked(language)
+            if pipelines[variant] != nil { return nil }
+            if let inflight = loading[variant] { return (inflight, true) }
+            let started = loadTask(variant: variant, onState: onState)
+            loading[variant] = started
             return (started, false)
         }
 
@@ -124,7 +134,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Один проход большой модели. Опции здесь ровно одни на все проходы сессии —
     /// иначе фоновые проходы и финал распознавали бы по-разному, и склеивать их было бы нечем.
     private func run(_ samples: [Float], language: Language, prompt: String) async throws -> [TranscriptionResult] {
-        let cached = queue.sync { pipelines[language] }
+        let cached = queue.sync { pipelines[variantLocked(language)] }
         guard let pipe = cached else {
             throw TranscriptionEngineError.notPrepared(language)
         }
@@ -150,22 +160,27 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             .joined(separator: " ")
     }
 
-    /// Одна загрузка на язык: скачивание (только если моделей ещё нет на диске) + прогрев.
+    /// Модель сессии. Вызывать только под `queue` — читает `mixedSpeech`.
+    private func variantLocked(_ language: Language) -> String {
+        WhisperModel.name(for: language, mixedSpeech: mixedSpeech)
+    }
+
+    /// Одна загрузка на вариант модели: скачивание (только если моделей ещё нет на диске) + прогрев.
     /// Сама кладёт результат в кэш и снимает себя со списка идущих — и при успехе, и при ошибке.
     private func loadTask(
-        for language: Language,
+        variant: String,
         onState: @escaping @Sendable (ASRModelState) -> Void
     ) -> Task<Void, Error> {
         Task {
             do {
-                let pipe = try await Self.loadPipeline(variant: language.whisperModel, onState: onState)
+                let pipe = try await Self.loadPipeline(variant: variant, onState: onState)
                 self.queue.sync {
-                    self.pipelines[language] = pipe
-                    self.loading[language] = nil
+                    self.pipelines[variant] = pipe
+                    self.loading[variant] = nil
                 }
             } catch {
                 // Ничего не кэшируем — следующий prepare попробует снова.
-                self.queue.sync { self.loading[language] = nil }
+                self.queue.sync { self.loading[variant] = nil }
                 throw error
             }
         }

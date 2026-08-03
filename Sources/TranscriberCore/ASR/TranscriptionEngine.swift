@@ -56,6 +56,10 @@ public protocol TranscriptionEngine: AnyObject {
     /// сегмента считается, сколько записи уже распознано.
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment]
 
+    /// Смешанная речь (RU + UK): русские сессии распознаёт большая модель вместо turbo.
+    /// Значение читают `prepare` и `transcribe`, поэтому ставить его надо до старта сессии.
+    func setMixedSpeech(_ enabled: Bool)
+
     /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
     func preparePreview() async throws
 
@@ -71,6 +75,9 @@ public extension TranscriptionEngine {
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
         throw TranscriptionEngineError.segmentsUnsupported
     }
+
+    /// Движок с одной моделью на язык — законное состояние: выбирать ему нечего.
+    func setMixedSpeech(_ enabled: Bool) {}
 
     func preparePreview() async throws {}
 
