@@ -125,7 +125,8 @@ public enum VariantGenerator {
 
     /// Общая нормализация обоих путей: строчные, без дублей, без самого термина,
     /// без пустого и без явного мусора; не длиннее `maxVariants`.
-    static func normalized(_ variants: [String], canonical: String) -> [String] {
+    /// Публично: ею же редактор приводит в порядок варианты, вписанные руками.
+    public static func normalized(_ variants: [String], canonical: String) -> [String] {
         let term = canonical.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         var seen = Set<String>()
         var result: [String] = []

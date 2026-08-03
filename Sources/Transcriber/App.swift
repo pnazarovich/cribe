@@ -27,6 +27,7 @@ final class AppCore: ObservableObject {
 
     let settings = AppSettings.shared
     let history = HistoryStore.shared
+    let suggester = TermSuggester.shared
     let engine = WhisperEngine()
     let dictionary = UserDictionary(url: UserDictionary.defaultURL)
     let controller: DictationController
@@ -34,6 +35,10 @@ final class AppCore: ObservableObject {
     /// Онбординг показываем один раз; флаг ставим сразу при открытии, иначе окно,
     /// закрытое крестиком, возвращалось бы на каждом старте.
     @Published private(set) var needsOnboarding: Bool
+
+    /// Зачем открыли редактор словаря из меню. Редактор разворачивает нужный блок
+    /// и сбрасывает значение — это разовый сигнал, а не состояние.
+    @Published var dictionaryFocus: DictionaryFocus?
 
     private static let onboardingKey = "onboardingShown"
 
@@ -54,6 +59,16 @@ final class AppCore: ObservableObject {
         needsOnboarding = !UserDefaults.standard.bool(forKey: Self.onboardingKey)
         // Чаймы синтезируются заранее: на первом хоткее звук иначе опаздывал.
         SoundPlayer.preload()
+        suggester.refresh(entries: dictionary.entries)
+        // Словарь меняется и мимо редактора (правка файла снаружи) — подсказки обязаны
+        // это учесть, иначе они предлагают то, что уже добавлено. Уведомление приходит
+        // с очереди наблюдателя, а `@Published` живёт на главной.
+        dictionary.onChange = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.suggester.refresh(entries: self.dictionary.entries)
+            }
+        }
     }
 
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
@@ -223,9 +238,13 @@ struct TranscriberApp: App {
         }
 
         Window("Словарь", id: WindowID.dictionary) {
-            DictionaryEditorView(dictionary: AppCore.shared.dictionary)
+            DictionaryWindow(
+                core: AppCore.shared,
+                controller: AppCore.shared.controller,
+                history: AppCore.shared.history
+            )
         }
-        .defaultSize(width: 640, height: 420)
+        .defaultSize(width: 680, height: 560)
 
         Window("Настройка Transcriber", id: WindowID.onboarding) {
             // Флаг первого запуска гасим отсюда: только появление окна доказывает,
@@ -233,6 +252,27 @@ struct TranscriberApp: App {
             OnboardingView(engine: AppCore.shared.engine) { AppCore.shared.markOnboardingShown() }
         }
         .windowResizability(.contentSize)
+    }
+}
+
+/// Единственное место, где редактор словаря встречается с общим состоянием приложения:
+/// сам он про `AppCore` не знает и живёт на переданных ему словаре, настройках и тексте
+/// последней диктовки.
+private struct DictionaryWindow: View {
+    @ObservedObject var core: AppCore
+    @ObservedObject var controller: DictationController
+    @ObservedObject var history: HistoryStore
+
+    var body: some View {
+        DictionaryEditorView(
+            dictionary: core.dictionary,
+            settings: core.settings,
+            suggester: core.suggester,
+            // Последняя диктовка живёт в конвейере, но после перезапуска её там нет —
+            // тогда берём свежайшую из истории.
+            lastDictation: controller.lastOriginal ?? history.items.first?.text,
+            focus: $core.dictionaryFocus
+        )
     }
 }
 
@@ -246,7 +286,13 @@ private struct MenuBarScene: Scene {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(controller: controller, settings: core.settings, history: core.history)
+            MenuBarView(
+                core: core,
+                controller: controller,
+                settings: core.settings,
+                history: core.history,
+                suggester: core.suggester
+            )
         } label: {
             Image(systemName: icon)
         }

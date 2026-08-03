@@ -5,9 +5,11 @@ import TranscriberCore
 /// Содержимое меню в строке состояния. Стиль `.menu` — нативное NSMenu, поэтому
 /// внутри допустимы только меню-совместимые вью: Text, Button, Toggle, Picker, Menu, Section, Divider.
 struct MenuBarView: View {
+    @ObservedObject var core: AppCore
     @ObservedObject var controller: DictationController
     @ObservedObject var settings: AppSettings
     @ObservedObject var history: HistoryStore
+    @ObservedObject var suggester: TermSuggester
 
     @Environment(\.openWindow) private var openWindow
 
@@ -56,10 +58,19 @@ struct MenuBarView: View {
 
         Divider()
 
-        Button("Словарь…") {
-            NSApp.activate()
-            openWindow(id: WindowID.dictionary)
+        Button("Словарь…") { openDictionary() }
+
+        // Разбор «я сказал X, получилось Y» начинается отсюда: слова последней диктовки
+        // становятся вариантами в два клика, без переписывания их руками.
+        Button("Добавить из последней диктовки") { openDictionary(.lastDictation) }
+            .disabled(controller.lastOriginal == nil && history.items.isEmpty)
+
+        // Пункт появляется, только когда есть что предложить: во время диктовки подсказки
+        // не всплывают ничем и никогда — это тихая строка в меню, а не окно поверх работы.
+        if !suggester.suggestions.isEmpty {
+            Button("Предложения (\(suggester.suggestions.count))") { openDictionary(.suggestions) }
         }
+
         SettingsLink { Text("Настройки…") }
         // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
         // а автоматически окно показывается только на первом запуске.
@@ -98,6 +109,13 @@ struct MenuBarView: View {
         case .degraded(let reason): return "⚠️ \(reason)"
         case .error(let message): return "⚠️ \(message)"
         }
+    }
+
+    /// LSUIElement-приложение неактивно — без `activate` окно откроется позади чужих.
+    private func openDictionary(_ focus: DictionaryFocus? = nil) {
+        core.dictionaryFocus = focus
+        NSApp.activate()
+        openWindow(id: WindowID.dictionary)
     }
 
     private func copy(_ text: String) {
