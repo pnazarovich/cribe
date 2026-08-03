@@ -31,6 +31,7 @@ public final class AppSettings: ObservableObject {
         static let skipGPTForShort = "skipGPTForShort"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let cardsWhenNoField = "cardsWhenNoField"
+        static let ruUsesLargeModel = "ruUsesLargeModel"
     }
 
     private let defaults: UserDefaults
@@ -100,6 +101,14 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(cardsWhenNoField, forKey: Key.cardsWhenNoField) }
     }
 
+    /// «Смешанная речь (RU + UK)»: русские сессии распознаёт large-v3 вместо turbo, а в
+    /// initial_prompt добавляется украинский образец. Turbo заметно слабее на украинском,
+    /// поэтому украинские вкрапления в русской диктовке теряются именно на нём. Ценой —
+    /// примерно секунда на проход, поэтому по умолчанию выключено.
+    @Published public var ruUsesLargeModel: Bool {
+        didSet { defaults.set(ruUsesLargeModel, forKey: Key.ruUsesLargeModel) }
+    }
+
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
     @Published public var dictationHotkeyMode: HotkeyMode {
         didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
@@ -137,6 +146,7 @@ public final class AppSettings: ObservableObject {
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
+        ruUsesLargeModel = defaults.bool(forKey: Key.ruUsesLargeModel)
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

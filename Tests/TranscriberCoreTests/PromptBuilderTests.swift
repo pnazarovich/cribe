@@ -48,4 +48,40 @@ final class PromptBuilderTests: XCTestCase {
         let prompt = PromptBuilder.initialPrompt(entries: [], language: .ru)
         XCTAssertEqual(prompt, "Итак, начнём: во-первых, проверим всё — это важно!")
     }
+
+    // MARK: - Смешанная речь
+
+    /// Украинский образец добавляется только русской сессии со смешанной речью: он и нужен
+    /// затем, чтобы декодер принимал украинские токены посреди русской диктовки.
+    func testUkrainianSampleOnlyInMixedRussian() {
+        let mixed = PromptBuilder.initialPrompt(entries: entries, language: .ru, mixedSpeech: true)
+        XCTAssertTrue(mixed.contains("Українською кажемо так"), mixed)
+        // Образец собран из того же словаря и стоит в самом хвосте — там внимание Whisper.
+        XCTAssertTrue(mixed.hasSuffix("що робити з Tailscale."), mixed)
+
+        let plain = PromptBuilder.initialPrompt(entries: entries, language: .ru)
+        XCTAssertFalse(plain.contains("Українською кажемо так"), plain)
+
+        // Украинскую сессию и так распознаёт украинская модель — биасить ей нечего.
+        let ukrainian = PromptBuilder.initialPrompt(entries: entries, language: .uk, mixedSpeech: true)
+        XCTAssertFalse(ukrainian.contains("Українською кажемо так"), ukrainian)
+    }
+
+    func testMixedPromptWithEmptyDictionaryStillCarriesUkrainianSample() {
+        let prompt = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
+        XCTAssertTrue(prompt.contains("Итак, начнём"), prompt)
+        XCTAssertTrue(prompt.contains("Українською кажемо так"), prompt)
+    }
+
+    /// Образец не имеет права проесть бюджет промпта: режем термины ровно так же.
+    func testMixedPromptKeepsLengthBudget() {
+        let many = (1...100).map {
+            DictionaryEntry(canonical: "Terminus\($0)", variants: ["термінус\($0)"])
+        }
+        let prompt = PromptBuilder.initialPrompt(
+            entries: many, language: .ru, maxTerms: 100, mixedSpeech: true
+        )
+        XCTAssertLessThanOrEqual(prompt.count, 700, prompt)
+        XCTAssertTrue(prompt.hasSuffix("що робити з Terminus100."), prompt)
+    }
 }

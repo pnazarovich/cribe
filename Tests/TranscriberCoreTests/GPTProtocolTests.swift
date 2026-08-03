@@ -311,6 +311,25 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertTrue(translating.contains("филлер"))
     }
 
+    /// Диктовка смешанная: русская речь с украинскими словами и латиницей — норма.
+    /// Прежнее «Сохраняй язык» (в единственном числе) толкало модель нормализовать
+    /// украинские вкрапления в русские, и правило обязано стоять во всех четырёх вариантах
+    /// промпта — иначе на переводе или на украинской сессии дыра остаётся.
+    func testMixedLanguageRuleInEveryPromptVariant() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        for translating in [false, true] {
+            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: translating)
+            XCTAssertTrue(ru.contains("Речь смешанная"), ru)
+            XCTAssertTrue(ru.contains("НИКОГДА не переводи между русским и украинским"), ru)
+            XCTAssertFalse(ru.contains("Сохраняй язык,"), "правило в единственном числе должно уйти")
+
+            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: translating)
+            XCTAssertTrue(uk.contains("Мовлення змішане"), uk)
+            XCTAssertTrue(uk.contains("НІКОЛИ не перекладай між російською та українською"), uk)
+            XCTAssertFalse(uk.contains("Зберігай мову,"), "правило в единственном числе должно уйти")
+        }
+    }
+
     func testTranslatePromptUkrainian() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гітхаб"])]
         let plain = PostProcessor.systemPrompt(entries: entries, language: .uk)

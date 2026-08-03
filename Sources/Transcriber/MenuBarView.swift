@@ -19,7 +19,9 @@ struct MenuBarView: View {
 
         Divider()
 
-        Picker("Язык", selection: $settings.language) {
+        // Смешанная речь меняет саму модель распознавания — в меню это должно быть видно
+        // там же, где язык, иначе непонятно, чем вообще распознаётся диктовка.
+        Picker(settings.ruUsesLargeModel ? "Язык · RU+UK" : "Язык", selection: $settings.language) {
             ForEach(Language.allCases, id: \.self) { language in
                 Text(language.displayName).tag(language)
             }
