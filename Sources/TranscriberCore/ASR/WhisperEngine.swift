@@ -7,15 +7,21 @@ import WhisperKit
 /// `prepare` одного языка склеиваются в одну загрузку — второй раз многогигабайтная
 /// модель не качается.
 public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
-    /// Модели и токенайзеры лежат в ~/Library/Application Support/Transcriber/models.
-    private static let downloadBase: URL = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Transcriber", isDirectory: true)
-        .appendingPathComponent("models", isDirectory: true)
+    /// Скачивание одного варианта в папку моделей. Отдельная точка — ради тестов: склейку
+    /// параллельных загрузок надо проверять без похода в сеть. В бою здесь `WhisperKit.download`.
+    typealias VariantDownload = @Sendable (
+        _ variant: String,
+        _ onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Void
 
     /// Модель live-превью: multilingual tiny (~150 МБ) — качество черновое, зато проход
     /// идёт десятки миллисекунд вместо ~1.3 c у большой модели сессии.
     private static let previewVariant = "openai_whisper-tiny"
+
+    /// Модели на диске: путь, «скачана ли», размер, удаление.
+    private let store: ModelStore
+    /// Подменяется только в тестах и только до первого вызова.
+    var downloadVariant: VariantDownload
 
     private let queue = DispatchQueue(label: "online.nazarovych.transcriber.whisper")
     /// Ключ — вариант модели, а не язык: русский и украинский могут делить один вариант,
@@ -24,19 +30,34 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Идущие загрузки. Результат кладётся в `pipelines`, поэтому Task<Void, Error>:
     /// WhisperKit не Sendable и не может быть значением задачи.
     private var loading: [String: Task<Void, Error>] = [:]
+    /// Идущие скачивания без прогрева (кнопка «Скачать»). Отдельно от `loading`: успех такой
+    /// задачи означает «файлы на диске», а не «модель прогрета», и присоединившийся `prepare`
+    /// после неё обязан ещё прогреться.
+    private var downloading: [String: Task<Void, Error>] = [:]
     /// Отдельный инстанс превью и его загрузка — тот же приём, но ключ один на всё приложение:
     /// tiny мультиязычная, язык форсируется в опциях декодирования.
     private var previewPipeline: WhisperKit?
     private var previewLoading: Task<Void, Error>?
 
-    public init() {}
+    public init(store: ModelStore = .shared) {
+        self.store = store
+        downloadVariant = { variant, onProgress in
+            _ = try await WhisperKit.download(
+                variant: variant,
+                downloadBase: store.base,
+                progressCallback: { progress in onProgress(progress.fractionCompleted) }
+            )
+        }
+    }
 
     public func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         let pending: (task: Task<Void, Error>, joined: Bool)? = queue.sync {
             let variant = language.whisperModel
             if pipelines[variant] != nil { return nil }
             if let inflight = loading[variant] { return (inflight, true) }
-            let started = loadTask(variant: variant, onState: onState)
+            // Тот же вариант уже качается по кнопке «Скачать» — дожидаемся файлов вместо
+            // второго захода в сеть, а прогреваемся уже сами.
+            let started = loadTask(variant: variant, onState: onState, after: downloading[variant])
             loading[variant] = started
             return (started, false)
         }
@@ -57,6 +78,36 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             onState(.notLoaded)
             throw error
         }
+    }
+
+    /// Кладёт модель языка на диск, не прогревая её: кнопка «Скачать» не должна тащить
+    /// несколько гигабайт в оперативную память — прогрев сделает первая диктовка.
+    /// Модель уже на диске — вызов ничего не делает. К идущей загрузке того же варианта
+    /// присоединяемся: второй раз те же гигабайты не качаем. Отмена вызывающей задачи
+    /// обрывает скачивание (`CancellationError`), но только своё: чужую ведёт `prepare`
+    /// идущей диктовки — ей и прогресс, и право её обрывать.
+    public func download(language: Language, onProgress: @escaping @Sendable (Double) -> Void) async throws {
+        let variant = language.whisperModel
+        guard !store.isInstalled(variant: variant) else { return }
+
+        let pending: (task: Task<Void, Error>, owned: Bool) = queue.sync {
+            if let inflight = downloading[variant] ?? loading[variant] { return (inflight, false) }
+            let started = downloadTask(variant: variant, onProgress: onProgress)
+            downloading[variant] = started
+            return (started, true)
+        }
+
+        try await withTaskCancellationHandler {
+            try await pending.task.value
+        } onCancel: {
+            if pending.owned { pending.task.cancel() }
+        }
+    }
+
+    /// Убирает прогретую модель языка из памяти. Нужна перед удалением модели с диска:
+    /// стирать файлы под живым инстансом нельзя. Модель не прогрета — вызов ничего не делает.
+    public func unload(language: Language) {
+        queue.sync { pipelines[language.whisperModel] = nil }
     }
 
     public func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
@@ -155,13 +206,18 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Одна загрузка на вариант модели: скачивание (только если моделей ещё нет на диске) + прогрев.
     /// Сама кладёт результат в кэш и снимает себя со списка идущих — и при успехе, и при ошибке.
+    /// `after` — идущее скачивание того же варианта, если оно есть.
     private func loadTask(
         variant: String,
-        onState: @escaping @Sendable (ASRModelState) -> Void
+        onState: @escaping @Sendable (ASRModelState) -> Void,
+        after download: Task<Void, Error>?
     ) -> Task<Void, Error> {
         Task {
             do {
-                let pipe = try await Self.loadPipeline(variant: variant, onState: onState)
+                // Ошибка или отмена чужого скачивания нам не мешает: `loadPipeline` увидит,
+                // что файлов на диске нет, и скачает сам.
+                _ = try? await download?.value
+                let pipe = try await Self.loadPipeline(variant: variant, store: store, onState: onState)
                 self.queue.sync {
                     self.pipelines[variant] = pipe
                     self.loading[variant] = nil
@@ -174,12 +230,31 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
+    /// Скачивание без прогрева. Как и `loadTask`, снимает себя со списка идущих —
+    /// и при успехе, и при ошибке.
+    private func downloadTask(
+        variant: String,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) -> Task<Void, Error> {
+        Task {
+            defer { self.queue.sync { self.downloading[variant] = nil } }
+            try await downloadVariant(variant, onProgress)
+            // Оборванное скачивание HubApi возвращает молча, не бросая: недокачанную папку
+            // на диске от готовой отличает только этот флаг.
+            try Task.checkCancellation()
+        }
+    }
+
     /// То же самое для модели превью: прогресс никому не показываем — загрузка идёт
     /// фоном при старте приложения, а до её конца превью считает большая модель.
     private func previewLoadTask() -> Task<Void, Error> {
         Task {
             do {
-                let pipe = try await Self.loadPipeline(variant: Self.previewVariant, onState: { _ in })
+                let pipe = try await Self.loadPipeline(
+                    variant: Self.previewVariant,
+                    store: store,
+                    onState: { _ in }
+                )
                 self.queue.sync {
                     self.previewPipeline = pipe
                     self.previewLoading = nil
@@ -194,16 +269,17 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Скачивание (только если моделей ещё нет на диске) + прогрев одного варианта.
     private static func loadPipeline(
         variant: String,
+        store: ModelStore,
         onState: @escaping @Sendable (ASRModelState) -> Void
     ) async throws -> WhisperKit {
         let folder: URL
-        if let local = localModelFolder(variant: variant) {
+        if let local = store.installedFolder(variant: variant) {
             folder = local
         } else {
             onState(.downloading(0))
             folder = try await WhisperKit.download(
                 variant: variant,
-                downloadBase: downloadBase,
+                downloadBase: store.base,
                 progressCallback: { progress in onState(.downloading(progress.fractionCompleted)) }
             )
         }
@@ -212,28 +288,11 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         return try await WhisperKit(
             WhisperKitConfig(
                 modelFolder: folder.path,
-                tokenizerFolder: downloadBase,
+                tokenizerFolder: store.base,
                 prewarm: true,
                 load: true
             )
         )
-    }
-
-    /// Папка уже скачанной модели, если она на месте целиком. Иначе nil — тогда идём в сеть.
-    /// Раскладка HubApi: <downloadBase>/models/<repo>/<variant>.
-    private static func localModelFolder(variant: String) -> URL? {
-        let folder = downloadBase
-            .appendingPathComponent("models/argmaxinc/whisperkit-coreml", isDirectory: true)
-            .appendingPathComponent(variant, isDirectory: true)
-
-        // Те же три модели проверяет WhisperKit при загрузке; недокачанную папку не принимаем.
-        let required = ["MelSpectrogram", "AudioEncoder", "TextDecoder"]
-        let complete = required.allSatisfy { name in
-            ["mlmodelc", "mlpackage"].contains { ext in
-                FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(name).\(ext)").path)
-            }
-        }
-        return complete ? folder : nil
     }
 
     /// Токены промпта без спецтокенов — их WhisperKit подставляет сам.

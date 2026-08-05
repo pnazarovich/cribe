@@ -10,7 +10,8 @@ struct OnboardingView: View {
     let onShown: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var downloader = ModelDownloader()
+    /// Загрузчик один на приложение: то же состояние показывают настройки.
+    @ObservedObject private var downloader = ModelDownloader.shared
 
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibilityGranted = TextInserter.hasAccessibility
@@ -87,22 +88,40 @@ struct OnboardingView: View {
     }
 
     private var modelsCard: some View {
-        card(number: 3, title: "Модели распознавания", done: downloader.isFinished) {
-            Text("Около 4.6 ГБ на два языка. Можно пропустить — модель скачается при первой диктовке.")
+        card(number: 3, title: "Модели распознавания", done: modelsInstalled) {
+            Text("Каждый язык качается отдельно: русский ≈1,5 ГБ, українська ≈2,9 ГБ. "
+                + "Можно пропустить — модель скачается при первой диктовке.")
                 .foregroundStyle(.secondary)
             ForEach(Language.allCases, id: \.self) { language in
                 HStack(spacing: 10) {
                     Text(language.displayName)
                         .frame(width: 90, alignment: .leading)
-                    ProgressView(value: downloader.progress[language] ?? 0)
+                    modelState(language)
                 }
             }
-            if let error = downloader.error {
-                Text(error).font(.caption).foregroundStyle(.red)
-            }
-            Button("Скачать") { Task { await downloader.download(engine: engine) } }
-                .disabled(downloader.isRunning)
         }
+    }
+
+    /// Состояние и кнопка одного языка. Тот же набор, что в настройках, только теснее.
+    @ViewBuilder
+    private func modelState(_ language: Language) -> some View {
+        switch downloader.states[language] ?? .missing {
+        case .missing:
+            Button("Скачать") { Task { await downloader.download(language, engine: engine) } }
+        case let .downloading(fraction):
+            ProgressView(value: fraction)
+            Button("Отмена") { downloader.cancel(language) }
+        case .installed:
+            Label("Скачана", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case let .failed(message):
+            Text(message).font(.caption).foregroundStyle(.red).lineLimit(2)
+            Button("Повторить") { Task { await downloader.download(language, engine: engine) } }
+        }
+    }
+
+    private var modelsInstalled: Bool {
+        Language.allCases.allSatisfy { downloader.states[$0]?.isInstalled == true }
     }
 
     private var gptCard: some View {
@@ -159,44 +178,6 @@ struct OnboardingView: View {
             gptAuthorized = await CodexAuth.shared.isAuthorized()
                 || SecretStore.getString(SecretStore.apiKeyAccount)?.isEmpty == false
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-        }
-    }
-}
-
-/// Загрузка моделей обоих языков: прогресс приходит из фоновых потоков — сводим на главный.
-@MainActor
-private final class ModelDownloader: ObservableObject {
-    @Published private(set) var progress: [Language: Double] = [:]
-    @Published private(set) var isRunning = false
-    @Published private(set) var error: String?
-
-    var isFinished: Bool {
-        Language.allCases.allSatisfy { (progress[$0] ?? 0) >= 1 }
-    }
-
-    func download(engine: WhisperEngine) async {
-        isRunning = true
-        error = nil
-        // Последовательно: две модели по несколько гигабайт параллельно только мешают друг другу.
-        for language in Language.allCases {
-            do {
-                try await engine.prepare(language: language) { [weak self] state in
-                    Task { @MainActor in self?.apply(state, for: language) }
-                }
-                progress[language] = 1
-            } catch {
-                self.error = error.localizedDescription
-            }
-        }
-        isRunning = false
-    }
-
-    private func apply(_ state: ASRModelState, for language: Language) {
-        switch state {
-        case .notLoaded: progress[language] = 0
-        case .downloading(let fraction): progress[language] = fraction
-        // Загрузка в память — скачивание уже позади, полоса стоит на максимуме.
-        case .loading, .ready: progress[language] = 1
         }
     }
 }
