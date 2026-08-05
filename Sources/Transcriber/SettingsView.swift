@@ -8,7 +8,6 @@ import TranscriberCore
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case general
     case ai
-    case translation
     case dictionary
     case about
 
@@ -20,7 +19,6 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Общие"
         case .ai: return "AI"
-        case .translation: return "Перевод"
         case .dictionary: return "Словарь"
         case .about: return "О программе"
         }
@@ -30,14 +28,13 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .ai: return "sparkles"
-        case .translation: return "globe"
         case .dictionary: return "text.book.closed"
         case .about: return "info.circle"
         }
     }
 }
 
-/// Настройки боковым списком, как в системных: разделов уже пять, и вкладками поверху
+/// Настройки боковым списком, как в системных: разделов четыре, и вкладками поверху
 /// они переставали читаться с первого взгляда.
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
@@ -65,8 +62,8 @@ struct SettingsView: View {
         } detail: {
             detail.navigationTitle(pane.title)
         }
-        // `.balanced` держит боковой список на месте: сворачивать его в окне на пять
-        // разделов незачем — заодно и кнопка сворачивания в тулбаре лишняя.
+        // `.balanced` держит боковой список на месте: сворачивать его в окне на четыре
+        // раздела незачем — заодно и кнопка сворачивания в тулбаре лишняя.
         .navigationSplitViewStyle(.balanced)
         // Высоту и нижние границы задаём сами; ширину окна `NavigationSplitView` берёт по
         // своей колонке детали (~720 pt + список слева) и внешним `idealWidth` не двигается —
@@ -85,7 +82,6 @@ struct SettingsView: View {
         switch pane {
         case .general: GeneralPane(settings: settings)
         case .ai: AIPane(settings: settings, models: models, codex: codex)
-        case .translation: TranslationPane(settings: settings, models: models)
         case .dictionary: DictionaryPane(url: dictionaryURL)
         case .about: AboutPane()
         }
@@ -213,6 +209,10 @@ private struct GeneralPane: View {
 
 // MARK: - AI
 
+/// Всё про GPT одним разделом: доступ к модели, чистка и перевод. Перевод жил отдельно,
+/// пока у него был свой тумблер; без тумблера остались две пары «модель + усилие», и держать
+/// ради второй пары отдельный раздел — значит прятать её от глаз. Пары не смешиваются:
+/// у каждой свой заголовок с иконкой, а карточки рекомендаций стоят внутри своей секции.
 private struct AIPane: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var models: ModelListModel
@@ -223,25 +223,6 @@ private struct AIPane: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
-                Toggle("Короткие диктовки — без GPT", isOn: $settings.skipGPTForShort)
-                if settings.skipGPTForShort {
-                    Stepper(
-                        "до \(settings.shortDictationWordLimit) слов",
-                        value: $settings.shortDictationWordLimit,
-                        in: 1...30
-                    )
-                }
-            } header: {
-                Text("Чистка речи")
-            } footer: {
-                caption(
-                    "GPT расставляет знаки, убирает слова-паразиты и держит термины словаря. "
-                        + "На «ок» и «да, давай» чистить нечего — целый круг к модели там лишний."
-                )
-            }
-
             Section {
                 Picker("Доступ:", selection: $settings.gptMode) {
                     Text("Аккаунт ChatGPT").tag(GPTAuthMode.codex)
@@ -260,7 +241,7 @@ private struct AIPane: View {
                 case .codex: codexSection
                 }
             } header: {
-                Text("Доступ к модели")
+                Label("Доступ", systemImage: "key")
             } footer: {
                 caption(
                     "Ключ и вход в ChatGPT хранятся в связке ключей macOS — в современной её "
@@ -270,22 +251,57 @@ private struct AIPane: View {
             }
 
             Section {
+                Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
+                Toggle("Короткие диктовки — без GPT", isOn: $settings.skipGPTForShort)
+                if settings.skipGPTForShort {
+                    Stepper(
+                        "до \(settings.shortDictationWordLimit) слов",
+                        value: $settings.shortDictationWordLimit,
+                        in: 1...30
+                    )
+                }
                 ModelRow(models: models, selection: $settings.gptModel, config: settings.gptConfig)
                 EffortPicker(selection: $settings.gptEffort)
-            } header: {
-                Text("Модель чистки")
-            }
-
-            Section {
                 RecommendationCards(
                     mode: settings.gptMode,
                     model: $settings.gptModel,
                     effort: $settings.gptEffort
                 )
             } header: {
-                Text("Рекомендации")
+                Label("Чистка текста", systemImage: "sparkles")
             } footer: {
-                caption(ModelRecommendations.disclaimer)
+                VStack(alignment: .leading, spacing: 4) {
+                    caption(
+                        "GPT расставляет знаки, убирает слова-паразиты и держит термины словаря. "
+                            + "На «ок» и «да, давай» чистить нечего — целый круг к модели там лишний."
+                    )
+                    caption(ModelRecommendations.disclaimer)
+                }
+            }
+
+            Section {
+                ModelRow(
+                    models: models,
+                    selection: $settings.translateModel,
+                    config: settings.gptConfig
+                )
+                EffortPicker(selection: $settings.translateEffort)
+                RecommendationCards(
+                    mode: settings.gptMode,
+                    model: $settings.translateModel,
+                    effort: $settings.translateEffort
+                )
+            } header: {
+                Label("Перевод на английский", systemImage: "globe")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    caption(
+                        "Тот же вызов и чистит, и переводит — модель покрупнее здесь окупается. "
+                            + "Постоянный перевод включается в меню строки состояния, "
+                            + "разовый — правым ⌥."
+                    )
+                    caption(ModelRecommendations.disclaimer)
+                }
             }
         }
         .formStyle(.grouped)
@@ -369,52 +385,6 @@ private struct AIPane: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-    }
-}
-
-// MARK: - Перевод
-
-/// Перевод — отдельный вызов и другая нагрузка, чем простая чистка: ему и модель нужна
-/// своя (чистке обычно хватает самой быстрой), поэтому и раздел свой.
-private struct TranslationPane: View {
-    @ObservedObject var settings: AppSettings
-    @ObservedObject var models: ModelListModel
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Перевод на английский", isOn: $settings.translateToEnglish)
-            } header: {
-                Text("Когда переводить")
-            } footer: {
-                caption(
-                    "Правый ⌥ переводит одну диктовку даже с выключенным тумблером — "
-                        + "включать его ради одной фразы не нужно."
-                )
-            }
-
-            Section {
-                ModelRow(models: models, selection: $settings.translateModel, config: settings.gptConfig)
-                EffortPicker(selection: $settings.translateEffort)
-            } header: {
-                Text("Модель перевода")
-            } footer: {
-                caption("Тот же вызов и чистит, и переводит — модель покрупнее здесь окупается.")
-            }
-
-            Section {
-                RecommendationCards(
-                    mode: settings.gptMode,
-                    model: $settings.translateModel,
-                    effort: $settings.translateEffort
-                )
-            } header: {
-                Text("Рекомендации")
-            } footer: {
-                caption(ModelRecommendations.disclaimer)
-            }
-        }
-        .formStyle(.grouped)
     }
 }
 
@@ -546,7 +516,8 @@ private func caption(_ text: String) -> some View {
         .fixedSize(horizontal: false, vertical: true)
 }
 
-/// Список моделей бэкенда: общий для чистки и перевода и потому живущий выше панелей.
+/// Список моделей бэкенда: один на обе пары «модель + усилие» и живущий выше панелей,
+/// чтобы загруженный список переживал переключение разделов.
 @MainActor
 private final class ModelListModel: ObservableObject {
     @Published private(set) var models: [String] = []
