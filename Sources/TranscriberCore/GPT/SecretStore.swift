@@ -77,8 +77,13 @@ public final class SecretStore: @unchecked Sendable {
     /// всё как было, и пользователь просто переавторизуется в «Настройки → AI».
     private func migrate(_ account: String) {
         let (status, existing) = modern.read(account)
+        _ = fallBack(on: status)
         // Нет entitlement — переносить некуда, старая связка и так остаётся рабочей.
-        if fallBack(on: status) { return }
+        // Спрашиваем именно флаг, а не ответ `fallBack`: тот говорит «переключились прямо
+        // сейчас» и для второго аккаунта отвечает `false` — переключение случилось на первом.
+        // По этому `false` выполнение шло дальше, к чтению старой связки, то есть к диалогу
+        // пароля на каждом запуске неподписанной профилем сборки.
+        if fellBack { return }
         guard existing == nil, let data = legacy.read(account).data else { return }
         guard modern.write(data, account) == errSecSuccess else { return }
         _ = legacy.remove(account)

@@ -117,6 +117,21 @@ final class SecretStoreTests: XCTestCase {
         XCTAssertNil(legacy.items[SecretStore.apiKeyAccount])
     }
 
+    func testMigrationLeavesLegacyUntouchedWhenEntitlementIsMissing() {
+        modern.failure = errSecMissingEntitlement
+        legacy.items[SecretStore.codexTokensAccount] = Data("tokens".utf8)
+        let store = makeStore()
+
+        // Барьер: синхронный вызов встаёт на очереди хранилища за перенос и дожидается его.
+        _ = store.get(SecretStore.apiKeyAccount)
+
+        XCTAssertEqual(
+            legacy.reads, [SecretStore.apiKeyAccount],
+            "перенос не должен читать старую связку: без entitlement переносить некуда, "
+                + "а каждое такое чтение — диалог пароля"
+        )
+    }
+
     func testModernKeychainIsNotRetriedAfterFallback() {
         modern.failure = errSecMissingEntitlement
         let store = makeStore()
@@ -137,6 +152,7 @@ private final class FakeKeychain: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
     private var removedAccounts: [String] = []
+    private var readAccounts: [String] = []
     private var callCount = 0
 
     /// Статус, который связка возвращает на любую операцию (нет entitlement, например).
@@ -151,12 +167,16 @@ private final class FakeKeychain: @unchecked Sendable {
     }
 
     var removed: [String] { lock.withLock { removedAccounts } }
+    var reads: [String] { lock.withLock { readAccounts } }
     var calls: Int { lock.withLock { callCount } }
 
     var access: KeychainAccess {
         KeychainAccess(
             read: { [self] account in
-                lock.withLock { callCount += 1 }
+                lock.withLock {
+                    callCount += 1
+                    readAccounts.append(account)
+                }
                 if let status = failure ?? readStatus { return (status, nil) }
                 guard let data = items[account] else { return (errSecItemNotFound, nil) }
                 return (errSecSuccess, data)
