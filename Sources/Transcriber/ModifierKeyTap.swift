@@ -53,10 +53,7 @@ final class ModifierKeyTap {
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }
-        guard TextInserter.hasAccessibility else {
-            AppCore.diag("нет Accessibility (AXIsProcessTrusted=false)")
-            return false
-        }
+        guard TextInserter.hasAccessibility else { return false }
 
         // `self` уходит в колбэк неудержанным: владелец (AppCore) держит объект до выхода
         // из приложения, а `stop()` снимает тап раньше, чем объект мог бы исчезнуть.
@@ -74,10 +71,7 @@ final class ModifierKeyTap {
                 return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
-            AppCore.diag("tapCreate вернул nil")
-            return false
-        }
+        ) else { return false }
 
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)

@@ -50,8 +50,10 @@ final class AppCore: ObservableObject {
     private var hotkeyModeSubscription: AnyCancellable?
     private var escTapSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
-    private var loggedTapFailure = false
     private var loggedEscFailure = false
+    /// Состояние хоткей-тапов, уже записанное в журнал. Строку пишем только на его смену:
+    /// `retryHotkeyTapIfNeeded` зовётся на каждой активации приложения.
+    private var loggedTapState: Bool?
     private let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Hotkey")
 
     private init() {
@@ -181,23 +183,7 @@ final class AppCore: ObservableObject {
         applyHotkeyMode(settings.dictationHotkeyMode)
     }
 
-    /// Временная файловая диагностика: unified log на этой машине подсистему не показывает,
-    /// а без обратной связи «правый ⌘ не работает» неотличимо от «тап не поднялся».
-    static func diag(_ line: String) {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Transcriber/diag.log")
-        let stamped = "\(Date().formatted(date: .omitted, time: .standard)) \(line)\n"
-        if let data = stamped.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: url) {
-                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
-            } else {
-                try? data.write(to: url)
-            }
-        }
-    }
-
     private func applyHotkeyMode(_ mode: HotkeyMode) {
-        Self.diag("applyHotkeyMode(\(mode.rawValue)) cmdTap=\(rightCommandTap != nil) optTap=\(rightOptionTap != nil)")
         guard let rightCommandTap, let rightOptionTap else { return }
         switch mode {
         case .rightCommand:
@@ -205,27 +191,26 @@ final class AppCore: ObservableObject {
             // должны совпадать. Разрешение у них общее — падают и поднимаются они вместе.
             let commandStarted = rightCommandTap.start()
             let optionStarted = rightOptionTap.start()
-            // Без Accessibility тап не поднимется — настройки показывают это подсказкой.
-            // Пишем поимённо: так видно, отвалилась одна клавиша или обе сразу.
-            if commandStarted, optionStarted {
-                loggedTapFailure = false
-                // Полевая диагностика: без этой строки «не работает правый ⌘» не отличить
-                // от «тап не поднялся» — в журнале не было вообще ничего.
-                logger.notice("Правые ⌘/⌥ подключены")
-                Self.diag("taps started: cmd=\(commandStarted) opt=\(optionStarted) ax=\(TextInserter.hasAccessibility)")
-            } else if !loggedTapFailure {
-                loggedTapFailure = true
-                if !commandStarted {
-                    logger.error("Правый ⌘ не подключён: нет разрешения Accessibility")
-                }
-                if !optionStarted {
-                    logger.error("Правый ⌥ не подключён: нет разрешения Accessibility")
-                }
-            }
+            logTapState(started: commandStarted && optionStarted)
         case .custom:
             rightCommandTap.stop()
             rightOptionTap.stop()
+            loggedTapState = nil
         }
+    }
+
+    /// Единственная запись о хоткее в журнале: без неё «правый ⌘ не работает» неотличимо от
+    /// «тап не поднялся», а причина почти всегда одна — не выдан Accessibility.
+    /// Смотреть так: `log show --predicate 'subsystem == "online.nazarovych.transcriber"' --last 1h`
+    private func logTapState(started: Bool) {
+        guard loggedTapState != started else { return }
+        loggedTapState = started
+        let state = started
+            ? "подключены"
+            : (TextInserter.hasAccessibility
+                ? "не подключены: Accessibility выдан, но тап не создался"
+                : "не подключены: нет разрешения Accessibility")
+        logger.notice("Правые ⌘/⌥ \(state, privacy: .public)")
     }
 
     func markOnboardingShown() {
