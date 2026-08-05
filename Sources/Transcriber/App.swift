@@ -76,6 +76,9 @@ final class AppCore: ObservableObject {
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
     func start() {
         guard panel == nil else { return }
+        // Расписание проверок обновлений заводится здесь же: до старта NSApplication
+        // показывать найденное обновление было бы нечем.
+        UpdateController.shared.start()
         panel = LivePanel(controller: controller, settings: settings)
         // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
         // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
@@ -303,7 +306,8 @@ private struct MenuBarScene: Scene {
                 controller: controller,
                 settings: core.settings,
                 history: core.history,
-                suggester: core.suggester
+                suggester: core.suggester,
+                updates: UpdateController.shared
             )
         } label: {
             Image(systemName: icon)

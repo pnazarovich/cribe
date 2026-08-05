@@ -10,6 +10,7 @@ struct MenuBarView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var history: HistoryStore
     @ObservedObject var suggester: TermSuggester
+    @ObservedObject var updates: UpdateController
 
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -18,6 +19,15 @@ struct MenuBarView: View {
     private static let historyTitleLimit = 48
 
     var body: some View {
+        // Плановая проверка нашла новую версию. Само по себе окно Sparkle фоновому
+        // приложению открылось бы позади чужих — поэтому оно ждёт этой строки, и щелчок
+        // по ней открывает его уже поверх всего (см. `UpdateController`).
+        if let version = updates.pendingVersion {
+            Button("Обновление \(version) — установить…") { updates.checkForUpdates() }
+
+            Divider()
+        }
+
         Text(status)
 
         Divider()
@@ -79,6 +89,10 @@ struct MenuBarView: View {
         Button("Настройки…") {
             WindowPresenter.shared.present { openSettings() }
         }
+        // Окно Sparkle поднимает сама: проверку начал человек, и фоновое приложение она
+        // в этом случае активирует. Пункт гаснет, пока предыдущая проверка не закончилась.
+        Button("Проверить обновления…") { updates.checkForUpdates() }
+            .disabled(!updates.canCheck)
         // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
         // а автоматически окно показывается только на первом запуске.
         Button("Первичная настройка…") {

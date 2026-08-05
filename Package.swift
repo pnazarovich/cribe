@@ -11,6 +11,7 @@ let package = Package(
         ),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.5"),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.1"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.5"),
     ],
     targets: [
         .target(
@@ -25,6 +26,7 @@ let package = Package(
             dependencies: [
                 "TranscriberCore",
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),
         .executableTarget(

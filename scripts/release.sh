@@ -1,6 +1,15 @@
 #!/bin/bash
 #
-# Релизная сборка Transcriber: .app → подпись Developer ID → нотаризация → .dmg
+# Релизная сборка Transcriber: .app → подпись Developer ID → нотаризация → .dmg,
+# а следом — то, что нужно автообновлению: .zip, его подпись EdDSA и новый <item>
+# в appcast.xml.
+#
+# ЧТО ПОЛУЧАЕТСЯ
+#   dist/Transcriber-<версия>.dmg  — для тех, кто ставит впервые (перетащить в Программы);
+#   dist/Transcriber-<версия>.zip  — для Sparkle (по zip обновление ставится надёжнее);
+#   appcast.xml                    — обновлён новым выпуском (коммит и пуш — за вами).
+#   Оба файла нужно приложить к релизу на GitHub с тегом v<версия>: адрес zip в appcast
+#   рассчитан именно на этот тег и на это имя файла.
 #
 # ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
 #   DEVELOPER_ID  обязательна. Имя сертификата «Developer ID Application» целиком,
@@ -15,18 +24,28 @@
 #                 https://account.apple.com → Sign-In and Security → App-Specific Passwords.
 #                 Это НЕ пароль от Apple ID.
 #
+#   SPARKLE_KEY_SOURCE          откуда брать приватный ключ EdDSA: "file" (по умолчанию)
+#                               или "keychain". Связка ключей поднимает диалог пароля —
+#                               файл этого не делает, поэтому он и по умолчанию.
+#   SPARKLE_PRIVATE_KEY_FILE    путь к файлу ключа. Обязательна при SPARKLE_KEY_SOURCE=file.
+#                               Файл с ключом в репозиторий не кладут (см. .gitignore).
+#
 # ЗАПУСК
 #   DEVELOPER_ID="Developer ID Application: …" APPLE_ID=… TEAM_ID=… APP_PASSWORD=… \
+#     SPARKLE_PRIVATE_KEY_FILE=~/.keys/transcriber-sparkle.key \
 #     bash scripts/release.sh
 #
-#   # проверка упаковки без сертификата и без нотаризации (получится неподписанный DMG):
-#   DEVELOPER_ID="-" bash scripts/release.sh --skip-notarize
+#   # проверка упаковки без сертификата и без нотаризации (получится неподписанный DMG,
+#   # appcast.xml при этом не трогается — печатается только то, что в него ушло бы):
+#   DEVELOPER_ID="-" SPARKLE_PRIVATE_KEY_FILE=… bash scripts/release.sh --skip-notarize
 #
 # Скрипт идемпотентен: каждый запуск пересобирает dist/ с нуля и перезаписывает артефакты.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=entitlements.sh
 source "scripts/entitlements.sh"
+# shellcheck source=sparkle.sh
+source "scripts/sparkle.sh"
 
 fail() { printf 'ОШИБКА: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -37,7 +56,7 @@ SKIP_NOTARIZE=0
 for arg in "$@"; do
   case "$arg" in
     --skip-notarize) SKIP_NOTARIZE=1 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) fail "неизвестный аргумент: $arg (см. $0 --help)" ;;
   esac
 done
@@ -72,6 +91,63 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
 fi
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
+# Sparkle сравнивает выпуски по CFBundleVersion, а не по «человеческой» версии: не поднять
+# его — значит выпустить обновление, которого никто не увидит.
+BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Info.plist)
+PUBLIC_ED_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" Info.plist)
+NOTES="release-notes/$VERSION.md"
+APPCAST="appcast.xml"
+ANCHOR="NEW-ITEM-ANCHOR"
+RELEASE_URL="https://github.com/pnazarovich/transcriber/releases/download/v$VERSION"
+
+# Заглушка из репозитория: пока владелец не вставил свой публичный ключ, подписывать
+# обновления нечем — и выпускать их нельзя, иначе установленные копии получат архив,
+# который не пройдёт проверку подписи.
+if [ "$PUBLIC_ED_KEY" = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" ]; then
+  fail "в Info.plist стоит заглушка SUPublicEDKey.
+
+  Ключ подписи обновлений создаётся ОДИН раз (см. docs/releasing.md):
+      bash scripts/sparkle-tool.sh generate_keys
+  Публичный ключ из его вывода нужно вписать в Info.plist → SUPublicEDKey."
+fi
+
+[ -f "$NOTES" ] || fail "нет файла заметок к выпуску: $NOTES
+  Опишите в нём, что изменилось, — этот текст увидят в окне обновления."
+
+[ -f "$APPCAST" ] || fail "нет $APPCAST"
+grep -q "$ANCHOR" "$APPCAST" || fail "в $APPCAST нет якоря $ANCHOR — вставлять выпуск некуда."
+
+# Тот же CFBundleVersion уже выпущен: Sparkle такое обновление проигнорирует, а в ленте
+# останутся два одинаковых выпуска.
+if grep -q "<sparkle:version>$BUILD</sparkle:version>" "$APPCAST"; then
+  fail "в $APPCAST уже есть выпуск с CFBundleVersion=$BUILD.
+  Поднимите CFBundleVersion в Info.plist."
+fi
+
+# Ключ подписи: файл по умолчанию, связка ключей — по явной просьбе.
+SPARKLE_KEY_SOURCE="${SPARKLE_KEY_SOURCE:-file}"
+case "$SPARKLE_KEY_SOURCE" in
+  file)
+    [ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ] || fail "не задана SPARKLE_PRIVATE_KEY_FILE.
+  Это путь к файлу с приватным ключом EdDSA (см. docs/releasing.md).
+  Ключ лежит в связке ключей? Тогда: SPARKLE_KEY_SOURCE=keychain"
+    [ -f "$SPARKLE_PRIVATE_KEY_FILE" ] || fail "файла ключа нет: $SPARKLE_PRIVATE_KEY_FILE"
+    ;;
+  keychain) ;;
+  *) fail "SPARKLE_KEY_SOURCE должна быть file или keychain, а не «$SPARKLE_KEY_SOURCE»" ;;
+esac
+
+# Ключ передаётся не массивом аргументов: в bash 3.2 (а он и стоит на macOS) под `set -u`
+# разворачивание ПУСТОГО массива — «unbound variable», и вариант со связкой ключей падал бы.
+sign_update_run() {
+  if [ "$SPARKLE_KEY_SOURCE" = "file" ]; then
+    "$SIGN_UPDATE" -f "$SPARKLE_PRIVATE_KEY_FILE" "$@"
+  else
+    # Без -f sign_update идёт в связку ключей — она спросит пароль.
+    "$SIGN_UPDATE" "$@"
+  fi
+}
+
 APP="dist/Transcriber.app"
 ZIP="dist/Transcriber-$VERSION.zip"
 DMG="dist/Transcriber-$VERSION.dmg"
@@ -100,12 +176,17 @@ while IFS= read -r nested; do
   codesign --force --options runtime "$TIMESTAMP_FLAG" --sign "$DEVELOPER_ID" "$nested"
 done < <(find "$APP/Contents" -maxdepth 2 -name '*.bundle')
 
+# Sparkle приезжает подписанной своей командой, а под hardened runtime библиотеки обязаны
+# быть подписаны нашей: без этого приложение не запустится. Внутри фреймворка своя
+# вложенная программа — подписывается изнутри наружу (см. scripts/sparkle.sh).
+sign_sparkle "$APP" "$DEVELOPER_ID" "$TIMESTAMP_FLAG"
+
 ENTITLEMENTS=$(prepare_entitlements Release.entitlements "$APP" "$DEVELOPER_ID")
 codesign --force --options runtime "$TIMESTAMP_FLAG" \
   --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" "$APP"
 
 step "Проверка подписи"
-codesign --verify --strict --verbose=2 "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
 # До нотаризации Gatekeeper приложение отвергает — это ожидаемо, поэтому здесь мягко.
 spctl -a -vvv -t install "$APP" || echo "(ожидаемо: Gatekeeper пропустит только после нотаризации)"
 
@@ -199,6 +280,80 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
   xcrun stapler validate "$DMG"
 fi
 
+# --- Обновление: подпись архива и запись в appcast ---------------------------
+
+# Архив к этому моменту уже пересобран со степлером внутри (см. блок нотаризации):
+# подписывать надо именно его, иначе длина и подпись разойдутся с тем, что уедет в релиз.
+step "Подпись архива для Sparkle"
+SIGN_UPDATE=$(sparkle_tool sign_update)
+[ -n "$SIGN_UPDATE" ] && [ -x "$SIGN_UPDATE" ] || fail "не нашёл утилиту sign_update.
+  Подтяните зависимости (swift package resolve) или укажите папку: SPARKLE_BIN=/путь/к/bin"
+
+# sign_update печатает готовую пару атрибутов: sparkle:edSignature="…" length="…".
+# Её и вставляем в <enclosure> целиком — разбирать и собирать обратно незачем.
+ENCLOSURE_ATTRS=$(sign_update_run "$ZIP")
+printf '  %s\n' "$ENCLOSURE_ATTRS"
+
+# Заметки к выпуску → HTML для <description>: Sparkle показывает его как разметку.
+# Понимаем ровно то, чем пишут заметки: заголовки, списки и абзацы.
+NOTES_HTML=$(awk '
+  /\]\]>/ { print "ОШИБКА: в заметках есть ]]> — CDATA такое не переживёт" > "/dev/stderr"; exit 1 }
+  /^[[:space:]]*$/ { if (list) { print "</ul>"; list = 0 } ; next }
+  /^#+[[:space:]]/ {
+    if (list) { print "</ul>"; list = 0 }
+    sub(/^#+[[:space:]]*/, "")
+    print "<h3>" $0 "</h3>"; next
+  }
+  /^[-*][[:space:]]/ {
+    if (!list) { print "<ul>"; list = 1 }
+    sub(/^[-*][[:space:]]*/, "")
+    print "<li>" $0 "</li>"; next
+  }
+  { if (list) { print "</ul>"; list = 0 } ; print "<p>" $0 "</p>" }
+  END { if (list) print "</ul>" }
+' "$NOTES")
+
+# Дата в формате RFC 822 — его ждёт RSS. Локаль сбрасываем: месяц и день должны быть
+# английскими независимо от системных настроек.
+PUB_DATE=$(LC_ALL=C date "+%a, %d %b %Y %H:%M:%S %z")
+
+ITEM=$(cat <<XML
+    <item>
+      <title>$VERSION</title>
+      <pubDate>$PUB_DATE</pubDate>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+$NOTES_HTML
+      ]]></description>
+      <enclosure url="$RELEASE_URL/$(basename "$ZIP")"
+                 type="application/octet-stream"
+                 $ENCLOSURE_ATTRS />
+    </item>
+XML
+)
+
+if [ "$SKIP_NOTARIZE" -eq 1 ]; then
+  step "Сухой прогон: appcast.xml не трогаем"
+  printf '%s\n' "$ITEM"
+else
+  step "Запись выпуска в $APPCAST"
+  # Вставляем перед якорем: свежий выпуск оказывается первым в ленте.
+  # Через файл, а не через -v: awk на macOS многострочное значение переменной не принимает.
+  printf '%s\n' "$ITEM" > dist/appcast-item.xml
+  awk -v itemfile=dist/appcast-item.xml -v anchor="$ANCHOR" '
+    index($0, anchor) {
+      while ((getline line < itemfile) > 0) print line
+      close(itemfile)
+    }
+    { print }
+  ' "$APPCAST" > "$APPCAST.new"
+  mv "$APPCAST.new" "$APPCAST"
+  rm -f dist/appcast-item.xml
+  echo "  добавлен выпуск $VERSION (сборка $BUILD)"
+fi
+
 # --- Итог --------------------------------------------------------------------
 
 step "Готово"
@@ -207,4 +362,15 @@ shasum -a 256 "$ZIP" "$DMG"
 if [ "$SKIP_NOTARIZE" -eq 1 ]; then
   echo
   echo "ВНИМАНИЕ: сборка не нотаризована — для раздачи пользователям она не годится."
+else
+  cat <<NEXT
+
+Дальше — руками (см. docs/releasing.md):
+  1. Создать на GitHub релиз с тегом v$VERSION и приложить ОБА файла:
+       $DMG
+       $ZIP
+     Имя zip менять нельзя: на него уже ссылается appcast.xml.
+  2. Закоммитить и запушить appcast.xml в main — только после того, как файлы
+     в релизе доступны по ссылке. Пуш appcast'а и есть выкладка обновления.
+NEXT
 fi

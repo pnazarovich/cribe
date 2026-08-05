@@ -8,3 +8,7 @@ dist/
 docs/SETUP-NEW-MAC.md
 .signing-identity
 *.provisionprofile
+# Приватный ключ подписи обновлений. В репозиторий он не попадает никогда: по нему
+# подписываются обновления для всех, кто уже поставил приложение.
+*.key
+sparkle_private_key*

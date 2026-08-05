@@ -103,6 +103,31 @@ For a signed, notarized, distributable build, see `scripts/release.sh` (Develope
 notarization → stapled DMG); every required environment variable is documented at the top of
 the script.
 
+## Updates
+
+Released builds update themselves through [Sparkle 2](https://sparkle-project.org). The app
+reads its appcast from
+
+    https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml
+
+so GitHub serves the feed and there is no separate hosting to keep alive. Every release ships
+two artifacts: a `.dmg` for people installing for the first time, and a `.zip` next to it that
+Sparkle installs from — updating from a zip is the more reliable path.
+
+Checks run once a day and can be turned off in **Settings → General → Application**; there is a
+**Check for updates…** item in the menu bar as well. Because this is an `LSUIElement` app with no
+Dock icon, a scheduled update does *not* throw a window on top of whatever you are doing — the
+window Sparkle would otherwise open behind other apps' windows. Instead the update waits as a
+line in the menu bar, and opening it from there brings the window up in front, where it belongs.
+Nothing about your machine is sent along with the check: `SUEnableSystemProfiling` is off.
+
+Updates are verified with an EdDSA (ed25519) signature. The public half lives in `Info.plist`
+(`SUPublicEDKey`); the private half never enters this repository. A fresh clone carries a
+placeholder public key, and `scripts/release.sh` refuses to run until it is replaced with a real
+one — see **[docs/releasing.md](docs/releasing.md)** for the one-time key generation, the full
+release procedure, and what happens if that private key is ever lost (short version: updates
+stop, permanently, for everyone who already installed the app).
+
 ## First run
 
 Install by dragging **Transcriber.app** from the DMG onto **Applications**, then launch it.
@@ -206,6 +231,8 @@ model comparison that led to these choices.
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — Silero VAD on CoreML (Apache-2.0).
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) by Sindre Sorhus —
   user-configurable global shortcuts (MIT).
+- [Sparkle](https://github.com/sparkle-project/Sparkle) — self-updating for apps distributed
+  outside the App Store (MIT).
 - Whisper models by OpenAI, converted by Argmax and hosted on Hugging Face.
 
 The design was informed by studying how [VoiceInk](https://github.com/Beingpax/VoiceInk),

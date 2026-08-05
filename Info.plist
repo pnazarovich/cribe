@@ -26,5 +26,15 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Transcriber использует микрофон для записи вашей речи и её распознавания на этом компьютере.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

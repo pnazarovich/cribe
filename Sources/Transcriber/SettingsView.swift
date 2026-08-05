@@ -123,6 +123,9 @@ private struct GeneralPane: View {
     /// Загрузчик один на приложение: настройки и онбординг показывают одно состояние.
     @ObservedObject private var downloader = ModelDownloader.shared
 
+    /// Тумблер автопроверки ходит прямо в Sparkle — своего флага у настроек нет.
+    @ObservedObject private var updates = UpdateController.shared
+
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchNote: String?
     @State private var accessibilityGranted = TextInserter.hasAccessibility
@@ -217,11 +220,19 @@ private struct GeneralPane: View {
                     get: { launchAtLogin },
                     set: { setLaunchAtLogin($0) }
                 ))
+
+                Toggle("Проверять обновления автоматически", isOn: $updates.automaticallyChecks)
             } header: {
                 Text("Приложение")
             } footer: {
-                if let launchNote {
-                    caption(launchNote)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let launchNote {
+                        caption(launchNote)
+                    }
+                    caption(
+                        "Проверка идёт раз в сутки. Найденное обновление ждёт строкой в меню — "
+                            + "окно не открывается поверх работы само."
+                    )
                 }
             }
         }
@@ -587,6 +598,11 @@ private struct AboutPane: View {
             "KeyboardShortcuts",
             "глобальные сочетания клавиш",
             URL(string: "https://github.com/sindresorhus/KeyboardShortcuts")!
+        ),
+        (
+            "Sparkle",
+            "обновление приложения",
+            URL(string: "https://github.com/sparkle-project/Sparkle")!
         ),
     ]
 
