@@ -457,7 +457,10 @@ private struct TermCard: View {
         HStack(spacing: 8) {
             TextField("Термин латиницей", text: $canonical)
                 .textFieldStyle(.plain)
-                .font(.headline)
+                // Термин — главное в карточке, и заголовкам блоков (`.headline`, жирный 13)
+                // он проигрывать не должен. `.title3` — ближайший семантический стиль,
+                // который крупнее; ручной размер тут запрещён.
+                .font(.title3)
                 .onChange(of: canonical) { _, _ in onEdit() }
 
             if term.isGenerating {
