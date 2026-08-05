@@ -14,7 +14,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         _ onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Void
 
-    /// Модель live-превью: multilingual tiny (~150 МБ) — качество черновое, зато проход
+    /// Модель live-превью: multilingual tiny (~75 МБ) — качество черновое, зато проход
     /// идёт десятки миллисекунд вместо ~1.3 c у большой модели сессии.
     private static let previewVariant = "openai_whisper-tiny"
 

@@ -67,7 +67,7 @@ in Latin script the way you would type them (`деплой` → `deploy`, `в г
 - Apple Silicon Mac (M1 or newer) — CoreML/ANE inference is the whole point.
 - macOS 14 or newer.
 - Free disk for the Whisper models, per language: Russian pulls `large-v3-turbo` ≈ 1.5 GB,
-  Ukrainian pulls `large-v3` ≈ 2.9 GB, plus `tiny` for the live preview ≈ 150 MB. Languages
+  Ukrainian pulls `large-v3` ≈ 2.9 GB, plus `tiny` for the live preview ≈ 75 MB. Languages
   download separately from Hugging Face — one language is enough.
 - Xcode (for the Swift toolchain) to build from source.
 
