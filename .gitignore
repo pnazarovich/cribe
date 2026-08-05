@@ -5,3 +5,4 @@ dist/
 *.dmg
 *.zip
 .DS_Store
+docs/SETUP-NEW-MAC.md

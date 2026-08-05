@@ -18,7 +18,7 @@
 - Модели: RU → `openai_whisper-large-v3-v20240930_turbo`, UK → `openai_whisper-large-v3` (HF `argmaxinc/whisperkit-coreml`), язык всегда форсирован, `detectLanguage: false`.
 - В `@main`-файле НЕ использовать имя `main.swift`. `WordTiming` коллизирует между WhisperKit и FluidAudio — квалифицировать.
 - Секреты только в Keychain (генерик-пароли, service `online.nazarovych.transcriber`).
-- Коммиты: `feat(transcriber): …` / `test(transcriber): …` на русском, из корня зонтичного репо `/Users/petronazarovych/Documents/Cursor`, добавлять только `Transcriber/`.
+- Коммиты: `feat(transcriber): …` / `test(transcriber): …` на русском, из корня репозитория.
 - Каждая задача: код + тесты (где есть чистая логика) + `swift build && swift test` зелёные + коммит.
 
 ## File Structure
