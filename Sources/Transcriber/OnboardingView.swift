@@ -24,6 +24,7 @@ struct OnboardingView: View {
     /// Общий на всё приложение: тот же объект показывает модели в настройках, и загрузка,
     /// начатая здесь, не обрывается закрытым окном.
     @ObservedObject private var downloader = ModelDownloader.shared
+    @ObservedObject private var accessibility = HUDAccessibility.shared
     @StateObject private var signIn = CodexSignInModel()
 
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -61,22 +62,26 @@ struct OnboardingView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             header
             ScrollView {
-                VStack(spacing: 8) {
+                VStack(spacing: 12) {
                     ForEach(OnboardingStep.allCases) { step in
                         row(step)
                     }
                 }
                 .padding(.bottom, 4)
+                // Одна анимация на весь список: и раскрытие текущего шага, и подмена
+                // маркера на галочку случаются от одного и того же изменения прогресса.
+                .animation(stepAnimation, value: progress)
             }
             .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(24)
+        .padding(20)
         // Размер фиксированный: список шагов то разворачивается, то сворачивается, и окно,
         // прыгающее под каждым нажатием, читается сломанным. Что не влезло — прокручивается.
         .frame(width: 560, height: 620)
+        .glassWindow()
         .onAppear {
             onShown()
             // Состояние моделей читается с диска: скачанный язык обязан стоять
@@ -100,10 +105,11 @@ struct OnboardingView: View {
                 "Диктовка на русском и украинском: нажали клавишу, сказали — текст появился "
                     + "в поле с курсором, а речь распозналась прямо на этом компьютере."
             )
+            .font(.title3)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 KeyCap(prefix: "правый", key: "⌘", caption: "диктовка")
                 KeyCap(prefix: "правый", key: "⌥", caption: "с переводом на английский")
                 KeyCap(prefix: nil, key: "esc", caption: "отмена")
@@ -118,19 +124,18 @@ struct OnboardingView: View {
         let state = progress.state(of: step)
         HStack(alignment: .top, spacing: 12) {
             marker(number: step.rawValue + 1, state: state)
-                .font(.title3)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(step.title)
-                        .font(.headline)
+                        .font(.title3)
                         .foregroundStyle(state == .pending ? .secondary : .primary)
                     Spacer()
                     if state == .done {
-                        Text("готово").font(.caption).foregroundStyle(.green)
+                        statusPill("готово", tint: .green)
                     } else if progress.isSettled(step) {
                         // Отложенный шаг не пропадает и не притворяется сделанным: строка
                         // остаётся на месте и говорит, что к ней ещё можно вернуться.
-                        Text("позже").font(.caption).foregroundStyle(.secondary)
+                        statusPill("позже", tint: Color.secondary)
                     }
                 }
                 // Развёрнут только текущий шаг: сделанному сказать больше нечего,
@@ -140,30 +145,53 @@ struct OnboardingView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            .quaternary.opacity(state == .active ? 0.55 : 0.3),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        // Стекло у шагов — то же самое, что у секций настроек и карточек словаря:
+        // радиус и кант приходят из общего модификатора, а не отсюда.
+        .glassPanel(cornerRadius: Self.cardRadius)
+        // Текущий шаг — это выделенная строка списка, и акцентный кант здесь ровно за этим:
+        // без него все плашки одинаково стеклянные и «где я» приходится вычитывать.
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    state == .active ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.06)
-                )
+            if state == .active {
+                RoundedRectangle(cornerRadius: Self.cardRadius, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.55))
+            }
         }
     }
 
+    /// Радиус карточки внутри окна по брифу; кант рисует общий стеклянный модификатор.
+    private static let cardRadius: CGFloat = 10
+
     @ViewBuilder
     private func marker(number: Int, state: OnboardingStepState) -> some View {
-        switch state {
-        case .done:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .active:
-            Image(systemName: "\(number).circle.fill").foregroundStyle(Color.accentColor)
-        case .pending:
-            Image(systemName: "\(number).circle").foregroundStyle(.tertiary)
+        ZStack {
+            switch state {
+            case .done:
+                DoneCheck(reduceMotion: accessibility.reduceMotion)
+            case .active:
+                Image(systemName: "\(number).circle.fill").foregroundStyle(Color.accentColor)
+            case .pending:
+                Image(systemName: "\(number).circle").foregroundStyle(.tertiary)
+            }
         }
+        .font(.title3)
+    }
+
+    /// Живой статус шага: слово, а не иконка, — его читают и не переспрашивают.
+    private func statusPill(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+    }
+
+    /// Раскрытие шага и смена его состояния: `.smooth` из словаря движения.
+    /// «Уменьшить движение» снимает анимацию совсем — состояние меняется мгновенно.
+    private var stepAnimation: Animation? {
+        accessibility.reduceMotion ? nil : .smooth(duration: 0.25)
     }
 
     @ViewBuilder
@@ -186,7 +214,9 @@ struct OnboardingView: View {
             caption("Доступ отклонён — включите Transcriber в списке System Settings.")
             settingsButton(Self.microphoneSettingsURL, big: true)
         } else {
-            Button("Разрешить доступ") {
+            // Кнопка перед системным алертом называется нейтрально: назови её «Разрешить» —
+            // и в настоящем алерте человек нажмёт «Разрешить», не прочитав его.
+            Button("Продолжить") {
                 Task { _ = await AVCaptureDevice.requestAccess(for: .audio) }
             }
             .buttonStyle(.borderedProminent)
@@ -285,7 +315,7 @@ struct OnboardingView: View {
                 caption("Введите этот код на странице подтверждения:")
                 HStack(spacing: 10) {
                     Text(session.userCode)
-                        .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                        .font(.largeTitle.monospaced().weight(.semibold))
                         .textSelection(.enabled)
                     Button {
                         TextInserter.copy(session.userCode)
@@ -344,6 +374,7 @@ struct OnboardingView: View {
 
     private func caption(_ text: String) -> some View {
         Text(text)
+            .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -380,6 +411,31 @@ struct OnboardingView: View {
     }
 }
 
+/// Галочка сделанного шага. На macOS 26 она рисуется штрихом (`.drawOn`) — именно рисование,
+/// а не появление готового значка, читается как «сделано вот сейчас»; ниже фолбэк `.bounce`.
+/// «Уменьшить движение» снимает и то, и другое: галочка просто оказывается на месте.
+private struct DoneCheck: View {
+    let reduceMotion: Bool
+
+    /// Взводится сразу после вставки вью: дискретному `.bounce` нужно изменение значения,
+    /// а не факт появления.
+    @State private var appeared = false
+
+    var body: some View {
+        let check = Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+
+        if reduceMotion {
+            check.symbolEffectsRemoved()
+        } else if #available(macOS 26.0, *) {
+            check.transition(.symbolEffect(.drawOn))
+        } else {
+            check
+                .symbolEffect(.bounce, options: .nonRepeating, value: appeared)
+                .onAppear { appeared = true }
+        }
+    }
+}
+
 /// Клавиша так, как её видно на клавиатуре: сама клавиша плашкой, назначение — подписью.
 /// Прозой («правый Command запускает диктовку») то же самое читается инструкцией к прибору.
 private struct KeyCap: View {
@@ -388,28 +444,26 @@ private struct KeyCap: View {
     let caption: String
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
             VStack(spacing: 0) {
                 Text(prefix ?? " ")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text(key)
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .font(.title3.weight(.medium))
             }
-            .frame(width: 74, height: 46)
-            .background(
-                .quaternary.opacity(0.5),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
+            .frame(width: 76, height: 48)
+            // Плоская заливка, а не второе стекло: сэмплировать ей за стеклом окна нечего.
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.12))
             }
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(width: 100)
+                .multilineTextAlignment(.leading)
+                .frame(width: 100, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
