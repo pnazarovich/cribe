@@ -24,12 +24,13 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Символы без `.circle`-вариантов: строка списка и так читается контейнером.
     var icon: String {
         switch self {
         case .general: return "gearshape"
         case .ai: return "sparkles"
         case .dictionary: return "text.book.closed"
-        case .about: return "info.circle"
+        case .about: return "info"
         }
     }
 }
@@ -51,30 +52,56 @@ struct SettingsView: View {
     private var pane: SettingsPane { selection ?? .general }
 
     var body: some View {
-        NavigationSplitView {
-            List(SettingsPane.allCases, selection: $selection) { pane in
-                Label(pane.title, systemImage: pane.icon)
-            }
-            // Ширина под самую длинную строку («О программе»). Кнопку сворачивания списка
-            // тут не убираем: без неё `NavigationSplitView` перестаёт слушать и эту ширину,
-            // сам сжимает список до ~155 pt и обрезает подписи — проверено.
-            .navigationSplitViewColumnWidth(min: 190, ideal: 200, max: 240)
-        } detail: {
-            detail.navigationTitle(pane.title)
+        // Две колонки руками, а не `NavigationSplitView`: тот на macOS 26 рисует сайдбару
+        // собственную вставную панель со своим радиусом внутри радиуса окна — «двойной
+        // бортик», который Apple откатила в следующем релизе, и погасить его снаружи нечем
+        // (ни `scrollContentBackground`, ни `backgroundStyle` до него не достают —
+        // проверено). Заодно уходит и кнопка сворачивания: сворачивать список на четыре
+        // раздела незачем, а висела она одна в пустом тулбаре.
+        HStack(spacing: 0) {
+            list
+            // Граница колонок — волосяная линия, как и вся глубина в окне: ступень фона
+            // плюс hairline, без бортиков и теней.
+            Divider()
+            detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        // `.balanced` держит боковой список на месте: сворачивать его в окне на четыре
-        // раздела незачем — заодно и кнопка сворачивания в тулбаре лишняя.
-        .navigationSplitViewStyle(.balanced)
-        // Высоту и нижние границы задаём сами; ширину окна `NavigationSplitView` берёт по
-        // своей колонке детали (~720 pt + список слева) и внешним `idealWidth` не двигается —
-        // проверено на чистом домене настроек. Окно остаётся тянущимся в обе стороны.
+        // Заголовок окна — текущий раздел.
+        .navigationTitle(pane.title)
+        // Сквозь окно настроек видно рабочий стол. Плашки секций рисует сама `Form`
+        // полупрозрачной заливкой — им остаётся только эта подложка (см. `settingsForm`).
+        .glassWindow()
+        // Границы окна: ширина от нижней планки до чего угодно, высоту при открытии задаёт
+        // `idealHeight`. Без него окно тянулось по самой длинной панели и под четырьмя
+        // строками списка оставалась пустая треть.
         .frame(
             minWidth: 640, maxWidth: .infinity,
-            minHeight: 520, maxHeight: .infinity
+            minHeight: 440, idealHeight: 520, maxHeight: .infinity
         )
         // Поллинг device-code живёт до 15 минут — закрытые настройки не должны
         // продолжать долбить auth.openai.com каждые пять секунд.
         .onDisappear { codex.cancel() }
+    }
+
+    /// Боковой список: до краёв окна, без своего фона и без своего радиуса. Фоном ему
+    /// служит подложка окна — та же, что и у панели справа.
+    private var list: some View {
+        List(SettingsPane.allCases, selection: $selection) { row in
+            Label {
+                Text(row.title)
+            } icon: {
+                // Иконка цветная и следует за системным акцентом. У выделенной строки
+                // тинт снимаем: там заливка акцентом, и акцент по акценту не читается —
+                // цвет содержимого выделения система подбирает сама.
+                Image(systemName: row.icon)
+                    .foregroundStyle(row == selection ? AnyShapeStyle(.foreground)
+                                                      : AnyShapeStyle(Color.accentColor))
+            }
+        }
+        // Стиль сайдбара — ради выделения скруглённой заливкой; фон при этом свой.
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        // Ширина под самую длинную строку — «О программе».
+        .frame(width: 200)
     }
 
     @ViewBuilder
@@ -198,7 +225,7 @@ private struct GeneralPane: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsForm()
         .onAppear {
             syncLaunchState()
             // Разрешение выдают в системном окне — при возврате в настройки перечитываем.
@@ -324,7 +351,7 @@ private struct ModelDownloadRow: View {
 /// Всё про GPT одним разделом: доступ к модели, чистка и перевод. Перевод жил отдельно,
 /// пока у него был свой тумблер; без тумблера остались две пары «модель + усилие», и держать
 /// ради второй пары отдельный раздел — значит прятать её от глаз. Пары не смешиваются:
-/// у каждой свой заголовок с иконкой, а карточки рекомендаций стоят внутри своей секции.
+/// у каждой свой заголовок, а карточки рекомендаций стоят внутри своей секции.
 private struct AIPane: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var models: ModelListModel
@@ -353,7 +380,7 @@ private struct AIPane: View {
                 case .codex: codexSection
                 }
             } header: {
-                Label("Доступ", systemImage: "key")
+                Text("Доступ")
             } footer: {
                 caption(
                     "Ключ и вход в ChatGPT хранятся в связке ключей macOS — в современной её "
@@ -380,7 +407,7 @@ private struct AIPane: View {
                     effort: $settings.gptEffort
                 )
             } header: {
-                Label("Чистка текста", systemImage: "sparkles")
+                Text("Чистка текста")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     caption(
@@ -404,7 +431,7 @@ private struct AIPane: View {
                     effort: $settings.translateEffort
                 )
             } header: {
-                Label("Перевод на английский", systemImage: "globe")
+                Text("Перевод на английский")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     caption(
@@ -416,7 +443,7 @@ private struct AIPane: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsForm()
         .task {
             apiKey = SecretStore.getString(SecretStore.apiKeyAccount) ?? ""
             await codex.refreshStatus()
@@ -465,7 +492,7 @@ private struct AIPane: View {
                 Text("Код подтверждения:").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(session.userCode)
-                        .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                        .font(.title.monospaced())
                         .textSelection(.enabled)
                     Button {
                         copy(session.userCode)
@@ -536,7 +563,7 @@ private struct DictionaryPane: View {
                 caption("Обычный JSON: правки снаружи приложение подхватывает само.")
             }
         }
-        .formStyle(.grouped)
+        .settingsForm()
     }
 }
 
@@ -572,7 +599,7 @@ private struct AboutPane: View {
                         .frame(width: 72, height: 72)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Transcriber").font(.title2.weight(.semibold))
+                        Text("Transcriber").font(.title2)
                         Text("Версия \(Self.version)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -606,7 +633,7 @@ private struct AboutPane: View {
                 caption("Сам Transcriber — под лицензией MIT.")
             }
         }
-        .formStyle(.grouped)
+        .settingsForm()
     }
 
     /// Версия из Info.plist. В сборке из SwiftPM (без бандла) ключей нет — тогда прочерк.
@@ -619,6 +646,21 @@ private struct AboutPane: View {
 }
 
 // MARK: - Общие детали
+
+extension View {
+    /// Оформление панели раздела — одно на все четыре.
+    ///
+    /// Свой фон у формы гасим: он рисуется непрозрачным и закрыл бы подложку окна. А вот
+    /// плашки секций система рисует полупрозрачной заливкой поверх фона — проверено на
+    /// цветной подложке, — и над прозрачным окном они и оказываются стеклом: блюр даёт
+    /// подложка окна, плотность — сама плашка. Третьего слоя блюра здесь нет.
+    ///
+    /// Радиусы, отступы, кант и высоты строк считает `Form`, поэтому они одинаковы во всех
+    /// разделах по построению, а не по недосмотру.
+    fileprivate func settingsForm() -> some View {
+        formStyle(.grouped).scrollContentBackground(.hidden)
+    }
+}
 
 /// Пояснение под секцией: один стиль на все разделы.
 private func caption(_ text: String) -> some View {
@@ -699,6 +741,8 @@ private struct RecommendationCards: View {
     @Binding var model: String
     @Binding var effort: String
 
+    private static let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             ForEach(ModelRecommendations.list(for: mode)) { recommendation in
@@ -715,14 +759,14 @@ private struct RecommendationCards: View {
             model = recommendation.model
             effort = recommendation.effort
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     Text(recommendation.tier.emoji)
-                    Text(recommendation.tier.title).font(.callout.weight(.medium))
+                    Text(recommendation.tier.title).font(.callout)
                     Spacer(minLength: 0)
                     // Выбранной модели кнопка не нужна — вместо неё галочка.
                     if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
+                        Image(systemName: "checkmark")
                             .foregroundStyle(Color.accentColor)
                     }
                 }
@@ -737,17 +781,18 @@ private struct RecommendationCards: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05))
-            )
+            // Карточка лежит внутри стеклянной плашки секции, поэтому заливка и кант —
+            // системные полупрозрачные, а не проценты от `.primary`: за ними обои, и на
+            // светлых пятипроцентная заливка исчезала бы вовсе. Радиус 6 — фиксированный,
+            // как у любого чипа в середине плашки: концентричность тут нечему считать.
+            .background(Self.shape.fill(isSelected ? AnyShapeStyle(.tint.opacity(0.16))
+                                                   : AnyShapeStyle(.quaternary)))
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(
-                        isSelected ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08)
-                    )
+                Self.shape.strokeBorder(
+                    isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator)
+                )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Self.shape)
         }
         .buttonStyle(.plain)
         .help(
