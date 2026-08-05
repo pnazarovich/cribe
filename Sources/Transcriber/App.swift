@@ -252,9 +252,16 @@ struct TranscriberApp: App {
         .defaultSize(width: 680, height: 560)
 
         Window("Настройка Transcriber", id: WindowID.onboarding) {
-            // Флаг первого запуска гасим отсюда: только появление окна доказывает,
-            // что онбординг пользователь действительно увидел.
-            OnboardingView(engine: AppCore.shared.engine) { AppCore.shared.markOnboardingShown() }
+            OnboardingView(
+                engine: AppCore.shared.engine,
+                settings: AppCore.shared.settings,
+                // Флаг первого запуска гасим отсюда: только появление окна доказывает,
+                // что онбординг пользователь действительно увидел.
+                onShown: { AppCore.shared.markOnboardingShown() },
+                // Accessibility выдают в System Settings, не выходя из онбординга: тапы
+                // правых ⌘/⌥ обязаны подняться сразу, а не после возврата в приложение.
+                onAccessibilityGranted: { AppCore.shared.retryHotkeyTapIfNeeded() }
+            )
         }
         .windowResizability(.contentSize)
     }
@@ -308,7 +315,9 @@ private struct MenuBarScene: Scene {
             // Флаг гасит сам онбординг при появлении — если окно почему-то не открылось,
             // попытка повторится на следующем запуске, а вручную его зовёт пункт меню.
             Task { @MainActor in
-                WindowPresenter.shared.present { openWindow(id: WindowID.onboarding) }
+                WindowPresenter.shared.present(WindowID.onboarding) {
+                    openWindow(id: WindowID.onboarding)
+                }
             }
         }
     }
