@@ -406,7 +406,7 @@ struct DictionaryEditorView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             // Тени внутри окна нет: полоса отделяется от контента стеклом, а не размытым пятном.
-            .glassPanel(cornerRadius: 10)
+            .glassPanel(in: Capsule())
             .padding(.bottom, 20)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }

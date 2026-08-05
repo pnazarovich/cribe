@@ -38,7 +38,12 @@ extension View {
 
     /// Стеклянная плашка секции или карточки внутри окна.
     func glassPanel(cornerRadius: CGFloat = 10) -> some View {
-        modifier(GlassPanel(cornerRadius: cornerRadius))
+        glassPanel(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    /// То же стекло произвольной формы — капсула у полос и пилюль.
+    func glassPanel<S: InsettableShape>(in shape: S) -> some View {
+        modifier(GlassPanel(shape: shape))
     }
 }
 
@@ -54,14 +59,12 @@ private struct GlassWindow: ViewModifier {
     }
 }
 
-private struct GlassPanel: ViewModifier {
-    let cornerRadius: CGFloat
+private struct GlassPanel<S: InsettableShape>: ViewModifier {
+    let shape: S
 
     @ObservedObject private var accessibility = HUDAccessibility.shared
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
         if accessibility.reduceTransparency {
             content.background(Color(nsColor: .controlBackgroundColor), in: shape)
         } else if #available(macOS 26.0, *) {
