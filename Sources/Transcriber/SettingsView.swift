@@ -93,6 +93,9 @@ struct SettingsView: View {
 private struct GeneralPane: View {
     @ObservedObject var settings: AppSettings
 
+    /// Загрузчик один на приложение: настройки и онбординг показывают одно состояние.
+    @ObservedObject private var downloader = ModelDownloader.shared
+
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchNote: String?
     @State private var accessibilityGranted = TextInserter.hasAccessibility
@@ -149,6 +152,25 @@ private struct GeneralPane: View {
             }
 
             Section {
+                ForEach(Language.allCases, id: \.self) { language in
+                    // Движок в приложении один и живёт в `AppCore`: сцена настроек создаётся
+                    // без него, а выгружать прогретую модель перед удалением надо у того же.
+                    ModelDownloadRow(
+                        language: language,
+                        downloader: downloader,
+                        engine: AppCore.shared.engine
+                    )
+                }
+            } header: {
+                Text("Модели распознавания")
+            } footer: {
+                caption(
+                    "Каждый язык качается отдельно и один раз — модель остаётся в Application "
+                        + "Support. Пока её нет, первая диктовка на этом языке начнётся с загрузки."
+                )
+            }
+
+            Section {
                 Toggle("Карточки, если нет поля ввода", isOn: $settings.cardsWhenNoField)
             } header: {
                 Text("Вставка")
@@ -181,6 +203,8 @@ private struct GeneralPane: View {
             syncLaunchState()
             // Разрешение выдают в системном окне — при возврате в настройки перечитываем.
             accessibilityGranted = TextInserter.hasAccessibility
+            // Модель могла доехать мимо настроек — например, её дотянула первая диктовка.
+            downloader.refresh()
         }
     }
 
@@ -204,6 +228,94 @@ private struct GeneralPane: View {
         launchNote = status == .requiresApproval
             ? "Разрешите Transcriber в «Основные → Объекты входа»."
             : nil
+    }
+}
+
+/// Строка одного языка: состояние модели и одна кнопка к нему — «Скачать», «Отмена»
+/// или «Удалить». Удаление спрашивает подтверждение: это гигабайты и повторное скачивание.
+private struct ModelDownloadRow: View {
+    let language: Language
+    @ObservedObject var downloader: ModelDownloader
+    let engine: WhisperEngine
+
+    @State private var confirmingRemoval = false
+    @State private var removalError: String?
+
+    private var state: ModelDownloadState { downloader.states[language] ?? .missing }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text(language.displayName)
+                Spacer(minLength: 8)
+                status
+                action
+            }
+            if let removalError {
+                Text(removalError).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Удалить модель «\(language.displayName)»?",
+            isPresented: $confirmingRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Удалить", role: .destructive) { remove() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            if case let .installed(bytes) = state {
+                Text("Освободится \(Self.size(bytes)). Скачать заново можно в любой момент.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch state {
+        case .missing:
+            Text("Не скачана · ≈\(Self.size(ModelDownloader.approximateBytes(for: language)))")
+                .foregroundStyle(.secondary)
+        case let .downloading(fraction):
+            ProgressView(value: fraction)
+                .frame(width: 120)
+            Text(fraction.formatted(.percent.precision(.fractionLength(0))))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        case let .installed(bytes):
+            Text("Установлена · \(Self.size(bytes))")
+                .foregroundStyle(.secondary)
+        case let .failed(message):
+            Text(message)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        switch state {
+        case .missing, .failed:
+            Button("Скачать") {
+                Task { await downloader.download(language, engine: engine) }
+            }
+        case .downloading:
+            Button("Отмена") { downloader.cancel(language) }
+        case .installed:
+            Button("Удалить") { confirmingRemoval = true }
+        }
+    }
+
+    private func remove() {
+        do {
+            removalError = nil
+            try downloader.remove(language, engine: engine)
+        } catch {
+            removalError = error.localizedDescription
+        }
+    }
+
+    private static func size(_ bytes: Int64) -> String {
+        bytes.formatted(.byteCount(style: .file))
     }
 }
 
