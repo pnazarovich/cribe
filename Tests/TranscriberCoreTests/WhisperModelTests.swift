@@ -23,6 +23,21 @@ final class WhisperModelTests: XCTestCase {
         XCTAssertNotEqual(Language.ru.whisperModel, Language.uk.whisperModel)
     }
 
+    /// Размер модели — не украшение подписи, а само основание качать языки по отдельности:
+    /// украинская вдвое тяжелее русской, и тому, кому нужен только русский, эти гигабайты
+    /// навязывать нечем. Первый запуск называет числа до нажатия кнопки.
+    func testModelSizeIsNamedPerLanguageAndUkrainianIsHeavier() {
+        XCTAssertEqual(Language.ru.modelSizeGB, 1.5, accuracy: 0.01)
+        XCTAssertEqual(Language.uk.modelSizeGB, 2.9, accuracy: 0.01)
+        XCTAssertGreaterThan(Language.uk.modelSizeGB, Language.ru.modelSizeGB)
+
+        XCTAssertEqual(Language.ru.modelSizeText, "1,5 ГБ")
+        XCTAssertEqual(Language.uk.modelSizeText, "2,9 ГБ")
+        for language in Language.allCases {
+            XCTAssertTrue(language.modelSizeText.hasSuffix(" ГБ"), "единица измерения обязана быть видна")
+        }
+    }
+
     /// Смешанная речь на выбор модели не влияет — она живёт целиком в промпте.
     /// Проверяем именно это: промпт русской сессии меняется, а модель — нет.
     func testMixedSpeechChangesPromptNotModel() {

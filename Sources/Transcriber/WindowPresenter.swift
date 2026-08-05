@@ -35,23 +35,26 @@ final class WindowPresenter {
 
     /// Сколько ждём появления окна, прежде чем сдаться. Из меню окно готово к первому же
     /// тику, а вот на первом запуске (онбординг) сцены в этот момент ещё только собираются:
-    /// замерено, что одного тика там не хватает и окно остаётся позади чужих.
-    private static let waitAttempts = 20
+    /// под нагрузкой замерено больше секунды до того, как окно вообще заведётся.
+    private static let waitAttempts = 60
     private static let waitStep = Duration.milliseconds(50)
 
     /// Открыть окно (`openWindow`, `openSettings`) и довести его до переднего плана.
-    func present(_ open: () -> Void) {
+    ///
+    /// `sceneID` — идентификатор сцены (`WindowID.…`). По нему окно и опознаётся, потому что
+    /// на первом запуске SwiftUI заводит окно онбординга НЕВИДИМЫМ и показывает его сам
+    /// секунд через десять — уже позади чужих окон (замерено под нагрузкой). Признака
+    /// «появилось новое видимое окно» в этот момент нет, ждать его бесполезно: поднимать
+    /// надо именно то окно, которое уже существует, но ещё не на экране.
+    /// Настройкам идентификатора не досталось — там остаётся поиск по новому окну.
+    func present(_ sceneID: String? = nil, _ open: () -> Void) {
         let known = Set(Self.managedWindows().map(ObjectIdentifier.init))
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         open()
         Task { @MainActor in
             for _ in 0..<Self.waitAttempts {
-                // Новое окно — то, которого до открытия не было. Если сцена лишь показала
-                // уже открытое, ждать нечего: внутри приложения его подняла сама сцена.
-                if let window = Self.managedWindows().first(where: {
-                    !known.contains(ObjectIdentifier($0))
-                }) {
+                if let window = Self.target(sceneID: sceneID, known: known) {
                     // Активацию повторяем: к моменту рождения окна прежняя заявка могла
                     // и не доехать. `makeKeyAndOrderFront` даёт фокус внутри приложения,
                     // `orderFrontRegardless` — показ поверх чужих окон даже без активации.
@@ -65,12 +68,30 @@ final class WindowPresenter {
         }
     }
 
+    /// Окно, которое надо вытащить вперёд.
+    ///
+    /// С идентификатором сцены — окно с этим именем: SwiftUI кладёт его в
+    /// `frameAutosaveName`, оттуда же берётся ключ «NSWindow Frame <id>» в UserDefaults.
+    /// Без идентификатора — любое, которого на экране до открытия не было; если сцена лишь
+    /// показала уже открытое, ждать нечего: внутри приложения его подняла сама сцена.
+    private static func target(sceneID: String?, known: Set<ObjectIdentifier>) -> NSWindow? {
+        guard let sceneID else {
+            return managedWindows().first { !known.contains(ObjectIdentifier($0)) }
+        }
+        return managedWindows(visibleOnly: false).first { $0.frameAutosaveName == sceneID }
+    }
+
     /// Окна, которыми презентер управляет, — обычные окна сцен. Пилюля и карточки под это
     /// не попадают: они `NSPanel` и без заголовка, и такими обязаны остаться — сделать их
     /// key значит увести фокус с того самого поля, куда вставляется текст.
-    private static func managedWindows() -> [NSWindow] {
+    ///
+    /// `visibleOnly` держит учёт политики активации честным (закрытое окно в счёт не идёт),
+    /// а поиск цели ведётся и по невидимым — ради того самого окна первого запуска.
+    private static func managedWindows(visibleOnly: Bool = true) -> [NSWindow] {
         NSApp.windows.filter { window in
-            window.isVisible && !(window is NSPanel) && window.styleMask.contains(.titled)
+            (window.isVisible || !visibleOnly)
+                && !(window is NSPanel)
+                && window.styleMask.contains(.titled)
         }
     }
 }

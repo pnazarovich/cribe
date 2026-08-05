@@ -82,7 +82,9 @@ struct MenuBarView: View {
         // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
         // а автоматически окно показывается только на первом запуске.
         Button("Первичная настройка…") {
-            WindowPresenter.shared.present { openWindow(id: WindowID.onboarding) }
+            WindowPresenter.shared.present(WindowID.onboarding) {
+                openWindow(id: WindowID.onboarding)
+            }
         }
 
         Divider()
@@ -119,7 +121,9 @@ struct MenuBarView: View {
 
     private func openDictionary(_ focus: DictionaryFocus? = nil) {
         core.dictionaryFocus = focus
-        WindowPresenter.shared.present { openWindow(id: WindowID.dictionary) }
+        WindowPresenter.shared.present(WindowID.dictionary) {
+            openWindow(id: WindowID.dictionary)
+        }
     }
 
     private func copy(_ text: String) {

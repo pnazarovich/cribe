@@ -66,8 +66,9 @@ in Latin script the way you would type them (`деплой` → `deploy`, `в г
 
 - Apple Silicon Mac (M1 or newer) — CoreML/ANE inference is the whole point.
 - macOS 14 or newer.
-- ~5 GB of free disk for the Whisper models (`large-v3-turbo` ≈ 1.6 GB, `large-v3` ≈ 3 GB,
-  `tiny` for the live preview ≈ 150 MB). They download on first run from Hugging Face.
+- Free disk for the Whisper models, per language: Russian pulls `large-v3-turbo` ≈ 1.5 GB,
+  Ukrainian pulls `large-v3` ≈ 2.9 GB, plus `tiny` for the live preview ≈ 150 MB. Languages
+  download separately from Hugging Face — one language is enough.
 - Xcode (for the Swift toolchain) to build from source.
 
 ## Build and install
@@ -104,16 +105,23 @@ the script.
 
 ## First run
 
-Two system permissions, both requested from the app's **Initial setup…** menu item:
+Install by dragging **Transcriber.app** from the DMG onto **Applications**, then launch it.
+A setup window comes up on its own — it is a single screen with a checklist, and it never
+appears again once you have seen it (**Initial setup…** in the menu brings it back).
 
 1. **Microphone** — to record you.
 2. **Accessibility** — to synthesize the ⌘V that inserts text, and to read the right-⌘ tap.
    Without it the text still lands in the clipboard and the HUD tells you to paste manually.
-
-Then download the models from the same window. Each model is compiled for the Neural Engine
-the first time it is loaded — that can take a couple of minutes, once per model.
-
-Optionally, authorize GPT cleanup in **Settings → AI**.
+   Granting it in System Settings is picked up live; no restart needed.
+3. **Models** — downloaded per language, so Russian-only users are not made to fetch 4.4 GB:
+   `ru` is 1.5 GB, `uk` is 2.9 GB, each with its own button and progress. This step does not
+   block anything — skip it and the first dictation fetches what it needs. Each model is
+   compiled for the Neural Engine the first time it is loaded, which takes a couple of
+   minutes, once per model.
+4. **ChatGPT** — optional. Signing in happens right there in the window (device code +
+   confirmation page); on success punctuation cleanup and English translation are configured
+   with no further choices. Skippable, and an OpenAI API key works instead
+   (**Settings → AI**).
 
 ## Privacy
 
@@ -229,16 +237,19 @@ MIT — see [LICENSE](LICENSE).
 выходят латиницей даже в косвенных падежах (`в гитхабе` → `GitHub`, `задеплой` → `deploy`),
 и гарантирует это локальный слой регулярок, а не модель.
 
-Нужен Mac на Apple Silicon, macOS 14+, около 5 ГБ под модели и Xcode для сборки:
+Нужен Mac на Apple Silicon, macOS 14+, 1,5 ГБ под русскую модель (украинская — 2,9 ГБ,
+качаются они по отдельности) и Xcode для сборки:
 
 ```bash
 bash scripts/build-app.sh
 cp -R dist/Transcriber.app /Applications/
 ```
 
-При первом запуске приложение попросит доступ к микрофону и Accessibility (без него текст
-всё равно попадёт в буфер обмена) и предложит скачать модели. Каждая модель один раз
-компилируется под нейродвижок — это занимает пару минут.
+Готовый DMG ставится перетаскиванием Transcriber.app на «Программы». При первом запуске
+приложение само откроет окно настройки: микрофон, Универсальный доступ (без него текст
+всё равно попадёт в буфер обмена), модель нужного языка и — по желанию — вход в ChatGPT
+прямо в этом окне. Скачивание модели ничего не держит: пропустили — первая диктовка
+дотянет сама. Каждая модель один раз компилируется под нейродвижок, это пара минут.
 
 Словарь живёт в `~/Library/Application Support/Transcriber/dictionary.json` и перечитывается
 на лету; свои звуки старта и остановки кладутся в соседнюю папку `sounds/`.

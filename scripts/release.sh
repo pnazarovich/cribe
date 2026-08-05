@@ -76,7 +76,10 @@ APP="dist/Transcriber.app"
 ZIP="dist/Transcriber-$VERSION.zip"
 DMG="dist/Transcriber-$VERSION.dmg"
 STAGE="dist/dmg-stage"
-VOLNAME="Transcriber $VERSION"
+# Имя тома видно в Finder и в /Volumes — версия там только мешает: пользователю нужно
+# «Transcriber», а номер сборки и так стоит в имени файла DMG.
+VOLNAME="Transcriber"
+RWDMG="dist/Transcriber-rw.dmg"
 
 # --- Сборка ------------------------------------------------------------------
 
@@ -132,14 +135,60 @@ fi
 # --- DMG ---------------------------------------------------------------------
 
 step "Сборка DMG"
-rm -rf "$STAGE" "$DMG"
+rm -rf "$STAGE" "$DMG" "$RWDMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 # Том с прошлого запуска держит образ занятым — отцепляем, иначе hdiutil не пересоздаст.
 if [ -d "/Volumes/$VOLNAME" ]; then hdiutil detach "/Volumes/$VOLNAME" -quiet || true; fi
-hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+
+# Раскладку окна хранит .DS_Store внутри тома, а пишет его только Finder — поэтому
+# образ сначала собирается доступным на запись, монтируется, обставляется и лишь потом
+# сжимается. Место в 200 МБ сверх содержимого — под служебные структуры HFS.
+hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -ov -format UDRW \
+  -megabytes $(( $(du -sm "$STAGE" | cut -f1) + 200 )) "$RWDMG"
 rm -rf "$STAGE"
+MOUNT=$(hdiutil attach "$RWDMG" -readwrite -noverify -noautoopen | grep '/Volumes/' | tail -1 \
+  | sed 's|.*\(/Volumes/.*\)|\1|')
+
+step "Раскладка окна DMG"
+cat > dist/dmg-layout.applescript <<APPLESCRIPT
+tell application "Finder"
+  tell disk "$VOLNAME"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    -- 640×400 в точках: две иконки по 128 стоят просторно и целиком видны без прокрутки.
+    set the bounds of container window to {240, 160, 880, 560}
+    set theViewOptions to the icon view options of container window
+    set arrangement of theViewOptions to not arranged
+    set icon size of theViewOptions to 128
+    set text size of theViewOptions to 13
+    -- Приложение слева, папка «Программы» справа: перетаскивание читается само собой.
+    set position of item "Transcriber.app" of container window to {160, 170}
+    set position of item "Applications" of container window to {480, 170}
+    close
+    open
+    update without registering applications
+    delay 2
+  end tell
+end tell
+APPLESCRIPT
+# Finder водится Apple-событиями, а на них нужно разрешение «Автоматизация». Нет его
+# (сборка по ssh, на CI, на свежей машине) — DMG всё равно соберётся, просто без раскладки:
+# ронять релиз из-за косметики нельзя.
+if osascript dist/dmg-layout.applescript >/dev/null; then
+  echo "  раскладка записана"
+else
+  echo "  ВНИМАНИЕ: Finder не отозвался (нет разрешения «Автоматизация»?) — DMG без раскладки"
+fi
+rm -f dist/dmg-layout.applescript
+
+sync
+hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet
+hdiutil convert "$RWDMG" -format UDZO -o "$DMG" -quiet
+rm -f "$RWDMG"
 
 if [ "$SKIP_NOTARIZE" -eq 0 ]; then
   step "Подпись, нотаризация и степлер DMG"
