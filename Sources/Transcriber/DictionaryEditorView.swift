@@ -23,9 +23,24 @@ struct DictionaryEditorView: View {
     @StateObject private var model: DictionaryEditorModel
 
     @State private var newTerm = ""
+    /// Пустой словарь показывает не поле ввода, а пустое состояние; строка добавления
+    /// появляется по кнопке из него — и дальше остаётся навсегда.
+    @State private var addRequested = false
+    @SwiftUI.FocusState private var isNewTermFocused: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Якорь прокрутки к подсказкам: из меню в редактор приходят именно за ними.
     private static let suggestionsAnchor = "suggestions"
+
+    /// Примеры для пустого словаря: те же программистские термины, что лежат в словаре
+    /// по умолчанию. Варианты заданы руками — модель для них дёргать незачем.
+    private static let examples: [(canonical: String, variants: [String])] = [
+        ("deploy", ["деплой", "задеплой"]),
+        ("commit", ["коммит", "закоммить"]),
+        ("GitHub", ["гитхаб", "гит хаб"]),
+        ("Docker", ["докер"])
+    ]
 
     init(
         dictionary: UserDictionary,
@@ -47,39 +62,64 @@ struct DictionaryEditorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        addRow
-                        if !suggester.suggestions.isEmpty {
-                            suggestionsCard.id(Self.suggestionsAnchor)
-                        }
-                        if model.showsDictation { dictationCard }
-                        if model.draft != nil { draftCard }
-                        terms
-                    }
-                    .padding(14)
-                }
-                .onAppear { apply(focus, proxy: proxy) }
-                .onChange(of: focus) { _, focus in apply(focus, proxy: proxy) }
+        content
+            .frame(minWidth: 560, minHeight: 440)
+            .glassWindow()
+            .overlay(alignment: .bottom) { undoBar }
+            .animation(motion(.smooth(duration: 0.25)), value: model.removed)
+            .animation(motion(.smooth(duration: 0.25)), value: model.draft)
+            .animation(motion(.smooth(duration: 0.25)), value: model.showsDictation)
+            .onAppear { model.reload() }
+            // Окно закрывают, не дожидаясь таймера, — недописанное дописываем сами.
+            .onDisappear { model.flush() }
+    }
+
+    /// На macOS 26 шапка отдаётся системе как бар безопасной области: под ней сама собой
+    /// появляется scroll edge effect. Ниже — прежний волосяной разделитель.
+    @ViewBuilder
+    private var content: some View {
+        if #available(macOS 26.0, *) {
+            list.safeAreaBar(edge: .top) { toolbar }
+        } else {
+            VStack(spacing: 0) {
+                toolbar
+                Divider()
+                list
             }
         }
-        .frame(minWidth: 560, minHeight: 440)
-        .overlay(alignment: .bottom) { undoBar }
-        .animation(.easeOut(duration: 0.18), value: model.removed)
-        .animation(.easeOut(duration: 0.18), value: model.draft)
-        .onAppear { model.reload() }
-        // Окно закрывают, не дожидаясь таймера, — недописанное дописываем сами.
-        .onDisappear { model.flush() }
+    }
+
+    private var list: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if showsAddRow { addRow }
+                    if !suggester.suggestions.isEmpty {
+                        suggestionsCard.id(Self.suggestionsAnchor)
+                    }
+                    if model.showsDictation { dictationCard }
+                    if model.draft != nil { draftCard }
+                    terms
+                }
+                .padding(20)
+                // Читаемая мера строки: на широком окне карточки не растягиваются.
+                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onAppear { apply(focus, proxy: proxy) }
+            .onChange(of: focus) { _, focus in apply(focus, proxy: proxy) }
+        }
+    }
+
+    /// «Уменьшение движения» — состояние меняется мгновенно, без пружин и раскрытий.
+    private func motion(_ animation: Animation) -> Animation? {
+        reduceMotion ? nil : animation
     }
 
     // MARK: - Шапка
 
     private var toolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Поиск по терминам и вариантам", text: $model.search)
@@ -94,14 +134,14 @@ struct DictionaryEditorView: View {
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(.quaternary.opacity(0.5)))
+            .padding(.vertical, 4)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             Spacer(minLength: 8)
             saveMark
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
     }
 
     /// Тихая отметка вместо кнопки: сохранение — не событие, о котором надо кричать,
@@ -112,15 +152,15 @@ struct DictionaryEditorView: View {
         case .idle:
             EmptyView()
         case .editing:
-            Text("…").font(.caption).foregroundStyle(.tertiary)
+            Text("…").font(.subheadline).foregroundStyle(.tertiary)
         case .saved:
-            Label("сохранено", systemImage: "checkmark")
-                .font(.caption)
+            Label("Сохранено", systemImage: "checkmark")
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .labelStyle(.titleAndIcon)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.orange)
                 .lineLimit(1)
                 .help(message)
@@ -129,10 +169,15 @@ struct DictionaryEditorView: View {
 
     // MARK: - Добавление
 
+    /// Пустой словарь — это первый экран нового пользователя, и поле ввода на нём лишнее:
+    /// сначала объясняем, что словарь делает, потом даём его завести.
+    private var showsAddRow: Bool { addRequested || !model.terms.isEmpty }
+
     private var addRow: some View {
         HStack(spacing: 8) {
             TextField("Новый термин (латиницей)", text: $newTerm)
                 .textFieldStyle(.roundedBorder)
+                .focused($isNewTermFocused)
                 .onSubmit(addTerm)
             Button("Добавить", action: addTerm)
                 .disabled(newTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -162,11 +207,15 @@ struct DictionaryEditorView: View {
         let filtered = DictionaryEditorModel.filtered(model.terms, search: model.search)
         return Group {
             if filtered.isEmpty {
-                Text(model.search.isEmpty ? "Словарь пуст" : "Ничего не найдено")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 24)
+                if model.search.isEmpty {
+                    emptyState
+                } else {
+                    Text("Ничего не найдено")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                }
             } else {
                 ForEach(filtered) { term in
                     TermCard(
@@ -200,15 +249,61 @@ struct DictionaryEditorView: View {
         )
     }
 
+    // MARK: - Пустое состояние
+
+    /// Первый экран нового пользователя. Один приглушённый символ, одно предложение о том,
+    /// что словарь делает с расшифровкой, одна основная кнопка — и готовые примеры,
+    /// чтобы список не оставался по-настоящему пустым.
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            ContentUnavailableView {
+                Label("Словарь пуст", systemImage: "character.book.closed")
+            } description: {
+                Text("Словарь подменяет в расшифровке слова, которые распознались на слух: скажете «деплой» — в текст попадёт deploy.")
+            } actions: {
+                Button("Добавить слово") {
+                    addRequested = true
+                    isNewTermFocused = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+
+            VStack(spacing: 6) {
+                Text("Или возьмите готовое")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(Self.examples, id: \.canonical) { example in
+                        Button {
+                            model.add(canonical: example.canonical, variants: example.variants)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus").font(.subheadline)
+                                Text(example.canonical).font(.subheadline)
+                            }
+                            .chip()
+                        }
+                        .buttonStyle(.plain)
+                        .help("Добавить «\(example.canonical)» и его варианты")
+                    }
+                }
+                .fixedSize()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+    }
+
     // MARK: - Подсказки
 
     private var suggestionsCard: some View {
         DictionaryCard {
             VStack(alignment: .leading, spacing: 8) {
                 Label("Предложения (\(suggester.suggestions.count))", systemImage: "lightbulb")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.headline)
                 Text("Эти слова повторяются в диктовках, но словарь их не знает.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 FlowLayout(spacing: 6, lineSpacing: 6) {
                     ForEach(suggester.suggestions) { candidate in
@@ -230,7 +325,7 @@ struct DictionaryEditorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Label("Из последней диктовки", systemImage: "waveform")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.headline)
                     Spacer()
                     Button {
                         model.showsDictation = false
@@ -243,24 +338,20 @@ struct DictionaryEditorView: View {
 
                 if let text = lastDictation {
                     Text("Нажмите слово, которое распозналось неправильно.")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                     FlowLayout(spacing: 6, lineSpacing: 6) {
                         ForEach(words(in: text), id: \.self) { word in
                             Button {
                                 model.draftFromDictation(word: word)
                             } label: {
-                                Text(word)
-                                    .font(.system(size: 12))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(Capsule().fill(.quaternary.opacity(0.6)))
+                                Text(word).font(.subheadline).chip()
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 } else {
-                    Text("Диктовок ещё не было.").font(.caption).foregroundStyle(.secondary)
+                    Text("Диктовок ещё не было.").font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
@@ -275,16 +366,12 @@ struct DictionaryEditorView: View {
     private var draftCard: some View {
         DictionaryCard(tinted: true) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Новый термин").font(.system(size: 12, weight: .semibold))
+                Text("Новый термин").font(.headline)
                 if let variants = model.draft?.variants, !variants.isEmpty {
                     HStack(spacing: 6) {
-                        Text("Слышится как").font(.caption).foregroundStyle(.secondary)
+                        Text("Слышится как").font(.callout).foregroundStyle(.secondary)
                         ForEach(variants, id: \.self) { variant in
-                            Text(variant)
-                                .font(.system(size: 12))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                            Text(variant).font(.subheadline).chip()
                         }
                     }
                 }
@@ -316,12 +403,11 @@ struct DictionaryEditorView: View {
                 Button("Вернуть") { model.undoRemove() }
                     .buttonStyle(.link)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Capsule().fill(.regularMaterial))
-            .overlay(Capsule().strokeBorder(.primary.opacity(0.08)))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
-            .padding(.bottom, 14)
+            // Тени внутри окна нет: полоса отделяется от контента стеклом, а не размытым пятном.
+            .glassPanel(cornerRadius: 10)
+            .padding(.bottom, 20)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -353,6 +439,7 @@ private struct TermCard: View {
     let onDelete: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         DictionaryCard {
@@ -363,13 +450,14 @@ private struct TermCard: View {
             }
         }
         .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             TextField("Термин латиницей", text: $canonical)
                 .textFieldStyle(.plain)
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
+                .font(.headline)
                 .onChange(of: canonical) { _, _ in onEdit() }
 
             if term.isGenerating {
@@ -404,28 +492,41 @@ private struct TermCard: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Toggle("склонения", isOn: $stem)
+        HStack(spacing: 12) {
+            Toggle("Склонения", isOn: $stem)
                 .toggleStyle(.checkbox)
-                .controlSize(.small)
-                .font(.caption)
                 .onChange(of: stem) { _, _ in onEdit() }
                 .help("Термин склоняется: «деплой» ловит и «деплоя», и «деплою»")
 
             if let note = term.note {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+                Text(note).font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             if term.variants.isEmpty, !term.isGenerating {
-                Text("вариантов нет — замены не будет")
-                    .font(.caption)
-                    .foregroundStyle(.orange.opacity(0.9))
+                Text("Вариантов нет — замены не будет")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
             }
         }
     }
 }
 
 // MARK: - Чипсы
+
+/// Плоская заливка чипа: карточка уже стеклянная, а стекло на стекле сэмплировать нечего.
+/// Радиус фиксированный — чипы плавают в середине карточки, концентричность им не считают.
+private struct Chip: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+extension View {
+    fileprivate func chip() -> some View { modifier(Chip()) }
+}
 
 /// Вариант: крестик проявляется под курсором, но место под него занято всегда —
 /// иначе чипсы разъезжались бы от наведения.
@@ -434,22 +535,22 @@ private struct VariantChip: View {
     let onRemove: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(text).font(.system(size: 12))
+            Text(text).font(.subheadline)
             Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 10))
+                Image(systemName: "xmark.circle.fill").font(.subheadline)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .opacity(isHovered ? 1 : 0)
             .help("Убрать вариант")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+        .chip()
         .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isHovered)
     }
 }
 
@@ -465,11 +566,9 @@ private struct AddVariantChip: View {
         if isEditing {
             TextField("вариант", text: $text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.subheadline)
                 .frame(width: 110)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(.quaternary.opacity(0.6)))
+                .chip()
                 .focused($isFocused)
                 .onSubmit(commit)
                 .onExitCommand { close() }
@@ -479,10 +578,8 @@ private struct AddVariantChip: View {
                 isEditing = true
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(.quaternary.opacity(0.6)))
+                    .font(.subheadline.weight(.semibold))
+                    .chip()
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -516,47 +613,45 @@ private struct SuggestionChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(candidate.token).font(.system(size: 12))
+            Text(candidate.token).font(.subheadline)
             Text("\(candidate.count)")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
             Button(action: onAccept) {
-                Image(systemName: "plus.circle.fill").font(.system(size: 11))
+                Image(systemName: "plus.circle.fill").font(.subheadline)
             }
             .buttonStyle(.plain)
             .help("Добавить в словарь")
             Button(action: onIgnore) {
-                Image(systemName: "xmark.circle").font(.system(size: 11))
+                Image(systemName: "xmark.circle").font(.subheadline)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("Больше не предлагать")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(.yellow.opacity(0.18)))
+        .chip()
     }
 }
 
 // MARK: - Общая оболочка
 
-/// Плашка редактора: то же скруглённое стекло, что у карточек диктовки, но в лёгком
-/// исполнении — это обычное окно, материала за окном тут нет и быть не должно.
+/// Плашка редактора: стекло общей основы, радиус 10, без тени. Тонировка заготовки —
+/// плоская заливка поверх стекла, а не второй его слой.
 private struct DictionaryCard<Content: View>: View {
     var tinted = false
     @ViewBuilder let content: Content
 
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-    }
-
     var body: some View {
         content
-            .padding(12)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(shape.fill(tinted ? AnyShapeStyle(Color.accentColor.opacity(0.08))
-                                          : AnyShapeStyle(Material.regular)))
-            .overlay(shape.strokeBorder(.primary.opacity(0.08)))
+            .background {
+                if tinted {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                }
+            }
+            .glassPanel(cornerRadius: 10)
     }
 }
 
