@@ -38,6 +38,15 @@ final class CardStackController {
     /// Сколько карточек стопка считает своими. Нужен пробе и тесту вытеснения.
     var count: Int { cards.count }
 
+    /// Одну из карточек сейчас тащат.
+    ///
+    /// На это время ВСЯ стопка становится сквозной для мыши. Причина в том, что наши окна
+    /// стоят на ярусе `.statusBar` — выше окна-приёмника — и в нижнем левом углу экрана,
+    /// там же, где поле ввода мессенджера. Карточка, накрывшая точку сброса (своя же или
+    /// соседняя по стопке), забирает сброс себе, а принять его не может: дропы мы нигде
+    /// не регистрируем. Снаружи это и выглядит как «перетаскивание иногда не срабатывает».
+    private(set) var isDragInProgress = false
+
     /// Единственный инвариант стопки: карточек не больше потолка И вся пачка вместе с
     /// просветами и полями по краям помещается в высоту экрана. На низком мониторе (или на
     /// длинных многострочных карточках) реальный предел — «сколько влезает», а не десять.
@@ -57,6 +66,10 @@ final class CardStackController {
         return CardMetrics.screenInset * 2 + heights + gaps
     }
 
+    /// Самая свежая карточка — та, что у самого низа экрана. Нужна тесту перетаскивания:
+    /// настоящий жест в прогоне не завести, поэтому тест дёргает карточку напрямую.
+    var topCardForTesting: CardPanel? { cards.first }
+
     /// Убирает всё с экрана — нужен тесту, чтобы прогон не оставлял за собой окон.
     func dismissAllForTesting() {
         for card in cards { card.dismiss() }
@@ -75,6 +88,10 @@ final class CardStackController {
 
         let card = CardPanel(text: text, translator: translator)
         card.onDismiss = { [weak self] card in self?.remove(card) }
+        card.onDragStateChanged = { [weak self] dragging in self?.setDragInProgress(dragging) }
+        // Диктовка, доехавшая посреди жеста, не имеет права проломить инвариант: новая
+        // карточка встаёт в стопку такой же сквозной, как и остальные.
+        card.setTransparentToDrag(isDragInProgress)
         cards.insert(card, at: 0)
 
         // Инвариант проверяем прямо здесь и безусловно. Отложить проверку нельзя: две
@@ -116,6 +133,13 @@ final class CardStackController {
         CardFlight.fly(from: source, to: card.cardFrameOnScreen) { [weak card] in
             card?.present(fading: true)
         }
+    }
+
+    /// Начало и конец жеста: состояние держится на стопке, а не на карточке, потому что
+    /// мешает сбросу вся стопка целиком, а не только та карточка, которую тащат.
+    private func setDragInProgress(_ dragging: Bool) {
+        isDragInProgress = dragging
+        for card in cards { card.setTransparentToDrag(dragging) }
     }
 
     private func remove(_ card: CardPanel) {

@@ -12,6 +12,10 @@ final class CardPanel {
     /// Стопка убирает карточку из себя сама — панель лишь сообщает, что её больше нет.
     var onDismiss: ((CardPanel) -> Void)?
 
+    /// Перетаскивание началось (`true`) или закончилось (`false`). Слушает стопка: на время
+    /// жеста ВСЕ её окна обязаны стать сквозными для мыши (см. `setTransparentToDrag`).
+    var onDragStateChanged: ((Bool) -> Void)?
+
     /// Высота видимой карточки, без прозрачного запаса вокруг: по ней стопка считает раскладку.
     private(set) var cardHeight: CGFloat
 
@@ -120,14 +124,38 @@ final class CardPanel {
             }
             dismiss(swiped: true)
         }
-        container.onDragBegan = { [weak self] in self?.model.isDragging = true }
+        container.onDragBegan = { [weak self] in
+            guard let self else { return }
+            model.isDragging = true
+            onDragStateChanged?(true)
+        }
         container.onDragEnded = { [weak self] accepted in
             guard let self else { return }
             model.isDragging = false
+            onDragStateChanged?(false)
             // Текст приняли — карточка своё отработала. Отказ (`operation == []`) оставляет
             // её на месте: картинку AppKit сам возвращает в исходную точку.
             if accepted { dismiss() }
         }
+    }
+
+    /// Сквозное для мыши окно на время перетаскивания.
+    ///
+    /// Карточки живут на ярусе `.statusBar` (25) — ВЫШЕ окна, куда текст роняют, — и в
+    /// нижнем левом углу экрана, то есть ровно там, где у мессенджеров поле ввода. Пока
+    /// окно ловит мышь, точка сброса, попавшая на карточку, достаётся НАМ, а мы дропы не
+    /// принимаем (`registerForDraggedTypes` нигде не зовётся): жест кончается ничем.
+    /// Отсюда правило — на время жеста наши окна перестают существовать для мыши, и
+    /// сброс уходит в окно под ними.
+    func setTransparentToDrag(_ transparent: Bool) {
+        panel.ignoresMouseEvents = transparent
+    }
+
+    /// Что уедет в чужое поле. Пустой (или из одних пробелов) текст перетаскиванием не
+    /// отправляем: приёмник такой сброс отклоняет, и жест выглядит сорвавшимся.
+    static func dragPayload(_ text: String?) -> String? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
     }
 
     /// Размер окна: карточка плюс прозрачный запас со всех сторон.
@@ -144,6 +172,11 @@ final class CardPanel {
     // Кнопки карточки ведёт AppKit-контейнер, и нажать их из теста нечем: панель никогда
     // не становится key. Поэтому тест дёргает то же действие напрямую и читает то же,
     // что видит глаз.
+
+    /// Настоящее перетаскивание в прогоне не завести — сессию начинает только живая мышь.
+    /// Поэтому тест дёргает те же callbacks контейнера, что и AppKit.
+    func dragBeganForTesting() { container.onDragBegan?() }
+    func dragEndedForTesting(accepted: Bool) { container.onDragEnded?(accepted) }
 
     func translateForTesting() { translate() }
     var showsTranslationForTesting: Bool { model.showsTranslation }
@@ -429,8 +462,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
         guard !isDragging, pressedControl == nil, swipeTravel == nil, let downPoint else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard hypot(point.x - downPoint.x, point.y - downPoint.y) > Self.dragThreshold else { return }
-        isDragging = true
-        beginDrag(with: event)
+        isDragging = beginDrag(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -488,9 +520,11 @@ private final class CardContainerView: NSView, NSDraggingSource {
         }
     }
 
-    private func beginDrag(with event: NSEvent) {
+    /// `false` — жест не начат: тащить нечего, и пустой сброс приёмник всё равно отклонит.
+    private func beginDrag(with event: NSEvent) -> Bool {
+        guard let text = CardPanel.dragPayload(payload?()) else { return false }
         let item = NSPasteboardItem()
-        item.setString(payload?() ?? "", forType: .string)
+        item.setString(text, forType: .string)
         let dragged = NSDraggingItem(pasteboardWriter: item)
         // Кадр считается ровно по картинке (см. `CardPanel.dragFrame`): любое расхождение
         // пропорций AppKit исправит растяжением — карточка поедет сплющенной.
@@ -500,6 +534,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
         // Не приняли — картинка возвращается на карточку сама, без нашего участия.
         session.animatesToStartingPositionsOnCancelOrFail = true
         onDragBegan?()
+        return true
     }
 
     // MARK: - NSDraggingSource
