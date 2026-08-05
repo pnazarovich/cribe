@@ -8,6 +8,11 @@
 # (микрофон, Accessibility) после каждой пересборки.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Локальная личность: файл .signing-identity (в git не попадает) избавляет от запросов
+# связки ключей — при ad-hoc подписи каждая пересборка выглядит для macOS новой программой.
+if [ -z "${SIGN_IDENTITY:-}" ] && [ -f .signing-identity ]; then
+  SIGN_IDENTITY="$(cat .signing-identity)"
+fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 xcodebuild -scheme Transcriber -configuration Release \
   -derivedDataPath .ddata -destination 'platform=macOS,arch=arm64' \

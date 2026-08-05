@@ -53,7 +53,10 @@ final class ModifierKeyTap {
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }
-        guard TextInserter.hasAccessibility else { return false }
+        guard TextInserter.hasAccessibility else {
+            AppCore.diag("нет Accessibility (AXIsProcessTrusted=false)")
+            return false
+        }
 
         // `self` уходит в колбэк неудержанным: владелец (AppCore) держит объект до выхода
         // из приложения, а `stop()` снимает тап раньше, чем объект мог бы исчезнуть.
@@ -72,6 +75,7 @@ final class ModifierKeyTap {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
+            AppCore.diag("tapCreate вернул nil")
             return false
         }
 
