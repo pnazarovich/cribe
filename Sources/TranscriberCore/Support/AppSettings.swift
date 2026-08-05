@@ -15,6 +15,14 @@ public final class AppSettings: ObservableObject {
     /// Модель перевода по умолчанию.
     public static let defaultTranslateModel = "gpt-5.6-terra"
 
+    /// Усилие рассуждения на чистке. Выше общего дефолта `GPTConfig`: чистка живой речи —
+    /// не разметка текста, ей нужно понять, где кончилась мысль, а не только расставить точки.
+    public static let defaultCleanupEffort = "medium"
+
+    /// Усилие рассуждения на переводе. Ещё выше: тот же вызов и чистит, и переводит,
+    /// и ошибка перевода стоит дороже пропущенной запятой.
+    public static let defaultTranslateEffort = "high"
+
     private enum Key {
         static let language = "language"
         static let gptEnabled = "gptEnabled"
@@ -135,12 +143,12 @@ public final class AppSettings: ObservableObject {
         let mode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
         gptMode = mode
         gptModel = defaults.string(forKey: Key.gptModel) ?? GPTConfig.defaultModel(for: mode)
-        gptEffort = defaults.string(forKey: Key.gptEffort) ?? GPTConfig.defaultEffort
+        gptEffort = defaults.string(forKey: Key.gptEffort) ?? Self.defaultCleanupEffort
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
         // Дефолт перевода не зависит от режима доступа: terra есть у обоих бэкендов и на
         // переводе надёжнее быстрой модели, которой обычно хватает для одной лишь чистки.
         translateModel = defaults.string(forKey: Key.translateModel) ?? Self.defaultTranslateModel
-        translateEffort = defaults.string(forKey: Key.translateEffort) ?? GPTConfig.defaultEffort
+        translateEffort = defaults.string(forKey: Key.translateEffort) ?? Self.defaultTranslateEffort
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true

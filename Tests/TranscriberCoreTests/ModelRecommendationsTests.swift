@@ -62,7 +62,7 @@ final class ModelRecommendationsTests: XCTestCase {
 
     /// Рекомендации ничего не переопределяют в дефолтах конфига.
     func testDefaultsUntouched() {
-        XCTAssertEqual(GPTConfig.defaultModel(for: .codex), "gpt-5.2")
+        XCTAssertEqual(GPTConfig.defaultModel(for: .codex), "gpt-5.6-terra")
         XCTAssertEqual(GPTConfig.defaultModel(for: .apiKey), "gpt-5.6-luna")
         XCTAssertEqual(GPTConfig.defaultEffort, "low")
     }

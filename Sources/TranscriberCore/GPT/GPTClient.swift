@@ -16,7 +16,7 @@ public struct GPTConfig: Sendable {
     public static let defaultEffort = "low"
 
     public static func defaultModel(for mode: GPTAuthMode) -> String {
-        mode == .codex ? "gpt-5.2" : "gpt-5.6-luna"
+        mode == .codex ? "gpt-5.6-terra" : "gpt-5.6-luna"
     }
 
     public init(mode: GPTAuthMode = .codex, model: String? = nil, effort: String = GPTConfig.defaultEffort) {

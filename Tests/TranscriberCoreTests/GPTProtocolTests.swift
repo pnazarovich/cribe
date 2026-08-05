@@ -279,7 +279,7 @@ final class GPTProtocolTests: XCTestCase {
     // MARK: - Дефолты и промпт
 
     func testDefaultModelsPerMode() {
-        XCTAssertEqual(GPTConfig.defaultModel(for: .codex), "gpt-5.2")
+        XCTAssertEqual(GPTConfig.defaultModel(for: .codex), "gpt-5.6-terra")
         XCTAssertEqual(GPTConfig.defaultModel(for: .apiKey), "gpt-5.6-luna")
         XCTAssertEqual(GPTConfig.defaultEffort, "low")
     }
