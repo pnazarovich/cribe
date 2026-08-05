@@ -12,6 +12,7 @@ struct MenuBarView: View {
     @ObservedObject var suggester: TermSuggester
 
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     /// Сколько символов диктовки помещаем в пункт истории.
     private static let historyTitleLimit = 48
@@ -73,12 +74,15 @@ struct MenuBarView: View {
             Button("Предложения (\(suggester.suggestions.count))") { openDictionary(.suggestions) }
         }
 
-        SettingsLink { Text("Настройки…") }
+        // Не `SettingsLink`: он открывает окно, но приложение не активирует, и настройки
+        // появлялись позади чужих окон. Тот же путь через презентер, что и у остальных окон.
+        Button("Настройки…") {
+            WindowPresenter.shared.present { openSettings() }
+        }
         // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
         // а автоматически окно показывается только на первом запуске.
         Button("Первичная настройка…") {
-            NSApp.activate()
-            openWindow(id: WindowID.onboarding)
+            WindowPresenter.shared.present { openWindow(id: WindowID.onboarding) }
         }
 
         Divider()
@@ -113,11 +117,9 @@ struct MenuBarView: View {
         }
     }
 
-    /// LSUIElement-приложение неактивно — без `activate` окно откроется позади чужих.
     private func openDictionary(_ focus: DictionaryFocus? = nil) {
         core.dictionaryFocus = focus
-        NSApp.activate()
-        openWindow(id: WindowID.dictionary)
+        WindowPresenter.shared.present { openWindow(id: WindowID.dictionary) }
     }
 
     private func copy(_ text: String) {

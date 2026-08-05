@@ -303,9 +303,7 @@ private struct MenuBarScene: Scene {
             // Флаг гасит сам онбординг при появлении — если окно почему-то не открылось,
             // попытка повторится на следующем запуске, а вручную его зовёт пункт меню.
             Task { @MainActor in
-                // LSUIElement-приложение неактивно — без этого окно откроется позади чужих.
-                NSApp.activate()
-                openWindow(id: WindowID.onboarding)
+                WindowPresenter.shared.present { openWindow(id: WindowID.onboarding) }
             }
         }
     }
