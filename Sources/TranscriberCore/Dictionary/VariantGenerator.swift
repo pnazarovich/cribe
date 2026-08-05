@@ -176,7 +176,7 @@ enum Transliterator {
 
         var slots: [[String]] = []
         for (index, word) in words.enumerated() {
-            // Разделители («pull request», «openclaw-billing-proxy») дают отдельные слова,
+            // Разделители («pull request», «docker-compose») дают отдельные слова,
             // а camelCase внутри слова — нет: «GitHub» произносится слитно.
             if index > 0 { slots.append([" "]) }
             for part in camelParts(word) {

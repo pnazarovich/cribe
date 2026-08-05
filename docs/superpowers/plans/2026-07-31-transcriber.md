@@ -12,7 +12,7 @@
 
 - Спека: `docs/superpowers/specs/2026-07-31-transcriber-design.md` — истина при конфликте.
 - Bundle id: `online.nazarovych.transcriber` (конвенция пользователя). CFBundleName/продукт: `Transcriber`.
-- Подпись ТОЛЬКО: `Apple Development: Created via API (Q6WMXBUR99)` (единственная валидная identity; ad-hoc запрещён — сбрасывает TCC при каждой сборке).
+- Подпись ТОЛЬКО: `<ваш сертификат подписи>` (единственная валидная identity; ad-hoc запрещён — сбрасывает TCC при каждой сборке).
 - Сборка app: `xcodebuild -scheme Transcriber` (НЕ `swift build` — resource-bundle KeyboardShortcuts крашит SPM-аксессор; бандл копировать в `Contents/Resources/`). `swift build`/`swift test` — только для core/cli/тестов.
 - Зависимости (проверено — собираются вместе): `argmax-oss-swift` pin `revision: "97d09fd9790393579d2834e2bc098deb3e26bc06"` (фикс promptTokens #514, НЕ v1.0.0), `FluidAudio from: "0.15.5"`, `KeyboardShortcuts from: "3.0.1"`.
 - Модели: RU → `openai_whisper-large-v3-v20240930_turbo`, UK → `openai_whisper-large-v3` (HF `argmaxinc/whisperkit-coreml`), язык всегда форсирован, `detectLanguage: false`.
@@ -92,7 +92,7 @@ rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .ddata/Build/Products/Release/Transcriber "$APP/Contents/MacOS/"
 cp -R .ddata/Build/Products/Release/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
 cp Info.plist "$APP/Contents/Info.plist"
-codesign --force --sign "Apple Development: Created via API (Q6WMXBUR99)" "$APP"
+codesign --force --sign "<ваш сертификат подписи>" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 echo "OK: $APP"
 ```
