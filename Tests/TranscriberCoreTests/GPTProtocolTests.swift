@@ -2,7 +2,7 @@ import XCTest
 @testable import TranscriberCore
 
 /// Тесты чистых частей GPT-слоя: разбор JWT, разбор `interval`, сборка тела запроса, SSE-парсер.
-/// Сеть не используется, Keychain не трогаем.
+/// Сеть не используется, хранилище секретов не трогаем.
 final class GPTProtocolTests: XCTestCase {
 
     // MARK: - Синтетический JWT

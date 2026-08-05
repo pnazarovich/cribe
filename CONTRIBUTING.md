@@ -36,7 +36,7 @@ documented at the top of the file.
 | Core logic | `Sources/TranscriberCore/` | No AppKit, no SwiftUI. Anything that can be a pure function is one. |
 | ASR + audio | `Sources/TranscriberCore/{Audio,ASR}/` | Recording, VAD, WhisperKit engines. |
 | Dictionary | `Sources/TranscriberCore/Dictionary/` | The three layers: `PromptBuilder`, `ReplacementEngine`, and the GPT prompt. |
-| GPT | `Sources/TranscriberCore/GPT/` | API-key and ChatGPT-account auth, Keychain, post-processing. |
+| GPT | `Sources/TranscriberCore/GPT/` | API-key and ChatGPT-account auth, `SecretStore`, post-processing. |
 | Pipeline | `Sources/TranscriberCore/Pipeline/` | `DictationController` — the state machine that wires it all together. |
 | App | `Sources/Transcriber/` | Menu bar, HUD panel, dictation cards, dictionary editor. |
 | CLI | `Sources/TranscriberCLI/` | Headless pipeline runner. |

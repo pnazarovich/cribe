@@ -6,8 +6,14 @@
 #   SIGN_IDENTITY="Apple Development: Jane Doe (ABCDE12345)" bash scripts/build-app.sh
 # Ad-hoc подпись работает, но macOS будет заново спрашивать разрешения
 # (микрофон, Accessibility) после каждой пересборки.
+#
+# PROVISION_PROFILE — путь к provisioning profile (по умолчанию Transcriber.provisionprofile
+# в корне). Есть профиль — подпись получает keychain-access-groups и секреты уезжают в
+# современную связку ключей без диалогов; нет — группа вырезается (см. scripts/entitlements.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=entitlements.sh
+source "scripts/entitlements.sh"
 # Локальная личность: файл .signing-identity (в git не попадает) избавляет от запросов
 # связки ключей — при ad-hoc подписи каждая пересборка выглядит для macOS новой программой.
 if [ -z "${SIGN_IDENTITY:-}" ] && [ -f .signing-identity ]; then
@@ -23,7 +29,8 @@ cp .ddata/Build/Products/Release/Transcriber "$APP/Contents/MacOS/"
 cp -R .ddata/Build/Products/Release/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp Info.plist "$APP/Contents/Info.plist"
-codesign --force --sign "$SIGN_IDENTITY" "$APP"
+ENTITLEMENTS=$(prepare_entitlements Dev.entitlements "$APP" "$SIGN_IDENTITY")
+codesign --force --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "Подпись: ad-hoc (SIGN_IDENTITY не задан)"

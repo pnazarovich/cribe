@@ -61,8 +61,8 @@ Menu-bar приложение (LSUIElement=YES, без Dock). Компонент
 
 **Авторизация — два режима, выбор в настройках:**
 
-1. **API-key**: поле ввода, хранение ТОЛЬКО в Keychain. Запросы → `api.openai.com/v1`.
-2. **Codex OAuth (аккаунт ChatGPT)**: кнопка **«Авторизоваться»** → device-code flow (как `codex login` по device-code): приложение получает у OpenAI verification-URL + user-code, показывает их (ссылка кликабельна, код копируется), поллит token-endpoint → access + refresh token в Keychain, автообновление refresh'ем. Запросы → Codex-бэкенд в счёт подписки ChatGPT. Реализацию сверять с open-source Codex CLI (github.com/openai/codex — эталон протокола: client_id, endpoints, заголовки).
+1. **API-key**: поле ввода, хранение ТОЛЬКО в связке ключей (современная data-protection-связка с откатом на старую — см. `SecretStore`). Запросы → `api.openai.com/v1`.
+2. **Codex OAuth (аккаунт ChatGPT)**: кнопка **«Авторизоваться»** → device-code flow (как `codex login` по device-code): приложение получает у OpenAI verification-URL + user-code, показывает их (ссылка кликабельна, код копируется), поллит token-endpoint → access + refresh token в связку ключей, автообновление refresh'ем. Запросы → Codex-бэкенд в счёт подписки ChatGPT. Реализацию сверять с open-source Codex CLI (github.com/openai/codex — эталон протокола: client_id, endpoints, заголовки).
 
 **Модели:** пикер с кнопкой «Обновить»: режим API-key — `GET /v1/models` (фильтр чат-моделей); режим Codex — актуальный список моделей Codex-бэкенда. Выбор персистится; если модель исчезла из списка — откат на дефолт + уведомление.
 

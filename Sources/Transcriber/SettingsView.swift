@@ -262,7 +262,11 @@ private struct AIPane: View {
             } header: {
                 Text("Доступ к модели")
             } footer: {
-                caption("Ключ хранится в Keychain, вход в ChatGPT — там же. В файлы ничего не пишется.")
+                caption(
+                    "Ключ и вход в ChatGPT хранятся в связке ключей macOS — в современной её "
+                        + "части, где доступ даёт подпись разработчика, а не отдельная сборка. "
+                        + "Поэтому пароль от связки приложение не спрашивает, даже после обновления."
+                )
             }
 
             Section {
@@ -286,7 +290,7 @@ private struct AIPane: View {
         }
         .formStyle(.grouped)
         .task {
-            apiKey = KeychainStore.getString(KeychainStore.apiKeyAccount) ?? ""
+            apiKey = SecretStore.getString(SecretStore.apiKeyAccount) ?? ""
             await codex.refreshStatus()
         }
     }
@@ -305,15 +309,15 @@ private struct AIPane: View {
         }
     }
 
-    /// Ключ живёт только в Keychain: ни UserDefaults, ни файлов.
+    /// Ключ живёт только в связке ключей: ни UserDefaults, ни файлов.
     private func saveAPIKey() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            KeychainStore.delete(KeychainStore.apiKeyAccount)
+            SecretStore.delete(SecretStore.apiKeyAccount)
             apiKeyNote = "Ключ удалён"
         } else {
-            KeychainStore.setString(trimmed, account: KeychainStore.apiKeyAccount)
-            apiKeyNote = "Ключ сохранён в Keychain"
+            SecretStore.setString(trimmed, account: SecretStore.apiKeyAccount)
+            apiKeyNote = "Ключ сохранён"
         }
     }
 

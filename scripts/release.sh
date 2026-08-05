@@ -25,6 +25,8 @@
 # Скрипт идемпотентен: каждый запуск пересобирает dist/ с нуля и перезаписывает артефакты.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=entitlements.sh
+source "scripts/entitlements.sh"
 
 fail() { printf 'ОШИБКА: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -95,8 +97,9 @@ while IFS= read -r nested; do
   codesign --force --options runtime "$TIMESTAMP_FLAG" --sign "$DEVELOPER_ID" "$nested"
 done < <(find "$APP/Contents" -maxdepth 2 -name '*.bundle')
 
+ENTITLEMENTS=$(prepare_entitlements Release.entitlements "$APP" "$DEVELOPER_ID")
 codesign --force --options runtime "$TIMESTAMP_FLAG" \
-  --entitlements Release.entitlements --sign "$DEVELOPER_ID" "$APP"
+  --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID" "$APP"
 
 step "Проверка подписи"
 codesign --verify --strict --verbose=2 "$APP"
