@@ -2,3 +2,6 @@
 .swiftpm/
 .ddata/
 dist/
+*.dmg
+*.zip
+.DS_Store
