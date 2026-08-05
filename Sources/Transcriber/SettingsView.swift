@@ -141,14 +141,14 @@ private struct GeneralPane: View {
                     }
                 }
 
-                Toggle("Смешанная речь (RU + UK)", isOn: $settings.ruUsesLargeModel)
+                Toggle("Смешанная речь (RU + UK)", isOn: $settings.mixedSpeech)
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
             } header: {
                 Text("Распознавание")
             } footer: {
                 caption(
-                    "Смешанная речь использует большую модель для русского — точнее "
-                        + "с украинскими словами, но медленнее на ~1 с."
+                    "Смешанная речь подсказывает распознаванию украинские слова внутри "
+                        + "русской диктовки. На скорость не влияет."
                 )
             }
 

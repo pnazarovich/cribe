@@ -20,12 +20,6 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
         self.segments = segments
     }
 
-    /// Выбор модели, который контроллер сделал на старте сессии; nil — не выбирал вовсе.
-    private var mixedSpeechFlag: Bool?
-    var mixedSpeech: Bool? { lock.withLock { mixedSpeechFlag } }
-
-    func setMixedSpeech(_ enabled: Bool) { lock.withLock { mixedSpeechFlag = enabled } }
-
     /// Фоновый проход дошёл до движка.
     var passStarted: Bool { lock.withLock { passStartedFlag } }
     /// Проход начался и всё ещё считает.
@@ -71,6 +65,24 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
             if alreadyReleased { continuation.resume() }
         }
         return segments
+    }
+}
+
+/// Движок, который запоминает промпт распознавания и сразу отдаёт текст.
+private final class PromptSpyEngine: TranscriptionEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: String?
+
+    /// Промпт первого прохода; nil — распознавание ещё не начиналось.
+    var prompt: String? { lock.withLock { seen } }
+
+    func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
+        onState(.ready)
+    }
+
+    func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
+        lock.withLock { if seen == nil { seen = prompt } }
+        return "текст"
     }
 }
 
@@ -274,30 +286,39 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionTranslate)
     }
 
-    /// Тумблер «Смешанная речь» доезжает до движка ДО загрузки модели: иначе сессия
-    /// прогрела бы turbo и распознала им же, а настройка осталась бы декорацией.
-    func testMixedSpeechSettingReachesEngineBeforeModelLoad() async throws {
-        let engine = GatedEngine()
+    /// Тумблер «Смешанная речь» доезжает до промпта распознавания — это всё, чем он работает
+    /// (модель он не меняет: замер показал, что large-v3 украинские вкрапления не вытягивает,
+    /// а стоит 5.5× времени прохода). Без образца в промпте украинские слова русифицируются.
+    func testMixedSpeechSettingReachesRecognitionPrompt() async throws {
+        let mixed = try await sessionPrompt(mixedSpeech: true)
+        let plain = try await sessionPrompt(mixedSpeech: false)
+
+        XCTAssertTrue(mixed.contains("Українською"))
+        XCTAssertFalse(plain.contains("Українською"))
+    }
+
+    /// Промпт, с которым сессия дошла до распознавания.
+    private func sessionPrompt(mixedSpeech: Bool) async throws -> String {
+        let engine = PromptSpyEngine()
         let settings = makeSettings()
-        settings.ruUsesLargeModel = true
+        settings.mixedSpeech = mixedSpeech
         let controller = DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),
             settings: settings,
-            recorder: StubRecorder(),
+            recorder: recordedThreeSeconds(),
             delivery: SpyDelivery(focus: .unknown).delivery,
             makeVad: { PassThroughVad() }
         )
 
         controller.toggle()
-        try await wait(for: "выбор модели сессии") { engine.mixedSpeech == true }
-
-        controller.toggle()  // второй хоткей — отмена, до записи не доходим
-        engine.release()
-        try await wait(for: "выход из загрузки") {
-            if case .preparingModel = controller.state { return false }
-            return true
+        try await wait(for: "старт записи") {
+            if case .recording = controller.state { return true }
+            return false
         }
+        controller.toggle()
+        try await wait(for: "распознавание") { engine.prompt != nil }
+        return engine.prompt ?? ""
     }
 
     /// Выбор микрофона из меню доезжает до захвата: пункт пишет UID в настройки, а подписка

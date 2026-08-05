@@ -18,15 +18,12 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     private static let previewVariant = "openai_whisper-tiny"
 
     private let queue = DispatchQueue(label: "online.nazarovych.transcriber.whisper")
-    /// Ключ — вариант модели, а не язык: со «смешанной речью» русский обслуживает large-v3,
-    /// без неё — turbo, и обе модели должны уживаться в кэше (иначе тумблер отдавал бы
-    /// прогретую не ту).
+    /// Ключ — вариант модели, а не язык: русский и украинский могут делить один вариант,
+    /// и грузить его дважды незачем.
     private var pipelines: [String: WhisperKit] = [:]
     /// Идущие загрузки. Результат кладётся в `pipelines`, поэтому Task<Void, Error>:
     /// WhisperKit не Sendable и не может быть значением задачи.
     private var loading: [String: Task<Void, Error>] = [:]
-    /// Смешанная речь (RU + UK). Читается и пишется только под `queue`.
-    private var mixedSpeech = false
     /// Отдельный инстанс превью и его загрузка — тот же приём, но ключ один на всё приложение:
     /// tiny мультиязычная, язык форсируется в опциях декодирования.
     private var previewPipeline: WhisperKit?
@@ -34,13 +31,9 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
     public init() {}
 
-    public func setMixedSpeech(_ enabled: Bool) {
-        queue.sync { mixedSpeech = enabled }
-    }
-
     public func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         let pending: (task: Task<Void, Error>, joined: Bool)? = queue.sync {
-            let variant = variantLocked(language)
+            let variant = language.whisperModel
             if pipelines[variant] != nil { return nil }
             if let inflight = loading[variant] { return (inflight, true) }
             let started = loadTask(variant: variant, onState: onState)
@@ -134,7 +127,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Один проход большой модели. Опции здесь ровно одни на все проходы сессии —
     /// иначе фоновые проходы и финал распознавали бы по-разному, и склеивать их было бы нечем.
     private func run(_ samples: [Float], language: Language, prompt: String) async throws -> [TranscriptionResult] {
-        let cached = queue.sync { pipelines[variantLocked(language)] }
+        let cached = queue.sync { pipelines[language.whisperModel] }
         guard let pipe = cached else {
             throw TranscriptionEngineError.notPrepared(language)
         }
@@ -158,11 +151,6 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-    }
-
-    /// Модель сессии. Вызывать только под `queue` — читает `mixedSpeech`.
-    private func variantLocked(_ language: Language) -> String {
-        WhisperModel.name(for: language, mixedSpeech: mixedSpeech)
     }
 
     /// Одна загрузка на вариант модели: скачивание (только если моделей ещё нет на диске) + прогрев.

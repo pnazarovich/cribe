@@ -39,6 +39,8 @@ public final class AppSettings: ObservableObject {
         static let skipGPTForShort = "skipGPTForShort"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let cardsWhenNoField = "cardsWhenNoField"
+        /// Ключ старше настройки: когда-то тумблер менял модель, теперь — только промпт.
+        /// Строку не трогаем, чтобы у тех, кто его включил, он остался включённым.
         static let ruUsesLargeModel = "ruUsesLargeModel"
     }
 
@@ -109,12 +111,12 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(cardsWhenNoField, forKey: Key.cardsWhenNoField) }
     }
 
-    /// «Смешанная речь (RU + UK)»: русские сессии распознаёт large-v3 вместо turbo, а в
-    /// initial_prompt добавляется украинский образец. Turbo заметно слабее на украинском,
-    /// поэтому украинские вкрапления в русской диктовке теряются именно на нём. Ценой —
-    /// примерно секунда на проход, поэтому по умолчанию выключено.
-    @Published public var ruUsesLargeModel: Bool {
-        didSet { defaults.set(ruUsesLargeModel, forKey: Key.ruUsesLargeModel) }
+    /// «Смешанная речь (RU + UK)»: в initial_prompt русской сессии добавляется украинский
+    /// образец — без него украинские вкрапления русифицируются («і побачив, що з'явилися»
+    /// становится «и увидел, что появились»). Модель при этом не меняется: замер показал,
+    /// что large-v3 украинские слова не вытягивает, а стоит 5.5× времени (см. `WhisperModel`).
+    @Published public var mixedSpeech: Bool {
+        didSet { defaults.set(mixedSpeech, forKey: Key.ruUsesLargeModel) }
     }
 
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
@@ -154,7 +156,7 @@ public final class AppSettings: ObservableObject {
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
-        ruUsesLargeModel = defaults.bool(forKey: Key.ruUsesLargeModel)
+        mixedSpeech = defaults.bool(forKey: Key.ruUsesLargeModel)
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

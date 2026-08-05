@@ -6,7 +6,7 @@ private let usage = """
 usage: transcriber-cli <audio-file> --lang ru|uk [--mixed] [--no-gpt] [--no-vad] [--translate]
 
   --lang ru|uk   язык диктовки (обязателен)
-  --mixed        смешанная речь (RU + UK): русский на large-v3 вместо turbo
+  --mixed        смешанная речь (RU + UK): украинский образец в промпте
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (слой 3, несовместим с --no-gpt)
@@ -41,10 +41,8 @@ struct CLI {
         }
 
         let engine = WhisperEngine()
-        engine.setMixedSpeech(options.mixed)
         let progress = ModelProgress()
-        let model = WhisperModel.name(for: options.language, mixedSpeech: options.mixed)
-        log("модель \(model) — подготовка…")
+        log("модель \(options.language.whisperModel) — подготовка…")
         try await engine.prepare(language: options.language) { progress.report($0) }
 
         let entries = UserDictionary(url: UserDictionary.defaultURL).entries

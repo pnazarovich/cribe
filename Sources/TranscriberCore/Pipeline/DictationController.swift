@@ -46,11 +46,6 @@ actor EngineGate {
         self.engine = engine
     }
 
-    /// Выбор модели сессии: ставится до `prepare`, поэтому мимо цепочки — как и загрузка.
-    func setMixedSpeech(_ enabled: Bool) {
-        engine.setMixedSpeech(enabled)
-    }
-
     /// Загрузка модели идёт мимо цепочки: она не трогает уже прогретый инстанс,
     /// а `WhisperEngine` сам склеивает параллельные `prepare`.
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
@@ -273,8 +268,8 @@ public final class DictationController: ObservableObject {
 
     private var vad: SpeechGating?
     private var sessionLanguage: Language = .ru
-    /// Смешанная речь этой сессии. Снимок настройки на старте: переключать модель посреди
-    /// записи нельзя — фоновые проходы и финал обязаны идти одной моделью.
+    /// Смешанная речь этой сессии. Снимок настройки на старте: она решает, будет ли в промпте
+    /// украинский образец, а промпт у фоновых проходов и финала обязан быть один.
     private var sessionMixedSpeech = false
     /// Язык, на котором распознана `lastOriginal`: перевод из меню должен идти с него,
     /// а не с языка, который к тому моменту стоит в настройках.
@@ -410,8 +405,7 @@ public final class DictationController: ObservableObject {
     public func process(fileSamples: [Float], language: Language, useGPT: Bool) async throws -> String {
         defer { state = .idle }
 
-        let mixedSpeech = settings.ruUsesLargeModel
-        await gate.setMixedSpeech(mixedSpeech)
+        let mixedSpeech = settings.mixedSpeech
         try await gate.prepare(language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
         }
@@ -454,7 +448,7 @@ public final class DictationController: ObservableObject {
         prewarmGPT()
 
         let language = settings.language
-        let mixedSpeech = settings.ruUsesLargeModel
+        let mixedSpeech = settings.mixedSpeech
         sessionLanguage = language
         sessionMixedSpeech = mixedSpeech
         activeSessionLanguage = language
@@ -462,9 +456,6 @@ public final class DictationController: ObservableObject {
         Task {
             defer { isStarting = false }
             do {
-                // Модель сессии выбирается до загрузки: со смешанной речью русские сессии
-                // идут на large-v3, и грузить надо именно её.
-                await gate.setMixedSpeech(mixedSpeech)
                 try await gate.prepare(language: language) { [weak self] modelState in
                     Task { @MainActor in self?.apply(modelState) }
                 }
