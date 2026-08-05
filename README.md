@@ -1,5 +1,7 @@
 # Transcriber
 
+[![CI](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml)
+
 **Local Russian/Ukrainian dictation for macOS.** Hold nothing, install nothing in the cloud:
 press the right ⌘, speak, and your words land in whatever text field has the cursor.
 Speech recognition runs entirely on your Mac's Neural Engine.

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Свежий пуш отменяет прогон предыдущего: раннеры macOS дорогие, а устаревший
+# результат всё равно никому не нужен.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + test
+    # macos-26 — Apple Silicon и Xcode 26.6 (Swift 6.3), ровно та же связка, на которой
+    # проект собирается локально. arm64 здесь не роскошь: зависимости тянут CoreML.
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Ключ по Package.resolved: ревизии зависимостей прибиты, и пока файл не менялся,
+      # выкачивать и пересобирать их незачем.
+      - name: Кэш сборки SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Собирается вся тройка целей: библиотека, приложение и CLI.
+      # .app здесь не делаем — для него нужен xcodebuild (см. CONTRIBUTING.md).
+      - name: swift build
+        run: swift build
+
+      # Ядро: 182 теста на чистых функциях — ни микрофона, ни сети, ни Accessibility.
+      # Это жёсткий гейт: он обязан быть зелёным.
+      - name: swift test — ядро
+        run: swift test --filter TranscriberCoreTests
+
+      # Тесты приложения заводят настоящие NSWindow и считают NSApplication.shared.windows,
+      # то есть им нужна графическая сессия. У раннера она есть, но гарантией это не является
+      # и от версии образа зависит — поэтому шаг пока не блокирующий. Если он устойчиво
+      # зелёный, снимите continue-on-error, и он станет обычным гейтом.
+      - name: swift test — приложение (окна, нужна графическая сессия)
+        continue-on-error: true
+        run: swift test --filter TranscriberAppTests
