@@ -265,7 +265,7 @@ public actor GPTClient {
     }
 
     private func applyAPIKeyHeaders(_ request: inout URLRequest, accept: String) throws {
-        guard let key = KeychainStore.getString(KeychainStore.apiKeyAccount), !key.isEmpty else {
+        guard let key = SecretStore.getString(SecretStore.apiKeyAccount), !key.isEmpty else {
             throw GPTClientError.missingAPIKey
         }
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")

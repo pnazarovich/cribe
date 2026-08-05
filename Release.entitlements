@@ -4,5 +4,12 @@
 <dict>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Современная (data protection) связка ключей: доступ к секретам даёт эта группа,
+	     а не ACL конкретного бинарника, поэтому пересборка не поднимает диалог пароля.
+	     Префикс — Team ID; подписывать нужно сертификатом той же команды. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>JC6637SY79.online.nazarovych.transcriber</string>
+	</array>
 </dict>
 </plist>

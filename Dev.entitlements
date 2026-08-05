@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Локальные сборки (scripts/build-app.sh). Содержимое повторяет Release.entitlements:
+     секреты должны лежать в той же группе доступа, иначе после переустановки релизной
+     сборки пришлось бы авторизоваться заново. Файл отдельный, чтобы дев-сборку можно
+     было расширить (например, get-task-allow), не трогая релизную подпись. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>JC6637SY79.online.nazarovych.transcriber</string>
+	</array>
+</dict>
+</plist>

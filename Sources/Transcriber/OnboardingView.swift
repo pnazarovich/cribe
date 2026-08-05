@@ -157,7 +157,7 @@ struct OnboardingView: View {
             accessibilityGranted = TextInserter.hasAccessibility
             // Авторизоваться можно любым из двух способов — засчитываем оба.
             gptAuthorized = await CodexAuth.shared.isAuthorized()
-                || KeychainStore.getString(KeychainStore.apiKeyAccount)?.isEmpty == false
+                || SecretStore.getString(SecretStore.apiKeyAccount)?.isEmpty == false
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }

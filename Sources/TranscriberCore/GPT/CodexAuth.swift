@@ -139,11 +139,11 @@ enum CodexProtocol {
 public actor CodexAuth {
     public static let shared = CodexAuth()
 
-    private let account = KeychainStore.codexTokensAccount
+    private let account = SecretStore.codexTokensAccount
     /// Идущее обновление токена. Актор реентерабелен: на `await` внутри `refresh` он
     /// освобождается, и второй вызов `validAccessToken` (прогрев соединения рядом с чисткой —
     /// ровно этот случай) ушёл бы на сервер с ТЕМ ЖЕ refresh_token. Второй обмен сервер
-    /// отвергает как `reused`, а это терминальная ошибка — мы бы стёрли токены из Keychain
+    /// отвергает как `reused`, а это терминальная ошибка — мы бы стёрли токены из хранилища
     /// на ровном месте. Поэтому обновление одно на всех, как `previewLoading` в WhisperEngine.
     private var refreshInFlight: Task<CodexTokens, Error>?
 
@@ -154,7 +154,7 @@ public actor CodexAuth {
     }
 
     public func logout() {
-        KeychainStore.delete(account)
+        SecretStore.delete(account)
     }
 
     /// Шаг 1: получаем user_code и device_auth_id.
@@ -180,7 +180,7 @@ public actor CodexAuth {
         )
     }
 
-    /// Шаг 2 + 3: ждём подтверждения, меняем authorization_code на токены и кладём их в Keychain.
+    /// Шаг 2 + 3: ждём подтверждения, меняем authorization_code на токены и кладём их в хранилище.
     public func pollUntilAuthorized(_ session: DeviceFlowSession) async throws {
         let deadline = Date().addingTimeInterval(CodexProtocol.pollDeadline)
 
@@ -261,9 +261,9 @@ public actor CodexAuth {
             idToken: json["id_token"] as? String,
             accountId: accountId
         ))
-        // SecItemAdd может молча не сработать — убеждаемся, что токены реально легли в Keychain.
+        // SecItemAdd может молча не сработать — убеждаемся, что токены реально легли в связку.
         guard loadTokens() != nil else {
-            throw CodexAuthError.server("Токены не сохранились в Keychain — авторизация не завершена.")
+            throw CodexAuthError.server("Токены не сохранились в связке ключей — авторизация не завершена.")
         }
     }
 
@@ -305,13 +305,13 @@ public actor CodexAuth {
     }
 
     private func loadTokens() -> CodexTokens? {
-        guard let data = KeychainStore.get(account) else { return nil }
+        guard let data = SecretStore.get(account) else { return nil }
         return try? JSONDecoder().decode(CodexTokens.self, from: data)
     }
 
     private func save(_ tokens: CodexTokens) {
         guard let data = try? JSONEncoder().encode(tokens) else { return }
-        KeychainStore.set(data, account: account)
+        SecretStore.set(data, account: account)
     }
 
     private func postJSON(_ url: URL, body: [String: String]) async throws -> (Data, Int) {

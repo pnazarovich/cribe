@@ -92,8 +92,9 @@ SIGN_IDENTITY="Apple Development: Jane Doe (ABCDE12345)" bash scripts/build-app.
 > library and the tests.
 
 The bundle identifier is `online.nazarovych.transcriber` (in `Info.plist`). Change it to your
-own reverse-DNS identifier if you plan to distribute your build — it also names the Keychain
-service and the `os_log` subsystem.
+own reverse-DNS identifier if you plan to distribute your build — it also names the keychain
+service, the keychain access group in `Release.entitlements` / `Dev.entitlements`, and the
+`os_log` subsystem.
 
 For a signed, notarized, distributable build, see `scripts/release.sh` (Developer ID signing →
 notarization → stapled DMG); every required environment variable is documented at the top of
@@ -120,8 +121,15 @@ Optionally, authorize GPT cleanup in **Settings → AI**.
   case the transcript is sent to OpenAI (`api.openai.com`, or the Codex backend when you sign
   in with a ChatGPT account) and nothing else is. With GPT off, the app makes no network
   requests except the one-time model download.
-- **Credentials live in the Keychain.** API keys and OAuth tokens are never written to disk in
-  plain text.
+- **Credentials live in the system keychain.** The API key and the ChatGPT OAuth tokens are
+  generic-password items; nothing is written to disk in plain text. The app prefers the modern
+  *data protection* keychain, where access is granted by the developer identity the app is
+  signed with (`keychain-access-groups`) rather than by the hash of one particular build — so
+  updating the app does not make macOS ask for your keychain password. That entitlement needs a
+  provisioning profile to be embedded at signing time (see `scripts/entitlements.sh`); without
+  one the app transparently falls back to the classic keychain, which is just as safe but does
+  prompt when the signature changes. Signing your local builds with a real certificate instead
+  of ad-hoc (`.signing-identity`) removes those prompts too.
 - The final text is left in the clipboard on purpose — this is deliberate, not a leak.
 
 ## Configuration
@@ -130,6 +138,7 @@ Optionally, authorize GPT cleanup in **Settings → AI**.
 | --- | --- |
 | Dictionary | `~/Library/Application Support/Transcriber/dictionary.json` |
 | Custom sounds | `~/Library/Application Support/Transcriber/sounds/` |
+| API key and ChatGPT tokens | System keychain, service `online.nazarovych.transcriber` |
 | Everything else | Settings window (hotkeys, language, model, effort, auto-stop, input device) |
 
 The dictionary is watched for changes, so you can edit the JSON in any editor and the app
@@ -209,7 +218,10 @@ MIT — see [LICENSE](LICENSE).
 
 Распознавание идёт целиком на вашем Mac (Whisper через WhisperKit, Apple Neural Engine);
 звук никуда не уходит. Текст уходит в OpenAI, только если вы включили GPT-чистку или перевод.
-Ключи и токены лежат в Keychain.
+Ключи и токены лежат в связке ключей macOS: приложение просится в современную её часть, где
+доступ даёт подпись разработчика, а не хеш конкретной сборки, — тогда пароль не спрашивают
+вовсе (нужен provisioning profile, см. `scripts/entitlements.sh`). Без профиля работает обычная
+связка, а диалоги исчезают, если собирать не ad-hoc, а своим сертификатом (`.signing-identity`).
 
 Главное отличие от облачных диктовок — трёхслойный словарь: программистские термины
 выходят латиницей даже в косвенных падежах (`в гитхабе` → `GitHub`, `задеплой` → `deploy`),

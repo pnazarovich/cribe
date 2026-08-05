@@ -7,3 +7,4 @@ dist/
 .DS_Store
 docs/SETUP-NEW-MAC.md
 .signing-identity
+*.provisionprofile
