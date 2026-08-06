@@ -205,7 +205,7 @@ private struct HistoryRow: View {
                 .font(.body)
                 .scrollContentBackground(.hidden)
                 .padding(8)
-                .frame(height: 180)
+                .frame(minHeight: 96, maxHeight: 320)
                 .background(
                     Color(nsColor: .textBackgroundColor).opacity(0.6),
                     in: RoundedRectangle(cornerRadius: 6, style: .continuous)
