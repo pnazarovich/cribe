@@ -14,7 +14,7 @@
 import AppKit
 
 let side: CGFloat = 100
-let out = URL(fileURLWithPath: "Sources/Cribe/Resources", isDirectory: true)
+let out = URL(fileURLWithPath: "Resources", isDirectory: true)
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
 /// Толщина всех штрихов. Крупная намеренно: в 18 pt это чуть больше полутора точек —

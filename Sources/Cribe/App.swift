@@ -369,7 +369,7 @@ private struct MenuBarScene: Scene {
                 updates: UpdateController.shared
             )
         } label: {
-            Image(systemName: icon)
+            MenuBarIcon(recording: isRecording)
         }
         .menuBarExtraStyle(.menu)
         // Карточка попросила показать текст целиком. Открыть окно сцены умеет только вью
@@ -394,8 +394,8 @@ private struct MenuBarScene: Scene {
         }
     }
 
-    private var icon: String {
-        if case .recording = controller.state { return "waveform.badge.mic" }
-        return "waveform"
+    private var isRecording: Bool {
+        if case .recording = controller.state { return true }
+        return false
     }
 }

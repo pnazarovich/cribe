@@ -32,6 +32,8 @@ cp -R .ddata/Build/Products/Release/*.bundle "$APP/Contents/Resources/" 2>/dev/n
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 # Краб без фона: тот же рисунок, что на иконке, для мест в интерфейсе, где ему хватает размера.
 cp Resources/CrabMark.png "$APP/Contents/Resources/"
+# Шаблонные глифы строки состояния: обычный и с точкой записи.
+cp Resources/CrabGlyph.pdf Resources/CrabGlyphRecording.pdf "$APP/Contents/Resources/"
 cp Info.plist "$APP/Contents/Info.plist"
 embed_sparkle "$APP"
 ENTITLEMENTS=$(prepare_entitlements Dev.entitlements "$APP" "$SIGN_IDENTITY")
