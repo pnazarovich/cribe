@@ -181,12 +181,16 @@ final class DictationControllerTests: XCTestCase {
     private var dictionaryURL: URL!
     private var dir: URL!
     private var suiteName: String!
+    /// Записи диктовок — во временную папку: прогон не имеет права класть звук
+    /// в Application Support пользователя.
+    private var recordings: RecordingStore!
 
     override func setUpWithError() throws {
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("DictationControllerTests-\(UUID().uuidString)")
         dictionaryURL = dir.appendingPathComponent("dictionary.json")
         suiteName = "DictationControllerTests-\(UUID().uuidString)"
+        recordings = RecordingStore(folder: dir.appendingPathComponent("recordings"))
     }
 
     override func tearDownWithError() throws {
@@ -331,7 +335,8 @@ final class DictationControllerTests: XCTestCase {
             settings: settings,
             recorder: recordedThreeSeconds(),
             delivery: SpyDelivery(focus: .unknown).delivery,
-            makeVad: { PassThroughVad() }
+            makeVad: { PassThroughVad() },
+            recordings: recordings
         )
 
         controller.toggle()
@@ -353,7 +358,8 @@ final class DictationControllerTests: XCTestCase {
             engine: GatedEngine(),
             dictionary: UserDictionary(url: dictionaryURL),
             settings: settings,
-            recorder: recorder
+            recorder: recorder,
+            recordings: recordings
         )
         XCTAssertEqual(recorder.appliedUID, .some(nil))
 
@@ -650,7 +656,8 @@ final class DictationControllerTests: XCTestCase {
             recorder: recorder,
             delivery: delivery.delivery,
             // Заглушка вместо Silero: прогон не поднимает CoreML-модель и не ходит за ней в сеть.
-            makeVad: { PassThroughVad() }
+            makeVad: { PassThroughVad() },
+            recordings: recordings
         )
     }
 

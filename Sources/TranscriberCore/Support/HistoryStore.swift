@@ -6,12 +6,31 @@ public struct HistoryItem: Codable, Identifiable, Sendable {
     public let date: Date
     public let text: String
     public let language: Language
+    /// Имя WAV-файла в `RecordingStore`; nil — записи нет (не хранили или уже вытеснена).
+    /// Опциональные поля добавлены позже — старая история без них декодируется как есть.
+    public let audio: String?
+    /// Длительность записи в секундах.
+    public let seconds: Double?
 
-    public init(id: UUID = UUID(), date: Date = Date(), text: String, language: Language) {
+    public init(
+        id: UUID = UUID(),
+        date: Date = Date(),
+        text: String,
+        language: Language,
+        audio: String? = nil,
+        seconds: Double? = nil
+    ) {
         self.id = id
         self.date = date
         self.text = text
         self.language = language
+        self.audio = audio
+        self.seconds = seconds
+    }
+
+    /// Та же запись с другим текстом — результат повторного распознавания.
+    public func replacing(text: String) -> HistoryItem {
+        HistoryItem(id: id, date: date, text: text, language: language, audio: audio, seconds: seconds)
     }
 }
 
@@ -36,14 +55,63 @@ public final class HistoryStore: ObservableObject {
         }
     }
 
-    public func add(_ text: String, language: Language) {
+    public func add(_ text: String, language: Language, audio: String? = nil, seconds: Double? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        items.insert(HistoryItem(text: trimmed, language: language), at: 0)
+        items.insert(
+            HistoryItem(text: trimmed, language: language, audio: audio, seconds: seconds),
+            at: 0
+        )
         if items.count > Self.limit {
             items.removeLast(items.count - Self.limit)
         }
+        save()
+    }
+
+    /// Диктовка, у которой распознавание не дало текста. В историю она попадает ровно затем,
+    /// чтобы запись не пропала молча: текста нет, а звук есть и его можно разобрать заново.
+    public func addFailed(language: Language, audio: String, seconds: Double) {
+        items.insert(
+            HistoryItem(text: "", language: language, audio: audio, seconds: seconds),
+            at: 0
+        )
+        if items.count > Self.limit {
+            items.removeLast(items.count - Self.limit)
+        }
+        save()
+    }
+
+    /// Заменяет текст записи — так возвращается результат повторного распознавания.
+    public func replace(id: UUID, text: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index] = items[index].replacing(text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        save()
+    }
+
+    /// Забывает про записи, которых на диске уже нет: кольцо коротко, а история длинная,
+    /// и кнопка «распознать заново» не должна вести в никуда.
+    public func forgetAudio(missing exists: (String) -> Bool) {
+        var changed = false
+        for (index, item) in items.enumerated() {
+            guard let audio = item.audio, !exists(audio) else { continue }
+            items[index] = HistoryItem(
+                id: item.id,
+                date: item.date,
+                text: item.text,
+                language: item.language,
+                audio: nil,
+                seconds: item.seconds
+            )
+            changed = true
+        }
+        // Пустая запись без звука — уже ни текст, ни материал: держать её незачем.
+        let before = items.count
+        items.removeAll { $0.text.isEmpty && $0.audio == nil }
+        if changed || items.count != before { save() }
+    }
+
+    private func save() {
         guard let data = try? JSONEncoder().encode(items) else { return }
         defaults.set(data, forKey: Self.key)
     }

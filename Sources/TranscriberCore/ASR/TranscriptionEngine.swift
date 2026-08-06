@@ -56,6 +56,18 @@ public protocol TranscriptionEngine: AnyObject {
     /// сегмента считается, сколько записи уже распознано.
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment]
 
+    /// Готовит вариант модели, названный явно, — язык при этом остаётся своим.
+    /// Нужно повторному разбору записи из истории: у русской сессии вариант выбирает язык
+    /// (turbo), а на повторе человек вправе попросить large-v3, не становясь украинцем.
+    func prepare(
+        variant: String,
+        language: Language,
+        onState: @escaping @Sendable (ASRModelState) -> Void
+    ) async throws
+
+    /// То же распознавание, что и `transcribe`, но на явно названном варианте модели.
+    func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String
+
     /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
     func preparePreview() async throws
 
@@ -66,10 +78,28 @@ public protocol TranscriptionEngine: AnyObject {
 
 /// Движок без лёгкой модели превью — законное состояние: вызывающий код откатывается
 /// на черновой проход основной модели. Так же и с сегментами: движок без них законен,
-/// потоковая финализация просто не включится.
+/// потоковая финализация просто не включится. И с выбором варианта: движку с одной моделью
+/// выбирать не из чего — он делает обычный проход.
 public extension TranscriptionEngine {
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
         throw TranscriptionEngineError.segmentsUnsupported
+    }
+
+    func prepare(
+        variant: String,
+        language: Language,
+        onState: @escaping @Sendable (ASRModelState) -> Void
+    ) async throws {
+        try await prepare(language: language, onState: onState)
+    }
+
+    func transcribe(
+        _ samples: [Float],
+        language: Language,
+        variant: String,
+        prompt: String
+    ) async throws -> String {
+        try await transcribe(samples, language: language, prompt: prompt)
     }
 
     func preparePreview() async throws {}

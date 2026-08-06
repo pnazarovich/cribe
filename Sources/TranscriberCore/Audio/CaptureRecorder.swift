@@ -31,9 +31,6 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
         set { lock.withLock { failureHandler = newValue } }
     }
 
-    /// Пик записанного ниже этого — не «человек молчал», а вход не отдаёт сигнал вовсе:
-    /// −70 dBFS тише шума любого живого микрофона (у мёртвого HFP-входа гарнитуры пик 0.0001).
-    private static let silenceThreshold: Float = 0.0003
     /// Сколько ждём первый блок после старта записи. Не пришло ничего — микрофон мёртв,
     /// и об этом надо сказать сразу, а не отдавать «речь не обнаружена» через минуту диктовки.
     private static let watchdogTimeout: TimeInterval = 2
@@ -259,7 +256,7 @@ public final class CaptureRecorder: NSObject, AudioCapturing, AVCaptureAudioData
         guard samples.count >= AudioCaptureFormat.silenceVerdictMinimumSamples else { return false }
         var peak: Float = 0
         vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
-        return peak < Self.silenceThreshold
+        return peak < AudioCaptureFormat.silenceThreshold
     }
 
     public func stop() -> [Float] {
