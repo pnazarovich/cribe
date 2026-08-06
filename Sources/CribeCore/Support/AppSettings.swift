@@ -39,9 +39,6 @@ public final class AppSettings: ObservableObject {
         static let skipGPTForShort = "skipGPTForShort"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let cardsWhenNoField = "cardsWhenNoField"
-        /// Ключ старше настройки: когда-то тумблер менял модель, теперь — только промпт.
-        /// Строку не трогаем, чтобы у тех, кто его включил, он остался включённым.
-        static let ruUsesLargeModel = "ruUsesLargeModel"
         static let keptRecordings = "keptRecordings"
     }
 
@@ -112,17 +109,6 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(cardsWhenNoField, forKey: Key.cardsWhenNoField) }
     }
 
-    /// «Смешанная речь (RU + UK)»: в initial_prompt русской сессии добавляется образец
-    /// смешанной речи — без него украинские вкрапления русифицируются («і побачив, що
-    /// з'явилися» становится «и увидел, что появились»). Образец русский с украинской
-    /// вставкой внутри, а не украинский целиком: пропорция промпта решает, на каком языке
-    /// вернётся основа (см. `PromptBuilder.mixedSample`). Модель при этом не меняется: замер
-    /// показал, что large-v3 украинские слова не вытягивает, а стоит 5.5× времени
-    /// (см. `WhisperModel`).
-    @Published public var mixedSpeech: Bool {
-        didSet { defaults.set(mixedSpeech, forKey: Key.ruUsesLargeModel) }
-    }
-
     /// Сколько последних записей держим на диске для повторного распознавания.
     /// Звук — самое личное, что есть у диктовки, поэтому кольцо короткое и явное: 0 —
     /// не хранить вовсе, 3 — по умолчанию (см. `RecordingStore`).
@@ -167,7 +153,6 @@ public final class AppSettings: ObservableObject {
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
-        mixedSpeech = defaults.bool(forKey: Key.ruUsesLargeModel)
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
