@@ -41,6 +41,36 @@ final class AppCore: ObservableObject {
     /// и сбрасывает значение — это разовый сигнал, а не состояние.
     @Published var dictionaryFocus: DictionaryFocus?
 
+    /// Чью диктовку разбирать в панели «Из последней диктовки». nil — последнюю, как её
+    /// и зовут из меню; окно истории кладёт сюда текст той строки, которую открыли.
+    @Published var dictionaryDictation: String?
+
+    /// Текст диктовки, которую надо раскрыть в окне истории. Разовый сигнал: окно его гасит,
+    /// открыв строку.
+    ///
+    /// Именно текст, а не id: карточка появляется РАНЬШЕ, чем конвейер запишет строку в
+    /// историю (доставка идёт перед `history.add`), так что id ей взять неоткуда. Текст же
+    /// у карточки и у строки один и тот же — по нему окно строку и находит.
+    @Published var historyFocus: String?
+
+    /// Перевод на английский. Один и тот же путь у кнопки на карточке и у окна истории:
+    /// про GPT-настройки и словарь знает только приложение, а второго переводчика в нём
+    /// заводить незачем.
+    var translator: CardTranslator {
+        CardTranslator(
+            isAvailable: { [settings] in settings.gptEnabled },
+            translate: { [settings, dictionary] text in
+                try await PostProcessor.cleanup(
+                    text: text,
+                    entries: dictionary.entries,
+                    language: settings.language,
+                    config: settings.translateGPTConfig,
+                    translateToEnglish: true
+                )
+            }
+        )
+    }
+
     private static let onboardingKey = "onboardingShown"
 
     private var panel: LivePanel?
@@ -85,18 +115,10 @@ final class AppCore: ObservableObject {
         // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
         // здесь есть и настройки GPT, и словарь.
         let cards = CardStackController(
-            translator: CardTranslator(
-                isAvailable: { [settings] in settings.gptEnabled },
-                translate: { [settings, dictionary] text in
-                    try await PostProcessor.cleanup(
-                        text: text,
-                        entries: dictionary.entries,
-                        language: settings.language,
-                        config: settings.translateGPTConfig,
-                        translateToEnglish: true
-                    )
-                }
-            )
+            translator: translator,
+            // Текст целиком показывает окно истории — там та же диктовка лежит строкой,
+            // с длительностью записи и повторным распознаванием. Третьего окна не заводим.
+            onExpand: { [weak self] text in self?.historyFocus = text }
         )
         self.cards = cards
         // Текст уехал в карточку — значит, капсула не «вставила», а донесла: она улетает
@@ -262,13 +284,14 @@ struct CribeApp: App {
         }
         .defaultSize(width: 680, height: 560)
 
-        // История — единственная дверь к сохранённым записям: только отсюда диктовку,
-        // из которой распознавание потеряло речь, можно разобрать заново.
+        // История — единственная дверь и к сохранённым записям, и к тексту диктовки целиком:
+        // только отсюда её можно поправить или разобрать заново.
         Window("История диктовок", id: WindowID.history) {
             HistoryView(
                 history: AppCore.shared.history,
                 controller: AppCore.shared.controller,
-                settings: AppCore.shared.settings
+                settings: AppCore.shared.settings,
+                core: AppCore.shared
             )
         }
         .defaultSize(width: 680, height: 560)
@@ -303,8 +326,9 @@ private struct DictionaryWindow: View {
             settings: core.settings,
             suggester: core.suggester,
             // Последняя диктовка живёт в конвейере, но после перезапуска её там нет —
-            // тогда берём свежайшую из истории.
-            lastDictation: controller.lastOriginal ?? history.items.first?.text,
+            // тогда берём свежайшую из истории. Окно истории приводит сюда СВОЮ строку,
+            // и она сильнее: разбирают ту диктовку, которую открыли, а не свежайшую.
+            lastDictation: core.dictionaryDictation ?? controller.lastOriginal ?? history.items.first?.text,
             focus: $core.dictionaryFocus
         )
     }
@@ -332,6 +356,15 @@ private struct MenuBarScene: Scene {
             Image(systemName: icon)
         }
         .menuBarExtraStyle(.menu)
+        // Карточка попросила показать текст целиком. Открыть окно сцены умеет только вью
+        // (у `openWindow` нет другого дома), поэтому заявка едет сюда — и тем же путём,
+        // что и остальные окна, иначе она всплывёт позади чужих. Гасит заявку само окно.
+        .onChange(of: core.historyFocus) { _, text in
+            guard text != nil else { return }
+            WindowPresenter.shared.present(WindowID.history) {
+                openWindow(id: WindowID.history)
+            }
+        }
         .onChange(of: core.needsOnboarding, initial: true) { _, needs in
             guard needs else { return }
             // Следующим тиком: сцены окон к этому моменту зарегистрированы.

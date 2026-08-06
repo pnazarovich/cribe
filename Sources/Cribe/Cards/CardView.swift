@@ -34,6 +34,7 @@ enum CardMetrics {
         case .close: column = 0
         case .copy: column = 1
         case .translate: column = 2
+        case .expand: column = 3
         }
         return CGRect(
             x: width - padding - (self.control + controlGap) * column - self.control,
@@ -44,8 +45,10 @@ enum CardMetrics {
     }
 }
 
-/// Кнопки карточки при наведении.
+/// Кнопки карточки при наведении. Порядок — слева направо, как они и стоят в шапке.
 enum CardControl: Equatable, CaseIterable {
+    /// Текст целиком: карточка держит четыре строки, а вся диктовка живёт в окне истории.
+    case expand
     case translate
     case copy
     case close
@@ -241,11 +244,16 @@ struct CardView: View {
     private var label: String {
         if model.didCopy { return "Скопировано" }
         if model.isTranslating { return "Перевожу…" }
+        // Единственная кнопка, о которой по значку не догадаться: она уводит с карточки
+        // в другое окно. Подсказок (`help`) у карточки нет — контролы ведёт AppKit, — и
+        // сказать, что она делает, можно только здесь.
+        if model.hoveredControl == .expand { return "Посмотреть целиком" }
         return model.isHovered ? "Перетащите в поле ввода" : "Диктовка"
     }
 
     private var controls: some View {
         HStack(spacing: CardMetrics.controlGap) {
+            controlButton(.expand, symbol: "arrow.up.left.and.arrow.down.right")
             translateButton
             controlButton(.copy, symbol: "doc.on.doc")
             controlButton(.close, symbol: "xmark")
