@@ -56,8 +56,15 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             if pipelines[variant] != nil { return nil }
             if let inflight = loading[variant] { return (inflight, true) }
             // Тот же вариант уже качается по кнопке «Скачать» — дожидаемся файлов вместо
-            // второго захода в сеть, а прогреваемся уже сами.
-            let started = loadTask(variant: variant, onState: onState, after: downloading[variant])
+            // второго захода в сеть, а прогреваемся уже сами. Но ждать есть смысл, только
+            // пока файлов нет: задача скачивания может не завершиться и после того, как
+            // модель целиком легла на диск, и тогда ожидание становится вечным — диктовка
+            // висит на «Загружаю модель…», ничего при этом не делая.
+            let started = loadTask(
+                variant: variant,
+                onState: onState,
+                after: pendingDownload(forVariant: variant)
+            )
             loading[variant] = started
             return (started, false)
         }
@@ -215,8 +222,12 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         Task {
             do {
                 // Ошибка или отмена чужого скачивания нам не мешает: `loadPipeline` увидит,
-                // что файлов на диске нет, и скачает сам.
-                _ = try? await download?.value
+                // что файлов на диске нет, и скачает сам. По той же причине ожидание
+                // ограничено по времени: подвисшая чужая задача не должна останавливать
+                // диктовку навсегда — лучше сходить в сеть второй раз, чем не начать вовсе.
+                if let download {
+                    await Self.wait(for: download, upTo: Self.downloadWaitLimit)
+                }
                 let pipe = try await Self.loadPipeline(variant: variant, store: store, onState: onState)
                 self.queue.sync {
                     self.pipelines[variant] = pipe
@@ -227,6 +238,28 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
                 self.queue.sync { self.loading[variant] = nil }
                 throw error
             }
+        }
+    }
+
+    /// Сколько ждать чужую загрузку, прежде чем идти за моделью самим.
+    private static let downloadWaitLimit: Duration = .seconds(60)
+
+    /// Идущая загрузка, которую есть смысл дождаться перед прогревом, — и только она.
+    /// Файлы уже на диске — не ждём ничего: задача скачивания может не завершиться и после
+    /// того, как модель легла целиком, и тогда диктовка вечно висит на «Загружаю модель…».
+    /// Зовётся только с `queue`.
+    func pendingDownload(forVariant variant: String) -> Task<Void, Error>? {
+        store.isInstalled(variant: variant) ? nil : downloading[variant]
+    }
+
+    /// Ждёт задачу, но не дольше отведённого срока. Саму задачу не трогает: она чужая,
+    /// её ведёт тот, кто начал, — мы лишь перестаём на неё рассчитывать.
+    private static func wait(for task: Task<Void, Error>, upTo limit: Duration) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = try? await task.value }
+            group.addTask { try? await Task.sleep(for: limit) }
+            await group.next()
+            group.cancelAll()
         }
     }
 

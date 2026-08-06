@@ -86,6 +86,32 @@ final class WhisperEngineDownloadTests: XCTestCase {
         }
     }
 
+    /// Загрузка уже положила модель на диск, но сама не завершилась. Прогрев обязан идти
+    /// мимо неё: ждать нечего, файлы на месте. Иначе диктовка висит на «Загружаю модель…»
+    /// при нулевой нагрузке — ровно то, что поймали на первом запуске из DMG.
+    func testStuckDownloadIsNotAwaitedOnceFilesAreOnDisk() async throws {
+        let engine = WhisperEngine(store: store)
+        let runs = Runs()
+        engine.downloadVariant = { [self] variant, _ in
+            // Файлы легли на диск…
+            try install(variant)
+            await runs.add(variant)
+            // …а задача осталась висеть.
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        }
+
+        let stuck = Task { try await engine.download(language: .ru, onProgress: { _ in }) }
+        defer { stuck.cancel() }
+        try await waitForRuns(1, in: runs)
+
+        let variant = Language.ru.whisperModel
+        XCTAssertTrue(store.isInstalled(variant: variant), "модель обязана быть на диске")
+        XCTAssertNil(
+            engine.pendingDownload(forVariant: variant),
+            "скачанную модель нельзя ставить в зависимость от незавершённой загрузки"
+        )
+    }
+
     // MARK: - Детали
 
     /// Счётчик заходов в «сеть»: движок зовёт `downloadVariant` из своей задачи, а проверяем
