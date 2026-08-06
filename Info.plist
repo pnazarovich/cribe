@@ -33,7 +33,7 @@
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</string>
+	<string>Lkmv193uXVcWRpbvpjn0LtsLSDdT9/GC4+r+aZhK/eA=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>
