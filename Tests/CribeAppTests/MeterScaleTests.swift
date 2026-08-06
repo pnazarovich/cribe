@@ -31,8 +31,21 @@ final class MeterScaleTests: XCTestCase {
     /// вспыхивал на максимум — «всё на максимуме, как будто очень шумно».
     func testFirstFramesDoNotFlashToTheTop() {
         var range = MeterRange()
-        for _ in 0..<3 {
+        for _ in 0..<6 {
             XCTAssertLessThan(range.push(quiet), 0.2, "индикатор не имеет права стартовать с максимума")
+        }
+    }
+
+    /// Щелчок в первом буфере — обычное дело на старте записи. Калибровка обязана взять
+    /// самый тихий из первых кадров, иначе шкала съезжает и весь ряд вспыхивает.
+    func testStartupClickDoesNotSkewTheScale() {
+        var range = MeterRange()
+        _ = range.push(peak)      // щелчок
+        _ = range.push(quiet)
+        _ = range.push(quiet)
+
+        for _ in 0..<3 {
+            XCTAssertLessThan(range.push(quiet), 0.2, "щелчок старта не должен задирать шкалу")
         }
     }
 

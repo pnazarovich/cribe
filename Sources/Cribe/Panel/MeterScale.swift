@@ -39,10 +39,12 @@ struct MeterRange {
     private(set) var floor: Float = -55
     private(set) var ceiling: Float = -25
     private var smoothed: CGFloat = 0
-    /// До первого замера границы неизвестны. Фиксированные стартовые значения означали бы,
-    /// что в первый же кадр шум комнаты попадает в середину шкалы и ряд взлетает на максимум —
-    /// «как будто очень шумно». Поэтому первый замер задаёт пол сам.
-    private var calibrated = false
+    /// Сколько первых замеров уходит на калибровку. Они не показываются вовсе: старт
+    /// записи на AVCaptureSession почти всегда даёт щелчок в первых буферах, и калибровка
+    /// по одному первому замеру ловила именно его — шкала съезжала, и ряд вспыхивал на
+    /// максимум. Три кадра — четверть секунды, человек не успевает ничего заметить.
+    private static let warmupFrames = 3
+    private var warmup: [Float] = []
 
     /// Принимает очередной замер и отдаёт готовую высоту для него.
     ///
@@ -54,11 +56,15 @@ struct MeterRange {
         guard level > 0 else { return 0 }
         let decibels = 20 * log10(level)
 
-        if !calibrated {
-            calibrated = true
-            // Чуть ниже первого замера: если человек нажал ⌘ и молчит, это и есть его тишина.
-            floor = decibels - 2
-            ceiling = floor + Self.minimumSpan
+        // Пока идёт калибровка, наружу отдаём ноль: показывать нечего, границы неизвестны.
+        if warmup.count < Self.warmupFrames {
+            warmup.append(decibels)
+            if warmup.count == Self.warmupFrames {
+                // Самый тихий из первых кадров: щелчок старта громкий, тишина — нет.
+                floor = (warmup.min() ?? decibels) - 2
+                ceiling = floor + Self.minimumSpan
+            }
+            return 0
         }
 
         floor += (decibels - floor) * (decibels < floor ? Self.floorFall : Self.floorRise)
