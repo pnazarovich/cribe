@@ -332,15 +332,15 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionTranslate)
     }
 
-    /// Тумблер «Смешанная речь» доезжает до промпта распознавания — это всё, чем он работает
-    /// (модель он не меняет: замер показал, что large-v3 украинские вкрапления не вытягивает,
-    /// а стоит 5.5× времени прохода). Без образца в промпте украинские слова русифицируются.
-    func testMixedSpeechSettingReachesRecognitionPrompt() async throws {
-        let mixed = try await sessionPrompt(mixedSpeech: true)
-        let plain = try await sessionPrompt(mixedSpeech: false)
+    /// До распознавания доезжает русский промпт русской сессии — ни одного украинского слова
+    /// в нём быть не может. Раньше сюда добавлялся образец смешанной речи с украинской
+    /// вставкой, и на настоящей диктовке он переворачивал язык всей записи.
+    func testRussianSessionPromptStaysRussian() async throws {
+        let ukrainianOnly: Set<Character> = ["і", "І", "ї", "Ї", "є", "Є", "ґ", "Ґ"]
+        let prompt = try await sessionPrompt()
 
-        XCTAssertTrue(mixed.contains("перевірити налаштування"))
-        XCTAssertFalse(plain.contains("перевірити налаштування"))
+        XCTAssertFalse(prompt.isEmpty)
+        XCTAssertFalse(prompt.contains(where: { ukrainianOnly.contains($0) }), prompt)
     }
 
     /// Хоткей смены языка гоняет языки по кругу в порядке `Language.allCases`. С тремя языками
@@ -367,10 +367,9 @@ final class DictationControllerTests: XCTestCase {
     }
 
     /// Промпт, с которым сессия дошла до распознавания.
-    private func sessionPrompt(mixedSpeech: Bool) async throws -> String {
+    private func sessionPrompt() async throws -> String {
         let engine = PromptSpyEngine()
         let settings = makeSettings()
-        settings.mixedSpeech = mixedSpeech
         let controller = DictationController(
             engine: engine,
             dictionary: UserDictionary(url: dictionaryURL),

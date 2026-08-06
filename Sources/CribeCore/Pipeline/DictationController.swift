@@ -250,7 +250,6 @@ private final class DictationSession {
     let language: Language
     /// Перевод, назначенный хоткеем (правый ⌥); nil — решает настройка.
     let translating: Bool?
-    let mixedSpeech: Bool
     /// Промпт диктовки: фоновые проходы и финал обязаны идти с одним биасингом, иначе
     /// подтверждённая часть и хвост распознаны по-разному и склейка врёт.
     var prompt = ""
@@ -282,10 +281,9 @@ private final class DictationSession {
     /// стоит в очереди, микрофон успевает записать следующую и ответил бы уже про неё.
     var capturedSilence = false
 
-    init(language: Language, translating: Bool?, mixedSpeech: Bool) {
+    init(language: Language, translating: Bool?) {
         self.language = language
         self.translating = translating
-        self.mixedSpeech = mixedSpeech
     }
 
     /// Итог фонового прохода. Назад не сдаём: перестройка сегментов может дать более
@@ -555,7 +553,6 @@ public final class DictationController: ObservableObject {
             publish()
         }
 
-        let mixedSpeech = settings.mixedSpeech
         try await gate.prepare(language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
         }
@@ -569,7 +566,7 @@ public final class DictationController: ObservableObject {
         let raw = try await gate.transcribe(
             speech,
             language: language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: language, mixedSpeech: mixedSpeech)
+            prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
         )
         let text = ReplacementEngine.apply(raw, entries: entries)
         guard useGPT else { return text }
@@ -607,11 +604,7 @@ public final class DictationController: ObservableObject {
         micReleaseTask = nil
         prewarmGPT()
 
-        let session = DictationSession(
-            language: settings.language,
-            translating: translating,
-            mixedSpeech: settings.mixedSpeech
-        )
+        let session = DictationSession(language: settings.language, translating: translating)
         recording = session
         publish()
         Task {
@@ -659,8 +652,7 @@ public final class DictationController: ObservableObject {
 
         session.prompt = PromptBuilder.initialPrompt(
             entries: dictionary.entries,
-            language: session.language,
-            mixedSpeech: session.mixedSpeech
+            language: session.language
         )
 
         let vad = try await ensureVad()

@@ -59,80 +59,29 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(prompt.contains("GitHub"), prompt)
     }
 
-    // MARK: - Смешанная речь
+    // MARK: - Язык промпта
 
-    /// Образец смешанной речи добавляется только русской сессии: он и нужен затем, чтобы
-    /// декодер принимал украинские токены посреди русской диктовки. Украинскую сессию
-    /// распознаёт украинская модель, английскую — своя, биасить им нечего.
-    func testMixedSampleOnlyInRussianSession() {
-        let mixed = PromptBuilder.initialPrompt(entries: entries, language: .ru, mixedSpeech: true)
-        XCTAssertTrue(mixed.contains("треба ще перевірити налаштування"), mixed)
-        // Термины остаются на месте — русской рамкой образцу служат именно они.
-        XCTAssertTrue(mixed.hasPrefix("Говорим по-русски про GitHub, Tailscale:"), mixed)
-        // Кончается промпт по-русски: хвост задаёт тон первому слову речи.
-        XCTAssertTrue(mixed.hasSuffix("— и дальше снова по-русски."), mixed)
+    /// Промпт русской сессии обязан быть русским целиком — ни одного украинского слова.
+    /// Здесь когда-то жил образец смешанной речи с украинской вставкой, и на настоящей
+    /// (не синтезированной) диктовке он работал переключателем языка: русская запись
+    /// возвращалась целиком по-украински. Термины словаря к этому отношения не имеют —
+    /// они и должны быть латиницей, — поэтому проверяем только кириллицу промпта.
+    func testRussianPromptCarriesNoUkrainianLetters() {
+        let ukrainianOnly: Set<Character> = ["і", "І", "ї", "Ї", "є", "Є", "ґ", "Ґ"]
+        let prompts = [
+            PromptBuilder.initialPrompt(entries: entries, language: .ru),
+            PromptBuilder.initialPrompt(entries: [], language: .ru),
+        ]
 
-        let plain = PromptBuilder.initialPrompt(entries: entries, language: .ru)
-        XCTAssertFalse(plain.contains("треба ще перевірити налаштування"), plain)
-
-        for language in [Language.uk, .en] {
-            let other = PromptBuilder.initialPrompt(entries: entries, language: language, mixedSpeech: true)
-            XCTAssertFalse(other.contains("треба ще перевірити налаштування"), other)
+        for prompt in prompts {
+            XCTAssertFalse(prompt.contains(where: { ukrainianOnly.contains($0) }), prompt)
         }
     }
 
-    /// Образец занимает место образца пунктуации, а не добавляется к нему: у промпта
-    /// ~64 токена окна, и на оба сразу их не хватает — вместе они не оставляли места
-    /// ни одному термину словаря.
-    func testMixedSampleReplacesPunctuationSample() {
-        let mixed = PromptBuilder.initialPrompt(entries: entries, language: .ru, mixedSpeech: true)
+    /// Украинской сессии украинские буквы, наоборот, положены: её промпт — украинский.
+    func testUkrainianPromptDoesCarryUkrainianLetters() {
+        let prompt = PromptBuilder.initialPrompt(entries: entries, language: .uk)
 
-        XCTAssertFalse(mixed.contains("Итак, начнём"), mixed)
-        XCTAssertTrue(mixed.contains("GitHub"), mixed)
-    }
-
-    /// Главное свойство образца: доминирующий язык остаётся доминирующим. Образец, целиком
-    /// написанный по-украински, декодер принимал за язык всей записи и возвращал русскую
-    /// основу украинской («я сьогодні посмотрел, що там з сервером»). Поэтому в образце
-    /// украинского — меньшая часть, а начало и конец русские: хвост промпта задаёт тон
-    /// первому слову речи.
-    func testMixedSampleStaysRussianDominant() {
-        let sample = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
-
-        XCTAssertTrue(sample.hasPrefix("Говорим по-русски"), sample)
-        XCTAssertTrue(sample.hasSuffix("и дальше снова по-русски."), sample)
-
-        // Украинские буквы есть — вкрапление настоящее, а не пересказ про него.
-        XCTAssertTrue(sample.contains(where: { "їієґ".contains($0) }), sample)
-
-        // И их меньшинство: считаем слова с украинскими признаками против всех слов.
-        let words = sample.split(whereSeparator: { !$0.isLetter && $0 != "'" && $0 != "-" })
-        let ukrainian = words.filter { word in
-            word.contains(where: { "їієґ".contains($0) }) || word.contains("'")
-        }
-        XCTAssertGreaterThan(words.count, 2 * ukrainian.count, "русская часть обязана быть больше украинской")
-    }
-
-    /// Словарь пуст — образец всё равно нужен, и рамкой ему служит собственное начало.
-    func testMixedPromptWithEmptyDictionaryStillCarriesSample() {
-        let prompt = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
-        XCTAssertEqual(
-            prompt,
-            "Говорим по-русски: «треба ще перевірити налаштування, а тоді вже з'ясуємо деталі», "
-                + "— и дальше снова по-русски."
-        )
-    }
-
-    /// Образец не имеет права проесть бюджет промпта: режем термины ровно так же.
-    func testMixedPromptKeepsLengthBudget() {
-        let many = (1...100).map {
-            DictionaryEntry(canonical: "Terminus\($0)", variants: ["термінус\($0)"])
-        }
-        let prompt = PromptBuilder.initialPrompt(
-            entries: many, language: .ru, maxTerms: 100, mixedSpeech: true
-        )
-        XCTAssertLessThanOrEqual(prompt.count, 700, prompt)
-        XCTAssertTrue(prompt.contains("Terminus100:"), prompt)
-        XCTAssertFalse(prompt.contains("Terminus1,"), prompt)
+        XCTAssertTrue(prompt.contains(where: { "їієґ".contains($0) }), prompt)
     }
 }
