@@ -29,8 +29,15 @@ struct MeterRange {
     private static let ceilingRise: Float = 0.3
     private static let ceilingFall: Float = 0.01
 
+    /// Насколько замер тянет высоту к себе. Уровень речи скачет от кадра к кадру, и без
+    /// сглаживания ряд честно отрабатывает каждый скачок — движение получается рваным.
+    /// Пятая часть означает: новый замер решает пятую часть, остальное остаётся от предыдущей
+    /// высоты. Ниже опускать нельзя — ряд начнёт отставать от речи и врать про громкость.
+    private static let smoothing: CGFloat = 0.22
+
     private(set) var floor: Float = -55
     private(set) var ceiling: Float = -25
+    private var smoothed: CGFloat = 0
 
     /// Принимает очередной замер и отдаёт готовую высоту для него.
     ///
@@ -48,6 +55,8 @@ struct MeterRange {
         ceiling = max(ceiling, floor + Self.minimumSpan)
 
         let span = max(Self.minimumSpan, ceiling - floor)
-        return CGFloat(min(1, max(0, (decibels - floor) / span)))
+        let raw = CGFloat(min(1, max(0, (decibels - floor) / span)))
+        smoothed += (raw - smoothed) * Self.smoothing
+        return smoothed
     }
 }

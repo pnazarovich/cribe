@@ -11,6 +11,14 @@ final class MeterScaleTests: XCTestCase {
     private let speech = pow(10, Float(-33) / 20)
     private let peak = pow(10, Float(-25) / 20)
 
+    /// Устоявшаяся высота: несколько замеров одного уровня подряд, как в жизни.
+    private func settled(_ range: MeterRange, at level: Float) -> CGFloat {
+        var probe = range
+        var height: CGFloat = 0
+        for _ in 0..<20 { height = probe.push(level) }
+        return height
+    }
+
     /// Тишина — ноль, отрицательных значений не бывает.
     func testSilenceIsFlat() {
         var range = MeterRange()
@@ -32,8 +40,10 @@ final class MeterScaleTests: XCTestCase {
         var range = MeterRange()
         for _ in 0..<200 { _ = range.push(quiet) }
 
-        XCTAssertGreaterThan(range.push(speech), 0.25, "обычная речь заметна")
-        XCTAssertGreaterThan(range.push(peak), 0.6, "пик уходит вверх")
+        // Высота сглажена по нескольким замерам, поэтому и проверяем её устоявшейся:
+        // одиночный замер по построению доезжает лишь до пятой части цели.
+        XCTAssertGreaterThan(settled(range, at: speech), 0.25, "обычная речь заметна")
+        XCTAssertGreaterThan(settled(range, at: peak), 0.6, "пик уходит вверх")
     }
 
     /// Микрофон вдвое громче — картинка та же. В этом весь смысл самонастройки.
@@ -42,7 +52,7 @@ final class MeterScaleTests: XCTestCase {
         let shift: Float = 4 // +12 dB
         for _ in 0..<200 { _ = loud.push(quiet * shift) }
 
-        XCTAssertGreaterThan(loud.push(peak * shift), 0.6)
+        XCTAssertGreaterThan(settled(loud, at: peak * shift), 0.6)
     }
 
     /// Улица: шум гуляет туда-сюда. Границы обязаны ползти, а не бегать за каждым всплеском,
@@ -63,10 +73,7 @@ final class MeterScaleTests: XCTestCase {
         var range = MeterRange()
         for _ in 0..<200 { _ = range.push(quiet) }
 
-        let heights = [quiet, speech, peak].map { level -> CGFloat in
-            var probe = range
-            return probe.push(level)
-        }
+        let heights = [quiet, speech, peak].map { settled(range, at: $0) }
         XCTAssertEqual(heights, heights.sorted(), "шкала обязана быть монотонной")
     }
 
@@ -74,6 +81,6 @@ final class MeterScaleTests: XCTestCase {
     func testLoudestStaysWithinBounds() {
         var range = MeterRange()
         for _ in 0..<200 { _ = range.push(speech) }
-        XCTAssertLessThanOrEqual(range.push(1), 1)
+        XCTAssertLessThanOrEqual(settled(range, at: 1), 1)
     }
 }
