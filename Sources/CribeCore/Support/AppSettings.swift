@@ -43,6 +43,8 @@ public final class AppSettings: ObservableObject {
         /// Строку не трогаем, чтобы у тех, кто его включил, он остался включённым.
         static let ruUsesLargeModel = "ruUsesLargeModel"
         static let keptRecordings = "keptRecordings"
+        static let dictationsStarted = "dictationsStarted"
+        static let parallelHintShown = "parallelHintShown"
     }
 
     private let defaults: UserDefaults
@@ -138,6 +140,23 @@ public final class AppSettings: ObservableObject {
     /// UID выбранного микрофона; nil — системный по умолчанию (nil стирает ключ).
     @Published public var inputDeviceUID: String? {
         didSet { defaults.set(inputDeviceUID, forKey: Key.inputDeviceUID) }
+    }
+
+    /// Сколько диктовок начато за всё время. Считаем ровно ради одного — показать подсказку
+    /// про наложение на третьей и больше никогда, поэтому счёт останавливается вместе с ней.
+    ///
+    /// Без `@Published`: на это никто не подписан, а лишний сигнал перерисовывал бы меню
+    /// на каждом старте записи.
+    public var dictationsStarted: Int {
+        get { defaults.integer(forKey: Key.dictationsStarted) }
+        set { defaults.set(newValue, forKey: Key.dictationsStarted) }
+    }
+
+    /// Подсказку «не ждите обработки, говорите дальше» уже показывали. Один раз за всю
+    /// жизнь: второй раз она уже не новость, а помеха.
+    public var parallelHintShown: Bool {
+        get { defaults.bool(forKey: Key.parallelHintShown) }
+        set { defaults.set(newValue, forKey: Key.parallelHintShown) }
     }
 
     public var gptConfig: GPTConfig {

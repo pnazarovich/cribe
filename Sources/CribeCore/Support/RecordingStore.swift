@@ -99,13 +99,6 @@ public final class RecordingStore: @unchecked Sendable {
         }
     }
 
-    /// Убирает одну запись: так отменённая по Esc диктовка не оставляет за собой файл,
-    /// до которого нет ни одной двери.
-    public func remove(named name: String) {
-        guard let url = url(named: name) else { return }
-        try? fileManager.removeItem(at: url)
-    }
-
     /// Стирает все записи разом — кнопка «стереть» в настройках и путь `keeping == 0`.
     public func removeAll() {
         for url in files() {

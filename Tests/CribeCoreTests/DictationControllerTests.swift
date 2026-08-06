@@ -123,6 +123,48 @@ private final class HoldingEngine: TranscriptionEngine, @unchecked Sendable {
     }
 }
 
+/// Движок с распознаванием разной длительности: сколько считается каждый проход и что он
+/// отдаёт, задаёт тест. Нужен там, где проверяется ПОРЯДОК: если первая диктовка считается
+/// долго, а вторая мгновенно, совпадение порядка вставки с порядком речи перестаёт быть
+/// случайностью таймингов.
+private final class PacedEngine: TranscriptionEngine, @unchecked Sendable {
+    private let passes: [(text: String, delay: TimeInterval)]
+    private let lock = NSLock()
+    private var callCount = 0
+
+    init(passes: [(text: String, delay: TimeInterval)]) {
+        self.passes = passes
+    }
+
+    func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
+        onState(.ready)
+    }
+
+    func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
+        let index = lock.withLock { () -> Int in
+            defer { callCount += 1 }
+            return callCount
+        }
+        guard index < passes.count else {
+            XCTFail("проходов больше, чем задано тестом")
+            return ""
+        }
+        let pass = passes[index]
+        if pass.delay > 0 {
+            try await Task.sleep(nanoseconds: UInt64(pass.delay * 1_000_000_000))
+        }
+        return pass.text
+    }
+}
+
+/// Приёмник записок: замыкание живёт дольше вызова, поэтому поводы копим в объекте.
+private final class NoticeSink {
+    var notices: [DictationNotice] = []
+
+    var hints: Int { notices.filter { $0 == .parallelHint }.count }
+    var refusals: Int { notices.filter { $0 == .queueFull(limit: DictationController.maxPending) }.count }
+}
+
 /// Доставка-заглушка: считает вставки и копирования, но ни разу не трогает ни буфер обмена
 /// пользователя, ни чужие окна. Вердикт детектора задаётся тестом.
 private final class SpyDelivery: @unchecked Sendable {
@@ -476,35 +518,178 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionLanguage)
     }
 
-    /// Esc, нажатый пока конвейер уже считает: проход досчитывается в никуда — ни вставки,
-    /// ни «последней диктовки», ни истории.
-    func testEscapeDuringPipelineDiscardsResult() async throws {
-        let recorder = StubRecorder()
-        recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 3))
+    /// Esc, нажатый пока конвейер уже считает, диктовку НЕ отменяет: записанное почти
+    /// доехало, и выбросить готовую работу обиднее, чем недоотменить. Клавиша принадлежит
+    /// живой записи, а её в этот момент нет — значит, отменять нечего.
+    func testEscapeDuringProcessingKeepsResult() async throws {
+        let spy = SpyDelivery(focus: .unknown)
         let engine = HoldingEngine()
-        let controller = makeController(engine: engine, recorder: recorder)
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
 
         controller.toggle()
         try await wait(for: "старт записи") {
             if case .recording = controller.state { return true }
             return false
         }
-        let historyBefore = HistoryStore.shared.items.count
 
-        controller.toggle()  // стоп — дальше работает конвейер
+        controller.toggle()  // стоп — дальше работает очередь
         XCTAssertEqual(controller.state, .transcribing)
         controller.cancelDictation()
+        // Отмены не случилось: конвейер как считал, так и считает.
+        XCTAssertEqual(controller.state, .transcribing)
+        XCTAssertEqual(controller.pendingCount, 1)
 
         // Движок держит проход до этого момента, поэтому Esc гарантированно раньше вставки.
         try await wait(for: "начало распознавания") { engine.isTranscribing }
         engine.release()
 
-        try await wait(for: "вспышку отмены") { controller.state == .cancelled }
-        // `lastOriginal` присваивается ровно перед вставкой: раз его нет, не было и вставки
-        // с буфером обмена.
-        XCTAssertNil(controller.lastOriginal)
-        XCTAssertNil(controller.lastTranslation)
-        XCTAssertEqual(HistoryStore.shared.items.count, historyBefore)
+        try await wait(for: "вставку") { controller.state == .inserted }
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text])
+        XCTAssertEqual(controller.lastOriginal, HoldingEngine.text)
+    }
+
+    // MARK: - Наложение: пишем новое, пока доезжает старое
+
+    /// Главное требование наложения: диктовки вставляются строго в том порядке, в котором
+    /// их наговорили. Первая здесь распознаётся втрое дольше второй — если бы очередь
+    /// разбиралась «кто быстрее», предложения поменялись бы местами.
+    func testQueuedDictationsInsertInSpokenOrder() async throws {
+        let spy = SpyDelivery(focus: .unknown)
+        let engine = PacedEngine(passes: [
+            (text: "первая фраза", delay: 0.3),
+            (text: "вторая фраза", delay: 0),
+        ])
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+
+        controller.toggle()
+        try await wait(for: "старт первой записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        controller.toggle()  // стоп первой — она уходит в очередь
+
+        // Вторая запись начинается, не дожидаясь первой: ровно то, ради чего всё затевалось.
+        controller.toggle()
+        try await wait(for: "старт второй записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        XCTAssertEqual(controller.pendingCount, 1, "первая обязана обрабатываться параллельно записи")
+        controller.toggle()
+
+        try await wait(for: "обе вставки") { spy.inserted.count == 2 }
+        XCTAssertEqual(spy.inserted, ["первая фраза", "вторая фраза"])
+        try await wait(for: "опустевшую очередь") { controller.pendingCount == 0 }
+    }
+
+    /// Потолок очереди. Четвёртая диктовка не начинается — и отказ не молчаливый: наружу
+    /// уходит записка, по которой видно, почему микрофон не включился.
+    func testFourthDictationIsRefusedWhileThreeArePending() async throws {
+        let sink = NoticeSink()
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds())
+        controller.onNotice = { sink.notices.append($0) }
+
+        for index in 1...DictationController.maxPending {
+            controller.toggle()
+            try await wait(for: "старт записи \(index)") {
+                if case .recording = controller.state { return true }
+                return false
+            }
+            controller.toggle()
+        }
+        try await wait(for: "полную очередь") {
+            controller.pendingCount == DictationController.maxPending
+        }
+
+        controller.toggle()  // четвёртая — некуда
+        XCTAssertEqual(sink.refusals, 1, "отказ обязан быть слышен")
+        XCTAssertEqual(controller.pendingCount, DictationController.maxPending)
+        XCTAssertEqual(controller.state, .transcribing, "записи не начиналось")
+
+        // Как только очередь разгребается, хоткей снова работает.
+        engine.release()
+        try await wait(for: "разбор очереди") { controller.pendingCount == 0 }
+        controller.toggle()
+        try await wait(for: "старт четвёртой записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        controller.cancelDictation()
+    }
+
+    /// Esc при наложении снимает ТОЛЬКО идущую запись. Диктовка, которая в этот момент
+    /// обрабатывается, доезжает до поля ввода как ни в чём не бывало.
+    func testEscapeDuringOverlapCancelsOnlyLiveRecording() async throws {
+        let spy = SpyDelivery(focus: .unknown)
+        let sink = NoticeSink()
+        let engine = HoldingEngine()
+        let controller = makeController(engine: engine, recorder: recordedThreeSeconds(), delivery: spy)
+        controller.onNotice = { sink.notices.append($0) }
+
+        controller.toggle()
+        try await wait(for: "старт первой записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        controller.toggle()  // стоп первой — она встала в очередь и считается
+
+        controller.toggle()
+        try await wait(for: "старт второй записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        controller.cancelDictation()
+
+        // Первая на месте, второй больше нет.
+        XCTAssertEqual(controller.pendingCount, 1)
+        XCTAssertEqual(controller.state, .transcribing)
+        // Пилюлю занял конвейер, поэтому про отмену сказала записка — молчать здесь нельзя.
+        XCTAssertEqual(sink.notices, [.result(.cancelled)])
+
+        engine.release()
+        try await wait(for: "вставку первой") { controller.state == .inserted }
+        XCTAssertEqual(spy.inserted, [HoldingEngine.text], "отменённая запись до движка не дошла")
+    }
+
+    /// Подсказка про наложение показывается ровно один раз за всю жизнь приложения —
+    /// на третьей диктовке — и переживает перезапуск: флаг лежит в настройках.
+    func testParallelHintShowsOnceOnThirdDictation() async throws {
+        let sink = NoticeSink()
+        let settings = makeSettings()
+        let engine = HoldingEngine()
+        engine.release()  // распознавание не держим: интересна только подсказка
+        let controller = makeController(
+            engine: engine,
+            recorder: recordedThreeSeconds(),
+            settings: settings
+        )
+        controller.onNotice = { sink.notices.append($0) }
+
+        for index in 1...4 {
+            controller.toggle()
+            try await wait(for: "старт записи \(index)") {
+                if case .recording = controller.state { return true }
+                return false
+            }
+            controller.toggle()
+            try await wait(for: "разбор очереди после записи \(index)") { controller.pendingCount == 0 }
+
+            // До третьей молчим, с третьей — ровно одна подсказка и больше никогда.
+            XCTAssertEqual(sink.hints, index < 3 ? 0 : 1, "после \(index)-й диктовки")
+        }
+        XCTAssertTrue(settings.parallelHintShown)
+
+        // Новый контроллер на тех же настройках — это и есть перезапуск приложения.
+        let second = makeController(engine: engine, recorder: recordedThreeSeconds(), settings: settings)
+        second.onNotice = { sink.notices.append($0) }
+        second.toggle()
+        try await wait(for: "старт записи после перезапуска") {
+            if case .recording = second.state { return true }
+            return false
+        }
+        second.cancelDictation()
+        XCTAssertEqual(sink.hints, 1, "подсказка одна на всю жизнь приложения")
     }
 
     /// Esc вне сессии — ничего: панель не мигает отменой там, где отменять нечего.
@@ -645,9 +830,12 @@ final class DictationControllerTests: XCTestCase {
         // По умолчанию — вердикт «не знаю»: ни один прогон не имеет права уехать в живую
         // систему, даже если тест доберётся до последнего шага конвейера случайно.
         delivery: SpyDelivery = SpyDelivery(focus: .unknown),
-        cardsWhenNoField: Bool = true
+        cardsWhenNoField: Bool = true,
+        // Свои настройки нужны там, где проверяется то, что в них и живёт (разовая
+        // подсказка): один и тот же объект переживает пересоздание контроллера.
+        settings: AppSettings? = nil
     ) -> DictationController {
-        let settings = makeSettings()
+        let settings = settings ?? makeSettings()
         settings.cardsWhenNoField = cardsWhenNoField
         return DictationController(
             engine: engine,

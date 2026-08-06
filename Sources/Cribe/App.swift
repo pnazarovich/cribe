@@ -44,6 +44,7 @@ final class AppCore: ObservableObject {
     private static let onboardingKey = "onboardingShown"
 
     private var panel: LivePanel?
+    private var notices: NoticePanel?
     private var cards: CardStackController?
     private var rightCommandTap: ModifierKeyTap?
     private var rightOptionTap: ModifierKeyTap?
@@ -81,6 +82,14 @@ final class AppCore: ObservableObject {
         // показывать найденное обновление было бы нечем.
         UpdateController.shared.start()
         panel = LivePanel(controller: controller, settings: settings)
+        // Записка рядом с панелью: пилюля показывает одно дело, а с наложением их бывает
+        // два сразу. Всё, что в неё не влезло, ядро отдаёт сюда поводом, а слова к поводу
+        // подбирает `NoticeText`.
+        let notices = NoticePanel()
+        self.notices = notices
+        controller.onNotice = { [settings] notice in
+            notices.show(NoticeText.line(for: notice, hotkey: settings.dictationHotkeyMode))
+        }
         // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
         // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
         // здесь есть и настройки GPT, и словарь.
@@ -104,7 +113,12 @@ final class AppCore: ObservableObject {
         // (он стартует ровно в кадре капсулы), и только потом убираем саму капсулу.
         controller.onCardText = { [weak self] text in
             guard let self, let cards = self.cards else { return false }
-            let source = panel?.pillFrame
+            // Пилюлю могла занять СЛЕДУЮЩАЯ запись: при наложении текст доезжает, пока
+            // человек уже говорит дальше. Тогда лететь из пилюли нельзя — это было бы
+            // враньём, а `handOffToCard` вдобавок сдёрнул бы её с экрана посреди живой
+            // диктовки. Карточка в таком случае приезжает обычным выездом слева.
+            var source = panel?.pillFrame
+            if case .recording = self.controller.state { source = nil }
             guard cards.push(text, flyingFrom: source) else { return false }
             // Капсула замолкает, только если эстафету и правда приняла летящая фигура:
             // перелёт САМ показывает, куда уехал текст, и вспышка «⤷ В карточку» следом —
@@ -156,12 +170,14 @@ final class AppCore: ObservableObject {
             }
     }
 
-    /// Сессия, которую есть что отменять. Терминальные состояния (включая саму вспышку
-    /// «Отменено») сюда не входят: там Esc уже ничего не делает.
+    /// Запись, которую есть что отменять. Обработка сюда НЕ входит: Esc отменяет только то,
+    /// что пишется прямо сейчас, а уже записанные диктовки он не трогает (см.
+    /// `DictationController.cancelDictation`). Терминальные состояния — тем более.
     private static func sessionIsLive(_ state: DictationState) -> Bool {
         switch state {
-        case .preparingModel, .recording, .transcribing, .cleaning: return true
-        case .idle, .inserted, .carded, .cancelled, .degraded, .error: return false
+        case .preparingModel, .recording: return true
+        case .transcribing, .cleaning, .idle, .inserted, .carded, .cancelled, .degraded, .error:
+            return false
         }
     }
 
