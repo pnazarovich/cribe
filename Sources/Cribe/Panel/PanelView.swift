@@ -533,25 +533,25 @@ private struct EqualizerView: View {
     /// Столбик тишины — тонкий штрих, почти ноль: ряд молчит, но остаётся рядом.
     private static let minBar: CGFloat = 1.5
 
-    /// Лента громкости: правый столбик — сейчас, левый — секунду назад. Каждый замер
-    /// сдвигает ленту влево, и по ряду едет форма настоящей речи.
+    /// Лента громкости: каждый замер сдвигает её, и по ряду едет форма настоящей речи.
+    /// Хранит **готовые высоты**, а не уровни: границы шкалы плавают под шум комнаты, и
+    /// пересчёт всей ленты на каждый сдвиг перерисовывал бы разом и старые столбики.
     ///
     /// Раньше высоты считались псевдослучайным весом на каждый замер. Движения было много,
     /// смысла — ноль: ряд одинаково дёргался и на слове, и на паузе, и глаз это распознавал
     /// как подделку. Теперь ни одного случайного числа: что видно, то и было сказано.
     private struct Frame: Equatable {
-        var levels: [Float]
+        var heights: [CGFloat]
 
-        init(level: Float) {
-            levels = Array(repeating: level, count: EqualizerView.barCount)
+        init() {
+            heights = Array(repeating: 0, count: EqualizerView.barCount)
         }
 
-        mutating func push(_ level: Float) {
+        mutating func push(_ height: CGFloat) {
             // Новый замер встаёт слева, лента уезжает вправо. Осциллографы и «Диктофон»
-            // делают наоборот («сейчас» справа, история слева), но здесь выбор владельца:
-            // смотрим, какое направление читается вернее. Переворот — эти две строки.
-            levels.removeLast()
-            levels.insert(level, at: 0)
+            // делают наоборот («сейчас» справа, история слева), но здесь выбор владельца.
+            heights.removeLast()
+            heights.insert(height, at: 0)
         }
     }
 
@@ -567,14 +567,14 @@ private struct EqualizerView: View {
     init(level: Float, reduceMotion: Bool) {
         self.level = level
         self.reduceMotion = reduceMotion
-        _frame = State(initialValue: Frame(level: level))
+        _frame = State(initialValue: Frame())
     }
 
     /// В тишине ряд не замирает плоской линией, а еле заметно дышит: молчащий эквалайзер
     /// выглядит зависшим, хотя приложение слушает. Порог низкий — дыхание не должно
     /// подмешиваться в настоящую речь.
     private var breathes: Bool {
-        !reduceMotion && frame.levels.allSatisfy { range.height(of: $0) < 0.08 }
+        !reduceMotion && frame.heights.allSatisfy { $0 < 0.08 }
     }
 
     var body: some View {
@@ -590,7 +590,6 @@ private struct EqualizerView: View {
                             height: Self.barHeight(
                                 bar: index,
                                 frame: frame,
-                                range: range,
                                 breath: Self.breath(bar: index, at: context.date, active: breathes)
                             )
                         )
@@ -623,8 +622,7 @@ private struct EqualizerView: View {
         // в своей фазе, и ряд заметно дрожит. Инерция здесь не работает по построению.
         .animation(.easeOut(duration: 0.1), value: frame)
         .onChange(of: level) { _, new in
-            range.push(new)
-            frame.push(new)
+            frame.push(range.push(new))
         }
         // Волна разворачивается не в тот же миг, что и капсула: сначала на экран приезжает
         // стекло, и только потом внутри него раскрывается ряд. Без этой паузы нажатие ⌘
@@ -671,10 +669,10 @@ private struct EqualizerView: View {
             .animation(.easeIn(duration: 0.22).delay((1 - distance) * 0.02))
     }
 
-    private static func barHeight(bar: Int, frame: Frame, range: MeterRange, breath: CGFloat) -> CGFloat {
+    private static func barHeight(bar: Int, frame: Frame, breath: CGFloat) -> CGFloat {
         // Дыхание добавляется поверх уровня, а не вместо него: на настоящей речи его не
         // видно (там свои десятки процентов), в тишине оно и есть всё движение.
-        let loudness = range.height(of: frame.levels[bar]) + breath * breathDepth
+        let loudness = frame.heights[bar] + breath * breathDepth
         return minBar + min(1, loudness) * (maxBar - minBar)
     }
 

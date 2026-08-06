@@ -1,9 +1,10 @@
 import XCTest
 @testable import Cribe
 
-/// Шкала индикатора громкости. Тесты существуют из-за двух живых жалоб подряд: сперва
-/// «говорю за метр, а волны почти не двигаются», потом «в тишине столбики стоят высоко».
-/// Обе — про одно и то же: фиксированная шкала не совпадает с настоящим микрофоном.
+/// Шкала индикатора громкости. Тесты существуют из-за трёх живых жалоб подряд: «говорю за
+/// метр, а волны почти не двигаются», «в тишине столбики стоят высоко» и «на улице она
+/// постоянно скачет». Все три — про одно: шкала обязана подстраиваться под настоящий
+/// микрофон, но делать это медленно.
 final class MeterScaleTests: XCTestCase {
     /// Настоящие уровни из записей владельца, в линейном RMS: тишина, обычная речь, пик.
     private let quiet = pow(10, Float(-38) / 20)
@@ -12,58 +13,67 @@ final class MeterScaleTests: XCTestCase {
 
     /// Тишина — ноль, отрицательных значений не бывает.
     func testSilenceIsFlat() {
-        let range = MeterRange()
-        XCTAssertEqual(range.height(of: 0), 0)
-        XCTAssertEqual(range.height(of: -1), 0)
-    }
-
-    /// Комната шумит ровно — ряд стоит внизу. Именно на это и была жалоба: тишина
-    /// показывалась заметной высотой, потому что шкала ждала более тихого мира.
-    func testSteadyRoomNoiseStaysAtTheBottom() {
         var range = MeterRange()
-        for _ in 0..<MeterRange.capacity { range.push(quiet) }
-        XCTAssertLessThan(range.height(of: quiet), 0.05)
+        XCTAssertEqual(range.push(0), 0)
+        XCTAssertEqual(range.push(-1), 0)
     }
 
-    /// Тот же микрофон, но человек заговорил: речь обязана подняться высоко, а не остаться
-    /// в нижней трети. Размах у этой записи всего тринадцать децибел.
+    /// Комната шумит ровно — ряд стоит внизу. Первая жалоба была именно на это.
+    func testSteadyRoomNoiseSettlesAtTheBottom() {
+        var range = MeterRange()
+        var height: CGFloat = 1
+        for _ in 0..<200 { height = range.push(quiet) }
+        XCTAssertLessThan(height, 0.1, "ровный шум обязан осесть в самый низ")
+    }
+
+    /// Тот же микрофон, но человек заговорил: речь поднимается высоко, хотя весь размах
+    /// этой записи — тринадцать децибел.
     func testSpeechRisesOnTheSameMicrophone() {
         var range = MeterRange()
-        for _ in 0..<40 { range.push(quiet) }
-        for _ in 0..<20 { range.push(peak) }
+        for _ in 0..<200 { _ = range.push(quiet) }
 
-        XCTAssertLessThan(range.height(of: quiet), 0.15, "тишина остаётся внизу")
-        XCTAssertGreaterThan(range.height(of: speech), 0.25, "обычная речь заметна")
-        XCTAssertGreaterThan(range.height(of: peak), 0.8, "пик почти достаёт верх")
+        XCTAssertGreaterThan(range.push(speech), 0.25, "обычная речь заметна")
+        XCTAssertGreaterThan(range.push(peak), 0.6, "пик уходит вверх")
     }
 
-    /// Микрофон вдвое громче — картинка та же. В этом весь смысл самонастройки: у другого
-    /// человека уровни другие, а индикатор обязан выглядеть одинаково.
+    /// Микрофон вдвое громче — картинка та же. В этом весь смысл самонастройки.
     func testLoudMicrophoneLooksTheSame() {
         var loud = MeterRange()
         let shift: Float = 4 // +12 dB
-        for _ in 0..<40 { loud.push(quiet * shift) }
-        for _ in 0..<20 { loud.push(peak * shift) }
+        for _ in 0..<200 { _ = loud.push(quiet * shift) }
 
-        XCTAssertLessThan(loud.height(of: quiet * shift), 0.15)
-        XCTAssertGreaterThan(loud.height(of: peak * shift), 0.8)
+        XCTAssertGreaterThan(loud.push(peak * shift), 0.6)
+    }
+
+    /// Улица: шум гуляет туда-сюда. Границы обязаны ползти, а не бегать за каждым всплеском,
+    /// иначе ряд пляшет — ровно та жалоба, из-за которой шкалу переписали второй раз.
+    func testNoisyStreetDoesNotSwingTheScale() {
+        var range = MeterRange()
+        for _ in 0..<200 { _ = range.push(quiet) }
+        let settled = range.floor
+
+        // Секунда громкого шума мимо: 12 замеров при частоте обновления около 12 Гц.
+        for _ in 0..<12 { _ = range.push(peak) }
+
+        XCTAssertLessThan(abs(range.floor - settled), 3, "пол не имеет права прыгнуть за секунду")
     }
 
     /// Громче — выше, без исключений.
     func testLouderIsAlwaysHigher() {
         var range = MeterRange()
-        for _ in 0..<30 { range.push(quiet) }
-        for _ in 0..<30 { range.push(peak) }
+        for _ in 0..<200 { _ = range.push(quiet) }
 
-        let levels: [Float] = [quiet, speech, peak, 1]
-        let heights = levels.map { range.height(of: $0) }
+        let heights = [quiet, speech, peak].map { level -> CGFloat in
+            var probe = range
+            return probe.push(level)
+        }
         XCTAssertEqual(heights, heights.sorted(), "шкала обязана быть монотонной")
     }
 
-    /// Верх шкалы не улетает выше единицы даже на кличе в упор.
+    /// Верх шкалы не улетает выше единицы даже на крике в упор.
     func testLoudestStaysWithinBounds() {
         var range = MeterRange()
-        for _ in 0..<MeterRange.capacity { range.push(speech) }
-        XCTAssertLessThanOrEqual(range.height(of: 1), 1)
+        for _ in 0..<200 { _ = range.push(speech) }
+        XCTAssertLessThanOrEqual(range.push(1), 1)
     }
 }
