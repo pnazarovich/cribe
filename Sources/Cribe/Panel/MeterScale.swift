@@ -29,11 +29,12 @@ struct MeterRange {
     private static let ceilingRise: Float = 0.3
     private static let ceilingFall: Float = 0.01
 
-    /// Насколько замер тянет высоту к себе. Уровень речи скачет от кадра к кадру, и без
-    /// сглаживания ряд честно отрабатывает каждый скачок — движение получается рваным.
-    /// Пятая часть означает: новый замер решает пятую часть, остальное остаётся от предыдущей
-    /// высоты. Ниже опускать нельзя — ряд начнёт отставать от речи и врать про громкость.
-    private static let smoothing: CGFloat = 0.22
+    /// Сглаживание **несимметрично** — так устроены все настоящие индикаторы громкости.
+    /// Вверх высота идёт почти мгновенно: начало слова обязано отзываться сразу, иначе ряд
+    /// выглядит вялым и отстаёт от речи. Вниз опускается медленно: спад и есть то, что
+    /// превращает дрожь отдельных замеров в плавное движение.
+    private static let attack: CGFloat = 0.75
+    private static let release: CGFloat = 0.18
 
     private(set) var floor: Float = -55
     private(set) var ceiling: Float = -25
@@ -56,7 +57,7 @@ struct MeterRange {
 
         let span = max(Self.minimumSpan, ceiling - floor)
         let raw = CGFloat(min(1, max(0, (decibels - floor) / span)))
-        smoothed += (raw - smoothed) * Self.smoothing
+        smoothed += (raw - smoothed) * (raw > smoothed ? Self.attack : Self.release)
         return smoothed
     }
 }
