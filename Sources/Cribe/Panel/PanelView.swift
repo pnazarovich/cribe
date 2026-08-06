@@ -393,9 +393,13 @@ private struct DrawnCheck: View {
 /// Сжатие столбика к средней линии — отдельный модификатор, чтобы им можно было описать переход.
 private struct BarScale: ViewModifier {
     let scale: CGFloat
+    /// Сдвиг к середине ряда: столбики не просто оседают, а сходятся в точку.
+    var pull: CGFloat = 0
 
     func body(content: Content) -> some View {
-        content.scaleEffect(x: 1, y: scale)
+        content
+            .scaleEffect(x: 1, y: scale)
+            .offset(x: pull)
     }
 }
 
@@ -477,23 +481,53 @@ private struct EqualizerView: View {
         _frame = State(initialValue: Frame(tick: 0, level: level))
     }
 
+    /// В тишине ряд не замирает плоской линией, а еле заметно дышит: молчащий эквалайзер
+    /// выглядит зависшим, хотя приложение слушает. Порог низкий — дыхание не должно
+    /// подмешиваться в настоящую речь.
+    private var breathes: Bool {
+        !reduceMotion && MeterScale.height(of: frame.level) < 0.08
+    }
+
     var body: some View {
-        HStack(spacing: Self.spacing) {
-            ForEach(0..<Self.barCount, id: \.self) { index in
-                Capsule()
-                    .fill(Self.fill)
-                    .frame(width: Self.barWidth, height: Self.barHeight(bar: index, frame: frame))
-                    .scaleEffect(x: 1, y: risen ? 1 : 0.04)
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .spring(response: 0.35, dampingFraction: 0.72)
-                                .delay(Double(index) * 0.02),
-                        value: risen
-                    )
-                    // На уходе столбики схлопываются к средней линии — тоже волной и внутри
-                    // общего сдвига влево: эквалайзер не обрывается кадром, а «садится».
-                    .transition(Self.collapse(bar: index, reduceMotion: reduceMotion))
+        // Расписание кадров нужно только дыханию: под звук высоты ведёт анимация уровня,
+        // и гонять таймер зря незачем.
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !breathes)) { context in
+            HStack(spacing: Self.spacing) {
+                ForEach(0..<Self.barCount, id: \.self) { index in
+                    Capsule()
+                        .fill(Self.fill)
+                        .frame(
+                            width: Self.barWidth,
+                            height: Self.barHeight(
+                                bar: index,
+                                frame: frame,
+                                breath: Self.breath(bar: index, at: context.date, active: breathes)
+                            )
+                        )
+                        .scaleEffect(x: 1, y: risen ? 1 : 0.04)
+                        // Появление расходится от середины к краям, а не бежит слева направо:
+                        // симметричное движение читается как расходящаяся волна.
+                        .animation(
+                            reduceMotion
+                                ? nil
+                                : .spring(response: 0.35, dampingFraction: 0.72)
+                                    .delay(Self.distanceFromCenter(index) * 0.03),
+                            value: risen
+                        )
+                        // Инерция: соседние столбики отзываются на громкость с крошечным
+                        // запозданием, и громкий слог прокатывается по ряду волной, а не
+                        // дёргает все двенадцать разом.
+                        .animation(
+                            reduceMotion
+                                ? nil
+                                : .spring(response: 0.26, dampingFraction: 0.62)
+                                    .delay(Self.distanceFromCenter(index) * 0.012),
+                            value: frame
+                        )
+                        // На уходе столбики схлопываются к средней линии — тоже волной и внутри
+                        // общего сдвига влево: эквалайзер не обрывается кадром, а «садится».
+                        .transition(Self.collapse(bar: index, reduceMotion: reduceMotion))
+                }
             }
         }
         // Симметрия относительно средней линии: столбики центрируются по высоте полосы.
@@ -501,25 +535,55 @@ private struct EqualizerView: View {
         // Свой ореол акцентного цвета: на почти прозрачном стекле поверх светлого контента
         // тонкие штрихи иначе выцветают.
         .shadow(color: Color.accentColor.opacity(0.45), radius: 2.5)
-        .animation(.easeOut(duration: 0.1), value: frame)
         .onChange(of: level) { _, new in
             frame = Frame(tick: frame.tick &+ 1, level: new)
         }
         .onAppear { risen = true }
     }
 
-    /// Схлопывание столбика при уходе строки: вложенный переход отрабатывает вместе с общим,
-    /// а задержка по номеру столбика и даёт волну.
-    private static func collapse(bar: Int, reduceMotion: Bool) -> AnyTransition {
-        guard !reduceMotion else { return .identity }
-        return AnyTransition
-            .modifier(active: BarScale(scale: 0.04), identity: BarScale(scale: 1))
-            .animation(.easeIn(duration: 0.2).delay(Double(bar) * 0.015))
+    /// Расстояние столбика от середины ряда, 0…1. Из него растут обе задержки — и появления,
+    /// и отклика на звук, — поэтому движение всегда симметрично.
+    private static func distanceFromCenter(_ bar: Int) -> Double {
+        let center = Double(barCount - 1) / 2
+        return abs(Double(bar) - center) / center
     }
 
-    private static func barHeight(bar: Int, frame: Frame) -> CGFloat {
-        minBar + MeterScale.height(of: frame.level) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
+    /// Дыхание тишины: медленная волна, бегущая по ряду. Ноль, когда дышать не надо, —
+    /// тогда высота считается ровно как раньше.
+    private static func breath(bar: Int, at date: Date, active: Bool) -> CGFloat {
+        guard active else { return 0 }
+        // Период около четырёх секунд, соседние столбики сдвинуты по фазе — ряд колышется,
+        // а не пульсирует целиком.
+        let phase = date.timeIntervalSinceReferenceDate * 0.5 + Double(bar) * 0.35
+        return CGFloat((sin(phase) + 1) / 2)
     }
+
+    /// Схлопывание столбика при уходе строки: вложенный переход отрабатывает вместе с общим,
+    /// а задержка по номеру столбика и даёт волну.
+    /// Уход эквалайзера: ряд сходится к середине и гаснет там точкой, из которой уже
+    /// выезжает следующее состояние. Крайние столбики трогаются первыми, центральные —
+    /// последними, поэтому движение читается как сбор, а не как обрыв.
+    private static func collapse(bar: Int, reduceMotion: Bool) -> AnyTransition {
+        guard !reduceMotion else { return .identity }
+        let distance = distanceFromCenter(bar)
+        let center = Double(barCount - 1) / 2
+        // Насколько столбику идти до середины: его позиция в ряду, взятая с обратным знаком.
+        let pull = CGFloat(center - Double(bar)) * (barWidth + spacing)
+        return AnyTransition
+            .modifier(active: BarScale(scale: 0.04, pull: pull), identity: BarScale(scale: 1))
+            .animation(.easeIn(duration: 0.22).delay((1 - distance) * 0.02))
+    }
+
+    private static func barHeight(bar: Int, frame: Frame, breath: CGFloat) -> CGFloat {
+        // Дыхание добавляется поверх уровня, а не вместо него: на настоящей речи его не
+        // видно (там свои десятки процентов), в тишине оно и есть всё движение.
+        let loudness = MeterScale.height(of: frame.level) + breath * breathDepth
+        return minBar + min(1, loudness) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
+    }
+
+    /// Насколько высоко поднимается дыхание тишины. Больше — и молчащий эквалайзер начнёт
+    /// притворяться, что слышит речь.
+    private static let breathDepth: CGFloat = 0.09
 
     /// Вес столбика 0.35…1 — детерминированный хеш пары (столбик, тик): разброс выглядит
     /// случайным, но один и тот же кадр всегда рисуется одинаково (важно для пробы рендера).

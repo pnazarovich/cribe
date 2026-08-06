@@ -295,9 +295,6 @@ public final class DictationController: ObservableObject {
 
     private var vad: SpeechGating?
     private var sessionLanguage: Language = .ru
-    /// Смешанная речь этой сессии. Снимок настройки на старте: она решает, будет ли в промпте
-    /// украинский образец, а промпт у фоновых проходов и финала обязан быть один.
-    private var sessionMixedSpeech = false
     /// Язык, на котором распознана `lastOriginal`: перевод из меню должен идти с него,
     /// а не с языка, который к тому моменту стоит в настройках.
     private var lastOriginalLanguage: Language = .ru
@@ -441,7 +438,6 @@ public final class DictationController: ObservableObject {
     public func process(fileSamples: [Float], language: Language, useGPT: Bool) async throws -> String {
         defer { state = .idle }
 
-        let mixedSpeech = settings.mixedSpeech
         try await gate.prepare(language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
         }
@@ -454,7 +450,7 @@ public final class DictationController: ObservableObject {
         let raw = try await gate.transcribe(
             speech,
             language: language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: language, mixedSpeech: mixedSpeech)
+            prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
         )
         let text = ReplacementEngine.apply(raw, entries: entries)
         guard useGPT else { return text }
@@ -485,9 +481,7 @@ public final class DictationController: ObservableObject {
         prewarmGPT()
 
         let language = settings.language
-        let mixedSpeech = settings.mixedSpeech
         sessionLanguage = language
-        sessionMixedSpeech = mixedSpeech
         activeSessionLanguage = language
         activeSessionTranslate = translating
         Task {
@@ -538,8 +532,7 @@ public final class DictationController: ObservableObject {
         sessionGeneration += 1
         sessionPrompt = PromptBuilder.initialPrompt(
             entries: dictionary.entries,
-            language: sessionLanguage,
-            mixedSpeech: sessionMixedSpeech
+            language: sessionLanguage
         )
 
         let vad = try await ensureVad()
