@@ -556,6 +556,8 @@ private struct EqualizerView: View {
     }
 
     @State private var frame: Frame
+    /// Границы шкалы живут рядом с лентой: они считаются по тем же уровням.
+    @State private var range = MeterRange()
     /// Столбики встают волной, каждый следующий на 20 мс позже — эквалайзер «оживает»,
     /// а не возникает целиком.
     @State private var risen = false
@@ -572,7 +574,7 @@ private struct EqualizerView: View {
     /// выглядит зависшим, хотя приложение слушает. Порог низкий — дыхание не должно
     /// подмешиваться в настоящую речь.
     private var breathes: Bool {
-        !reduceMotion && frame.levels.allSatisfy { MeterScale.height(of: $0) < 0.08 }
+        !reduceMotion && frame.levels.allSatisfy { range.height(of: $0) < 0.08 }
     }
 
     var body: some View {
@@ -588,6 +590,7 @@ private struct EqualizerView: View {
                             height: Self.barHeight(
                                 bar: index,
                                 frame: frame,
+                                range: range,
                                 breath: Self.breath(bar: index, at: context.date, active: breathes)
                             )
                         )
@@ -620,6 +623,7 @@ private struct EqualizerView: View {
         // в своей фазе, и ряд заметно дрожит. Инерция здесь не работает по построению.
         .animation(.easeOut(duration: 0.1), value: frame)
         .onChange(of: level) { _, new in
+            range.push(new)
             frame.push(new)
         }
         // Волна разворачивается не в тот же миг, что и капсула: сначала на экран приезжает
@@ -667,10 +671,10 @@ private struct EqualizerView: View {
             .animation(.easeIn(duration: 0.22).delay((1 - distance) * 0.02))
     }
 
-    private static func barHeight(bar: Int, frame: Frame, breath: CGFloat) -> CGFloat {
+    private static func barHeight(bar: Int, frame: Frame, range: MeterRange, breath: CGFloat) -> CGFloat {
         // Дыхание добавляется поверх уровня, а не вместо него: на настоящей речи его не
         // видно (там свои десятки процентов), в тишине оно и есть всё движение.
-        let loudness = MeterScale.height(of: frame.levels[bar]) + breath * breathDepth
+        let loudness = range.height(of: frame.levels[bar]) + breath * breathDepth
         return minBar + min(1, loudness) * (maxBar - minBar)
     }
 
