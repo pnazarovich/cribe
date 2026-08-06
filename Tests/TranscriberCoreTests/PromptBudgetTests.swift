@@ -33,4 +33,34 @@ final class PromptBudgetTests: XCTestCase {
     func testTranscriptKeepsMostOfTheContext() {
         XCTAssertLessThan(WhisperEngine.maxPromptTokens, 224 / 2)
     }
+
+    // MARK: - Срез по границам терминов
+
+    /// Под бюджет режем целыми терминами: слепой срез по токенам рвал слово пополам —
+    /// английский промпт начинался огрызком «GPT,» от «ChatGPT».
+    func testFittedDropsWholeTermsFromTheHead() {
+        let prompt = "Мы обсуждаем GitHub, Tailscale, Docker и делаем deploy. Итак, начнём!"
+
+        // Считаем символами: важно не «сколько», а что режется по запятым и с начала.
+        let fitted = WhisperEngine.fitted(prompt) { $0.count }
+
+        XCTAssertLessThanOrEqual(fitted.count, WhisperEngine.maxPromptTokens)
+        XCTAssertTrue(fitted.hasSuffix("Итак, начнём!"), fitted)
+        XCTAssertFalse(fitted.contains("GitHub"), fitted)
+        XCTAssertTrue(fitted.hasPrefix("Tailscale") || fitted.hasPrefix("Docker"), fitted)
+    }
+
+    /// Влезающий промпт не трогаем вовсе.
+    func testFittedKeepsPromptThatAlreadyFits() {
+        let prompt = "Мы обсуждаем GitHub. Итак, начнём!"
+
+        XCTAssertEqual(WhisperEngine.fitted(prompt) { $0.count }, prompt)
+    }
+
+    /// Резать нечего — отдаём как есть: дальше сработает `capped`, страховка по токенам.
+    func testFittedLeavesCommalessPromptToTheHardCap() {
+        let prompt = String(repeating: "слово ", count: 100)
+
+        XCTAssertEqual(WhisperEngine.fitted(prompt) { $0.count }, prompt)
+    }
 }

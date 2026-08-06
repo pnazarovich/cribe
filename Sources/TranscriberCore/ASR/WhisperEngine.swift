@@ -377,13 +377,18 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let tokenizer = pipe.tokenizer else { return nil }
 
-        let tokens = tokenizer
-            .encode(text: " " + text)
-            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        let count: (String) -> Int = { Self.contentTokens($0, tokenizer: tokenizer).count }
+        let tokens = Self.contentTokens(Self.fitted(text, count: count), tokenizer: tokenizer)
         return tokens.isEmpty ? nil : Self.capped(tokens)
     }
 
-    /// Сколько токенов окна отдаём промпту — четверть контекста декодера.
+    private static func contentTokens(_ text: String, tokenizer: WhisperTokenizer) -> [Int] {
+        tokenizer
+            .encode(text: " " + text)
+            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+    }
+
+    /// Сколько токенов окна отдаём промпту — меньше трети контекста декодера.
     ///
     /// Контекст у CoreML-декодера WhisperKit — 224 токена, и промпт ест их наравне с самой
     /// расшифровкой: цикл декодера обрывается по `currentTokens.count >= 223`, а
@@ -395,13 +400,33 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// WhisperKit штампует всё окно одним сегментом и перематывает `seek` за его конец —
     /// нерасшифрованный звук выбрасывается молча, без единой ошибки.
     ///
-    /// Замер (115 c быстрой русской речи, эталон 309 слов): без терминов — 309, 6 терминов —
-    /// 309, 12 — 309, 24 — 286, 36 — 266. То есть рабочий словарь съедал 14 % диктовки.
-    /// 56 токенов — вдвое ниже нижней границы, на которой потери начинались.
-    static let maxPromptTokens = 56
+    /// Замер потерь по длине промпта (в токенах настоящего токенайзера), 115 c быстрой русской
+    /// речи, эталон 309 слов: 56 → 309, 64 → 309, 70 → 309, 74 → 309, 78 → 306, 84 → 300,
+    /// 98 → 286, 111 → 266. На той же диктовке в обычном темпе (141 c) обрыв начинается позже:
+    /// 84 → 309, 98 → 304. То есть граница зависит от плотности речи, и считать надо по
+    /// быстрой: 64 токена — на 18 % ниже первой потери и вдвое ниже того, что разрешает сам
+    /// WhisperKit (111).
+    ///
+    /// Больше 64 стоило бы взять только ради терминов, но и так доезжает восемь из 36
+    /// (у смешанной сессии — шесть): образец речи стоит 47 токенов, образец пунктуации с
+    /// рамкой — 33. Каждый следующий термин — ещё 3–4 токена, и платить за него пришлось бы
+    /// речью, а речь дороже.
+    static let maxPromptTokens = 64
 
-    /// Режем с начала: у `PromptBuilder` важные термины стоят ближе к хвосту (и там же —
-    /// украинский образец смешанной речи), и WhisperKit сам обрезает промпт тем же концом.
+    /// Промпт длиннее бюджета режем с начала и только по границам терминов: `PromptBuilder`
+    /// ставит важное в хвост, а термины перечисляет через запятую в начале. Слепой срез по
+    /// токенам рвал промпт посреди слова — английская сессия начиналась с «GPT,» (огрызок
+    /// «ChatGPT»), а у смешанной пропадало начало образца речи вместе со всеми терминами.
+    static func fitted(_ text: String, count: (String) -> Int) -> String {
+        var text = text
+        while count(text) > maxPromptTokens, let comma = text.range(of: ", ") {
+            text = String(text[comma.upperBound...])
+        }
+        return text
+    }
+
+    /// Страховка на случай, когда резать по терминам уже нечего: хвост промпта важнее начала,
+    /// и WhisperKit сам обрезает промпт тем же концом.
     static func capped(_ tokens: [Int]) -> [Int] {
         Array(tokens.suffix(maxPromptTokens))
     }

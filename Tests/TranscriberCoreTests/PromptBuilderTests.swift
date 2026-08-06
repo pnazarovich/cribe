@@ -66,17 +66,29 @@ final class PromptBuilderTests: XCTestCase {
     /// распознаёт украинская модель, английскую — своя, биасить им нечего.
     func testMixedSampleOnlyInRussianSession() {
         let mixed = PromptBuilder.initialPrompt(entries: entries, language: .ru, mixedSpeech: true)
-        XCTAssertTrue(mixed.contains("украинские слова остаются украинскими"), mixed)
-        // Образец собран из того же словаря и стоит в самом хвосте — там внимание Whisper.
-        XCTAssertTrue(mixed.hasSuffix("снова по-русски про Tailscale."), mixed)
+        XCTAssertTrue(mixed.contains("треба ще перевірити налаштування"), mixed)
+        // Термины остаются на месте — русской рамкой образцу служат именно они.
+        XCTAssertTrue(mixed.hasPrefix("Говорим по-русски про GitHub, Tailscale:"), mixed)
+        // Кончается промпт по-русски: хвост задаёт тон первому слову речи.
+        XCTAssertTrue(mixed.hasSuffix("— и дальше снова по-русски."), mixed)
 
         let plain = PromptBuilder.initialPrompt(entries: entries, language: .ru)
-        XCTAssertFalse(plain.contains("украинские слова остаются украинскими"), plain)
+        XCTAssertFalse(plain.contains("треба ще перевірити налаштування"), plain)
 
         for language in [Language.uk, .en] {
             let other = PromptBuilder.initialPrompt(entries: entries, language: language, mixedSpeech: true)
-            XCTAssertFalse(other.contains("украинские слова остаются украинскими"), other)
+            XCTAssertFalse(other.contains("треба ще перевірити налаштування"), other)
         }
+    }
+
+    /// Образец занимает место образца пунктуации, а не добавляется к нему: у промпта
+    /// ~64 токена окна, и на оба сразу их не хватает — вместе они не оставляли места
+    /// ни одному термину словаря.
+    func testMixedSampleReplacesPunctuationSample() {
+        let mixed = PromptBuilder.initialPrompt(entries: entries, language: .ru, mixedSpeech: true)
+
+        XCTAssertFalse(mixed.contains("Итак, начнём"), mixed)
+        XCTAssertTrue(mixed.contains("GitHub"), mixed)
     }
 
     /// Главное свойство образца: доминирующий язык остаётся доминирующим. Образец, целиком
@@ -85,11 +97,10 @@ final class PromptBuilderTests: XCTestCase {
     /// украинского — меньшая часть, а начало и конец русские: хвост промпта задаёт тон
     /// первому слову речи.
     func testMixedSampleStaysRussianDominant() {
-        let prompt = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
-        let sample = String(prompt.dropFirst("Итак, начнём: во-первых, проверим всё — это важно! ".count))
+        let sample = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
 
         XCTAssertTrue(sample.hasPrefix("Говорим по-русски"), sample)
-        XCTAssertTrue(sample.hasSuffix("по-русски про задачи."), sample)
+        XCTAssertTrue(sample.hasSuffix("и дальше снова по-русски."), sample)
 
         // Украинские буквы есть — вкрапление настоящее, а не пересказ про него.
         XCTAssertTrue(sample.contains(where: { "їієґ".contains($0) }), sample)
@@ -102,10 +113,14 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertGreaterThan(words.count, 2 * ukrainian.count, "русская часть обязана быть больше украинской")
     }
 
+    /// Словарь пуст — образец всё равно нужен, и рамкой ему служит собственное начало.
     func testMixedPromptWithEmptyDictionaryStillCarriesSample() {
         let prompt = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
-        XCTAssertTrue(prompt.contains("Итак, начнём"), prompt)
-        XCTAssertTrue(prompt.contains("перевірити налаштування"), prompt)
+        XCTAssertEqual(
+            prompt,
+            "Говорим по-русски: «треба ще перевірити налаштування, а тоді вже з'ясуємо деталі», "
+                + "— и дальше снова по-русски."
+        )
     }
 
     /// Образец не имеет права проесть бюджет промпта: режем термины ровно так же.
@@ -117,6 +132,7 @@ final class PromptBuilderTests: XCTestCase {
             entries: many, language: .ru, maxTerms: 100, mixedSpeech: true
         )
         XCTAssertLessThanOrEqual(prompt.count, 700, prompt)
-        XCTAssertTrue(prompt.hasSuffix("снова по-русски про Terminus100."), prompt)
+        XCTAssertTrue(prompt.contains("Terminus100:"), prompt)
+        XCTAssertFalse(prompt.contains("Terminus1,"), prompt)
     }
 }

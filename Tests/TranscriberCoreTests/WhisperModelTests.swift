@@ -61,8 +61,8 @@ final class WhisperModelTests: XCTestCase {
         let mixed = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
 
         XCTAssertNotEqual(plain, mixed)
-        XCTAssertTrue(mixed.contains("украинские слова"))
-        XCTAssertFalse(plain.contains("украинские слова"))
+        XCTAssertTrue(mixed.contains("перевірити налаштування"))
+        XCTAssertFalse(plain.contains("перевірити налаштування"))
         XCTAssertEqual(Language.ru.whisperModel, WhisperModel.turbo)
     }
 }
