@@ -21,7 +21,10 @@ struct PanelView: View {
                     language: controller.activeSessionLanguage ?? settings.language,
                     // Перевод сессии, а не настройки: правый ⌥ переводит вопреки выключенному
                     // тумблеру. Без переопределения (nil) всё как раньше — по тумблеру.
-                    translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish
+                    translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish,
+                    // Живое число, а не кадр из `presentation`: очередь живёт своим темпом
+                    // и меняется в том числе пока на экране доигрывает чужая вспышка.
+                    pending: controller.pendingCount
                 )
                 .transition(accessibility.reduceMotion ? .opacity : .pill)
             }
@@ -85,6 +88,9 @@ struct PanelPill: View {
     let state: DictationState
     let language: Language
     let translateToEnglish: Bool
+    /// Сколько диктовок записано и ещё не доехало. Ноль по умолчанию: так пилюлю собирают
+    /// и проба рендера, и всё, что про очередь ничего не знает.
+    var pending: Int = 0
 
     @ObservedObject private var accessibility = HUDAccessibility.shared
 
@@ -132,6 +138,9 @@ struct PanelPill: View {
             // Одна анимация на смену состояния: она же ведёт и подмену содержимого,
             // и морф ширины капсулы. Поток уровня внутри записи её не трогает.
             .animation(.snappy(duration: 0.28), value: stage)
+            // Тем же движением капсула отращивает и убирает чип очереди: без этого она
+            // прыгала бы по ширине рывком каждый раз, когда диктовка доезжает.
+            .animation(.snappy(duration: 0.28), value: queued)
             .onAppear {
                 guard !accessibility.reduceMotion else {
                     chromeIn = true
@@ -153,6 +162,30 @@ struct PanelPill: View {
         case idle, preparing, recording, transcribing, cleaning, inserted, carded, cancelled,
              degraded, error
     }
+
+    /// Сколько диктовок в работе ПОМИМО той, которую пилюля сейчас называет.
+    ///
+    /// Пилюля показывает одно дело, а с наложением их бывает два: одна пишется, другая
+    /// доезжает. Второе дело — это чип с одной цифрой, а не вторая строка: панель обязана
+    /// остаться маленькой (HIG Panels, «Keep HUDs small»).
+    ///
+    /// На записи пилюля называет живую диктовку, значит в счёт идёт вся очередь; на
+    /// обработке она называет первую из очереди, значит в счёт идут остальные. Ноль — чипа
+    /// нет вовсе: пустой слот на маленькой пилюле дороже отсутствующего числа.
+    ///
+    /// Не private: раскладку проверяет тест, а собрать пилюлю в нужном состоянии ему негде.
+    static func queueBadge(state: DictationState, pending: Int) -> Int {
+        switch state {
+        case .recording: return max(0, pending)
+        case .transcribing, .cleaning: return max(0, pending - 1)
+        // На подготовке модели чипа нет намеренно: строка там и так длинная, а совпасть
+        // с очередью она может только на первом запуске, когда очереди ещё неоткуда взяться.
+        case .idle, .preparingModel, .inserted, .carded, .cancelled, .degraded, .error:
+            return 0
+        }
+    }
+
+    private var queued: Int { Self.queueBadge(state: state, pending: pending) }
 
     private var stage: Stage {
         switch state {
@@ -232,6 +265,10 @@ struct PanelPill: View {
                     TranslationBadge()
                 }
                 EqualizerView(level: level, reduceMotion: accessibility.reduceMotion)
+                // Вторая занятость: пока идёт эта запись, столько прошлых ещё доезжает.
+                if queued > 0 {
+                    QueueBadge(count: queued, reduceMotion: accessibility.reduceMotion)
+                }
                 // Единственная подсказка про отмену. Тише всего, что есть в пилюле, и
                 // постоянной ширины — на потоке уровня (~12 раз в секунду) она не дёргается.
                 // Белый с прозрачностью, не акцентный цвет: мелкий цветной текст на стекле грязнит.
@@ -290,6 +327,12 @@ struct PanelPill: View {
                 .transition(.opacity)
             Text(text)
                 .transition(ticker)
+            // Стадию пилюля называет у первой диктовки в очереди; чип говорит, сколько
+            // таких же стоит за ней.
+            if queued > 0 {
+                QueueBadge(count: queued, reduceMotion: accessibility.reduceMotion)
+                    .transition(ticker)
+            }
         }
     }
 
@@ -428,6 +471,35 @@ private struct FlashRow: View {
             }
             withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) { popped = true }
         }
+    }
+}
+
+/// Вторая занятость одним чипом: сколько диктовок доезжает помимо той, что названа строкой.
+///
+/// Три точки, бегущие волной, и цифра — это весь рассказ. Именованных стадий у второй
+/// диктовки быть не может (строка в пилюле одна), а спиннера здесь нельзя: рядом уже
+/// крутится либо эквалайзер, либо спиннер стадии, и второй вращающийся элемент читается
+/// суетой. `variableColor.iterative` даёт то же «идёт работа» без единого пикселя движения
+/// формы — и сам выключается при «Уменьшить движение».
+private struct QueueBadge: View {
+    let count: Int
+    let reduceMotion: Bool
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "ellipsis")
+                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: !reduceMotion)
+            Text("\(count)")
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.white.opacity(0.8))
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        // Плоская подложка, как у метки перевода: стекло на стекле выглядит дёшево.
+        // Высота чипа 14 → его радиус 7 = 22 − 15 отступа от края капсулы, концентрично.
+        .background(.white.opacity(0.10), in: Capsule())
+        .fixedSize()
+        .accessibilityLabel("ещё \(count) в обработке")
     }
 }
 
