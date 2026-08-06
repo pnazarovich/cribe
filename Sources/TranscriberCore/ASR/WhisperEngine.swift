@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import WhisperKit
 
 /// WhisperKit-движок: держит по одному прогретому инстансу на язык плюс отдельный
@@ -226,9 +227,21 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
                 // ограничено по времени: подвисшая чужая задача не должна останавливать
                 // диктовку навсегда — лучше сходить в сеть второй раз, чем не начать вовсе.
                 if let download {
-                    await Self.wait(for: download, upTo: Self.downloadWaitLimit)
+                    Self.logger.notice("Жду чужое скачивание \(variant, privacy: .public)")
+                    let waited = await Self.wait(for: download, upTo: Self.downloadWaitLimit)
+                    Self.logger.notice(
+                        "Ожидание кончилось за \(waited, format: .fixed(precision: 1)) с"
+                    )
                 }
+                let started = Date()
+                Self.logger.notice("Прогреваю \(variant, privacy: .public)")
                 let pipe = try await Self.loadPipeline(variant: variant, store: store, onState: onState)
+                Self.logger.notice(
+                    """
+                    Прогрет \(variant, privacy: .public) за \
+                    \(Date().timeIntervalSince(started), format: .fixed(precision: 1)) с
+                    """
+                )
                 self.queue.sync {
                     self.pipelines[variant] = pipe
                     self.loading[variant] = nil
@@ -244,6 +257,11 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Сколько ждать чужую загрузку, прежде чем идти за моделью самим.
     private static let downloadWaitLimit: Duration = .seconds(60)
 
+    /// Подготовка модели — единственное место, где приложение молча стоит минуты. Стадии
+    /// пишем в журнал: без них зависание пришлось бы выяснять по нулевому CPU и открытым
+    /// файлам, как это однажды и случилось.
+    private static let logger = Logger(subsystem: "online.nazarovych.transcriber", category: "Model")
+
     /// Идущая загрузка, которую есть смысл дождаться перед прогревом, — и только она.
     /// Файлы уже на диске — не ждём ничего: задача скачивания может не завершиться и после
     /// того, как модель легла целиком, и тогда диктовка вечно висит на «Загружаю модель…».
@@ -254,13 +272,16 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Ждёт задачу, но не дольше отведённого срока. Саму задачу не трогает: она чужая,
     /// её ведёт тот, кто начал, — мы лишь перестаём на неё рассчитывать.
-    private static func wait(for task: Task<Void, Error>, upTo limit: Duration) async {
+    /// Возвращает, сколько прождали, — это единственное, что потом объясняет паузу.
+    private static func wait(for task: Task<Void, Error>, upTo limit: Duration) async -> TimeInterval {
+        let started = Date()
         await withTaskGroup(of: Void.self) { group in
             group.addTask { _ = try? await task.value }
             group.addTask { try? await Task.sleep(for: limit) }
             await group.next()
             group.cancelAll()
         }
+        return Date().timeIntervalSince(started)
     }
 
     /// Скачивание без прогрева. Как и `loadTask`, снимает себя со списка идущих —
