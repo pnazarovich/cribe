@@ -55,10 +55,18 @@ final class CardPanel {
     /// Перевод текста карточки. Подставляется приложением: ядро о GPT-настройках знает,
     /// а карточка — нет, и знать не должна.
     private let translator: CardTranslator
+    /// Куда ведёт «посмотреть целиком». Тот же шов, что и у перевода: про окна сцен
+    /// карточка не знает, дорогу к ним прокладывает приложение.
+    private let onExpand: @MainActor (String) -> Void
 
-    init(text: String, translator: CardTranslator = .unavailable) {
+    init(
+        text: String,
+        translator: CardTranslator = .unavailable,
+        onExpand: @escaping @MainActor (String) -> Void = { _ in }
+    ) {
         self.text = text
         self.translator = translator
+        self.onExpand = onExpand
         model = CardModel(text: text)
         model.canTranslate = translator.isAvailable()
 
@@ -114,6 +122,12 @@ final class CardPanel {
         container.onCopy = { [weak self] in self?.copy() }
         container.onClose = { [weak self] in self?.dismiss() }
         container.onTranslate = { [weak self] in self?.translate() }
+        // Ведём ОРИГИНАЛОМ, а не тем, что сейчас на карточке: в истории лежит именно он,
+        // перевод карточка держит у себя и никуда не записывает.
+        container.onExpand = { [weak self] in
+            guard let self else { return }
+            onExpand(text)
+        }
         container.onSwipe = { [weak self] offset in self?.model.swipeOffset = offset }
         container.onSwipeEnded = { [weak self] dismissing in
             guard let self else { return }
@@ -179,6 +193,7 @@ final class CardPanel {
     func dragEndedForTesting(accepted: Bool) { container.onDragEnded?(accepted) }
 
     func translateForTesting() { translate() }
+    func expandForTesting() { container.onExpand?() }
     var showsTranslationForTesting: Bool { model.showsTranslation }
     var displayedTextForTesting: String { model.displayText }
     var dragTextForTesting: String { container.payload?() ?? "" }
@@ -362,6 +377,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
     var onCopy: (() -> Void)?
     var onClose: (() -> Void)?
     var onTranslate: (() -> Void)?
+    var onExpand: (() -> Void)?
     /// Текущий сдвиг под пальцами.
     var onSwipe: ((CGFloat) -> Void)?
     /// Жест закончился: `true` — карточку смахнули, `false` — вернуть на место.
@@ -474,6 +490,7 @@ private final class CardContainerView: NSView, NSDraggingSource {
         // Нажали и отпустили на одной кнопке — как у обычной кнопки AppKit.
         guard control(at: convert(event.locationInWindow, from: nil)) == pressedControl else { return }
         switch pressedControl {
+        case .expand: onExpand?()
         case .translate: onTranslate?()
         case .copy: onCopy?()
         case .close: onClose?()

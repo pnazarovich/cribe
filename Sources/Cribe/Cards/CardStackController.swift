@@ -19,12 +19,17 @@ final class CardStackController {
     /// Откуда карточки берут перевод: стопка его не делает, только передаёт.
     private let translator: CardTranslator
 
+    /// Куда карточки уводят по «посмотреть целиком»: стопка и тут только передаёт.
+    private let onExpand: @MainActor (String) -> Void
+
     init(
         screenProvider: @escaping @MainActor () -> CGRect? = CardStackController.cursorScreenFrame,
-        translator: CardTranslator = .unavailable
+        translator: CardTranslator = .unavailable,
+        onExpand: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.screenProvider = screenProvider
         self.translator = translator
+        self.onExpand = onExpand
     }
 
     /// Экран, на котором живёт стопка.
@@ -86,7 +91,7 @@ final class CardStackController {
         if cards.isEmpty { screenFrame = screenProvider() }
         guard screenFrame != nil else { return false }
 
-        let card = CardPanel(text: text, translator: translator)
+        let card = CardPanel(text: text, translator: translator, onExpand: onExpand)
         card.onDismiss = { [weak self] card in self?.remove(card) }
         card.onDragStateChanged = { [weak self] dragging in self?.setDragInProgress(dragging) }
         // Диктовка, доехавшая посреди жеста, не имеет права проломить инвариант: новая

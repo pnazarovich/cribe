@@ -148,6 +148,9 @@ struct MenuBarView: View {
     }
 
     private func openDictionary(_ focus: DictionaryFocus? = nil) {
+        // Из меню разбирают последнюю диктовку — чужую строку, приведённую окном истории,
+        // снимаем: иначе пункт молча показывал бы её же.
+        core.dictionaryDictation = nil
         core.dictionaryFocus = focus
         WindowPresenter.shared.present(WindowID.dictionary) {
             openWindow(id: WindowID.dictionary)
