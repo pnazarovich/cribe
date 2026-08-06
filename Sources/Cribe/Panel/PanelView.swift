@@ -475,8 +475,11 @@ private struct EqualizerView: View {
         }
 
         mutating func push(_ level: Float) {
-            levels.removeFirst()
-            levels.append(level)
+            // Новый замер встаёт слева, лента уезжает вправо. Осциллографы и «Диктофон»
+            // делают наоборот («сейчас» справа, история слева), но здесь выбор владельца:
+            // смотрим, какое направление читается вернее. Переворот — эти две строки.
+            levels.removeLast()
+            levels.insert(level, at: 0)
         }
     }
 
