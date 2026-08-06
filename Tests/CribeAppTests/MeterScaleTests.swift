@@ -26,6 +26,16 @@ final class MeterScaleTests: XCTestCase {
         XCTAssertEqual(range.push(-1), 0)
     }
 
+    /// Самые первые кадры после появления индикатора. Шкала ещё ничего не знает о комнате,
+    /// и раньше начинала с фиксированных границ: шум попадал в середину шкалы, и ряд
+    /// вспыхивал на максимум — «всё на максимуме, как будто очень шумно».
+    func testFirstFramesDoNotFlashToTheTop() {
+        var range = MeterRange()
+        for _ in 0..<3 {
+            XCTAssertLessThan(range.push(quiet), 0.2, "индикатор не имеет права стартовать с максимума")
+        }
+    }
+
     /// Комната шумит ровно — ряд стоит внизу. Первая жалоба была именно на это.
     func testSteadyRoomNoiseSettlesAtTheBottom() {
         var range = MeterRange()

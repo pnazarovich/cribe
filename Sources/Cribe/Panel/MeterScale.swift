@@ -39,6 +39,10 @@ struct MeterRange {
     private(set) var floor: Float = -55
     private(set) var ceiling: Float = -25
     private var smoothed: CGFloat = 0
+    /// До первого замера границы неизвестны. Фиксированные стартовые значения означали бы,
+    /// что в первый же кадр шум комнаты попадает в середину шкалы и ряд взлетает на максимум —
+    /// «как будто очень шумно». Поэтому первый замер задаёт пол сам.
+    private var calibrated = false
 
     /// Принимает очередной замер и отдаёт готовую высоту для него.
     ///
@@ -49,6 +53,13 @@ struct MeterRange {
     mutating func push(_ level: Float) -> CGFloat {
         guard level > 0 else { return 0 }
         let decibels = 20 * log10(level)
+
+        if !calibrated {
+            calibrated = true
+            // Чуть ниже первого замера: если человек нажал ⌘ и молчит, это и есть его тишина.
+            floor = decibels - 2
+            ceiling = floor + Self.minimumSpan
+        }
 
         floor += (decibels - floor) * (decibels < floor ? Self.floorFall : Self.floorRise)
         ceiling += (decibels - ceiling) * (decibels > ceiling ? Self.ceilingRise : Self.ceilingFall)

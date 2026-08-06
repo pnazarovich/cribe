@@ -95,8 +95,13 @@ struct OnboardingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Cribe")
-                .font(.largeTitle.weight(.semibold))
+            // Краб рядом с именем: первый экран — единственное место, где ему хватает
+            // размера, чтобы читаться целиком, вместе с полосами вместо клешней.
+            HStack(spacing: 12) {
+                CrabMark(size: 40)
+                Text("Cribe")
+                    .font(.largeTitle.weight(.semibold))
+            }
             Text(
                 "Диктовка на русском, украинском и английском: нажали клавишу, сказали — текст "
                     + "появился в поле с курсором, а речь распозналась прямо на этом компьютере."

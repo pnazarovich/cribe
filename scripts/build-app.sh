@@ -30,6 +30,8 @@ rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .ddata/Build/Products/Release/Cribe "$APP/Contents/MacOS/"
 cp -R .ddata/Build/Products/Release/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+# Краб без фона: тот же рисунок, что на иконке, для мест в интерфейсе, где ему хватает размера.
+cp Resources/CrabMark.png "$APP/Contents/Resources/"
 cp Info.plist "$APP/Contents/Info.plist"
 embed_sparkle "$APP"
 ENTITLEMENTS=$(prepare_entitlements Dev.entitlements "$APP" "$SIGN_IDENTITY")
