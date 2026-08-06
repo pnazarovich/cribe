@@ -513,11 +513,8 @@ private struct EqualizerView: View {
             .animation(.easeIn(duration: 0.2).delay(Double(bar) * 0.015))
     }
 
-    /// RMS речи обычно 0.02…0.2 — тянем перцептивно: тихая речь всё равно шевелит эквалайзер,
-    /// а громкая не упирается в полку.
     private static func barHeight(bar: Int, frame: Frame) -> CGFloat {
-        let norm = min(1, pow(max(frame.level, 0) * 6, 0.7))
-        return minBar + CGFloat(norm) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
+        minBar + MeterScale.height(of: frame.level) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
     }
 
     /// Вес столбика 0.35…1 — детерминированный хеш пары (столбик, тик): разброс выглядит
