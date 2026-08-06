@@ -458,8 +458,8 @@ private struct EqualizerView: View {
     private static let barWidth: CGFloat = 3
     private static let spacing: CGFloat = 4
     private static let maxBar: CGFloat = 22
-    /// Столбик тишины — короткий штрих, а не пустое место.
-    private static let minBar: CGFloat = 2.5
+    /// Столбик тишины — тонкий штрих, почти ноль: ряд молчит, но остаётся рядом.
+    private static let minBar: CGFloat = 1.5
 
     /// Лента громкости: правый столбик — сейчас, левый — секунду назад. Каждый замер
     /// сдвигает ленту влево, и по ряду едет форма настоящей речи.
@@ -604,7 +604,7 @@ private struct EqualizerView: View {
 
     /// Насколько высоко поднимается дыхание тишины. Больше — и молчащий эквалайзер начнёт
     /// притворяться, что слышит речь.
-    private static let breathDepth: CGFloat = 0.09
+    private static let breathDepth: CGFloat = 0.035
 
 
     /// Акцентный градиент остаётся настоящим цветом поверх стекла — вибрантным его делать нельзя,

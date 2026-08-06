@@ -13,9 +13,16 @@ enum MeterScale {
     /// Разговор в упор. Выше — только крик, полку держим здесь.
     static let loudest: Float = -12
 
+    /// Порог тишины. Комната никогда не бывает беззвучной: вентилятор, улица и сам микрофон
+    /// дают −55…−50 dBFS, и без порога индикатор в тишине честно показывал бы этот шум —
+    /// столбики стояли бы заметно выше нуля, хотя никто не говорит. Речь с метра громче
+    /// −45 dBFS, так что порог её не трогает.
+    static let gate: Float = -48
+
     static func height(of level: Float) -> CGFloat {
         guard level > 0 else { return 0 }
         let decibels = 20 * log10(level)
+        guard decibels > gate else { return 0 }
         let share = (decibels - quietest) / (loudest - quietest)
         return CGFloat(min(1, max(0, share)))
     }

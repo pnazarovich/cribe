@@ -10,6 +10,14 @@ final class MeterScaleTests: XCTestCase {
         XCTAssertEqual(MeterScale.height(of: -1), 0)
     }
 
+    /// Шум пустой комнаты — тоже ноль. Без порога вентилятор и улица держали бы столбики
+    /// заметно выше нуля при полной тишине: ровно на это владелец и пожаловался.
+    func testRoomNoiseReadsAsSilence() {
+        // −60 и −52 dBFS: типичный фон тихой комнаты на встроенном микрофоне.
+        XCTAssertEqual(MeterScale.height(of: 0.001), 0)
+        XCTAssertEqual(MeterScale.height(of: 0.0025), 0)
+    }
+
     /// Громче — выше, без исключений.
     func testLouderIsAlwaysHigher() {
         let levels: [Float] = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.3, 1]
