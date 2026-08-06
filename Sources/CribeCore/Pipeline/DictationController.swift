@@ -577,7 +577,8 @@ public final class DictationController: ObservableObject {
             text: text,
             entries: entries,
             language: language,
-            config: settings.gptConfig
+            config: settings.gptConfig,
+            restoreUkrainianInserts: settings.restoreUkrainianInserts
         )
     }
 
@@ -995,7 +996,8 @@ public final class DictationController: ObservableObject {
                         entries: entries,
                         language: language,
                         config: wantsTranslation ? settings.translateGPTConfig : settings.gptConfig,
-                        translateToEnglish: wantsTranslation
+                        translateToEnglish: wantsTranslation,
+                        restoreUkrainianInserts: settings.restoreUkrainianInserts
                     )
                     if wantsTranslation {
                         translation = processed

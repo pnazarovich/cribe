@@ -452,6 +452,7 @@ private struct AIPane: View {
                         in: 1...30
                     )
                 }
+                Toggle("Возвращать украинские слова в русской диктовке", isOn: $settings.restoreUkrainianInserts)
                 ModelRow(models: models, selection: $settings.gptModel, config: settings.gptConfig)
                 EffortPicker(selection: $settings.gptEffort)
                 RecommendationCards(
@@ -466,6 +467,12 @@ private struct AIPane: View {
                     caption(
                         "GPT расставляет знаки, убирает слова-паразиты и держит термины словаря. "
                             + "На «ок» и «да, давай» чистить нечего — целый круг к модели там лишний."
+                    )
+                    caption(
+                        "Украинские вставки распознавание пишет на слух по-русски («требо» вместо "
+                            + "«треба»); чистка возвращает им украинское написание, когда уверена. "
+                            + "Работает только при включённой AI-чистке и только на русских "
+                            + "диктовках — на переводе правым ⌥ не применяется."
                     )
                     caption(ModelRecommendations.disclaimer)
                 }

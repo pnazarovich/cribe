@@ -385,6 +385,61 @@ final class GPTProtocolTests: XCTestCase {
         )
     }
 
+    /// Украинские вставки в русской речи: распознавание знает один язык на сессию и пишет
+    /// их на слух по-русски. Чинить это может только слой 3 — но ровно там, где это
+    /// осмысленно: русская сессия, чистка, включённый тумблер. Везде ещё правило вредно
+    /// (украинская сессия), бессмысленно (английская) или неуместно (перевод).
+    func testUkrainianInsertRuleOnlyInRussianCleanup() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let marker = "вставляет отдельные украинские слова"
+
+        let ru = PostProcessor.systemPrompt(
+            entries: entries, language: .ru, restoreUkrainianInserts: true
+        )
+        XCTAssertTrue(ru.contains(marker), ru)
+        // Правило обязано быть консервативным: без этой оговорки оно украинизирует
+        // верные русские слова за компанию с соседями.
+        XCTAssertTrue(ru.contains("только когда уверен"), ru)
+        XCTAssertTrue(ru.contains("оставь как есть, даже если соседи украинские"), ru)
+        // Имена и латиницу чинит словарь (слой 2) — GPT их не трогает.
+        XCTAssertTrue(ru.contains("Имена, названия и латиницу не трогай"), ru)
+
+        // Перевод: текст всё равно уедет в английский, украинское написание там ни к чему.
+        XCTAssertFalse(
+            PostProcessor.systemPrompt(
+                entries: entries, language: .ru, translateToEnglish: true, restoreUkrainianInserts: true
+            ).contains(marker)
+        )
+
+        for language in [Language.uk, .en] {
+            for translating in [false, true] {
+                XCTAssertFalse(
+                    PostProcessor.systemPrompt(
+                        entries: entries,
+                        language: language,
+                        translateToEnglish: translating,
+                        restoreUkrainianInserts: true
+                    ).contains(marker),
+                    "\(language) не должен получать правило про украинские вставки"
+                )
+            }
+        }
+    }
+
+    /// Выключенный тумблер убирает правило из промпта целиком, а остальную чистку
+    /// оставляет на месте — включая уже имевшееся правило про доминирующий язык.
+    func testUkrainianInsertRuleDisappearsWhenOff() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let off = PostProcessor.systemPrompt(
+            entries: entries, language: .ru, restoreUkrainianInserts: false
+        )
+        XCTAssertFalse(off.contains("вставляет отдельные украинские слова"), off)
+        XCTAssertTrue(off.contains("Язык этой диктовки — русский"), off)
+        XCTAssertTrue(off.contains("Сохраняй порядок мыслей"), off)
+        // Дефолт параметра — «выключено»: правило не приезжает к тем, кто о нём не просил.
+        XCTAssertEqual(off, PostProcessor.systemPrompt(entries: entries, language: .ru))
+    }
+
     func testTranslatePromptUkrainian() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гітхаб"])]
         let plain = PostProcessor.systemPrompt(entries: entries, language: .uk)

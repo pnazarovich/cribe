@@ -46,6 +46,16 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.shortDictationWordLimit, 3)
     }
 
+    /// Возврат украинских вставок включён по умолчанию — владелец диктует по-русски с
+    /// украинскими словами постоянно. Выключённый тумблер переживает перезапуск (дефолт
+    /// `true`, поэтому `bool(forKey:)` не отличил бы «выключен» от «не задан»).
+    func testRestoreUkrainianInsertsDefaultsOnAndPersists() {
+        XCTAssertTrue(AppSettings(defaults: defaults).restoreUkrainianInserts)
+
+        AppSettings(defaults: defaults).restoreUkrainianInserts = false
+        XCTAssertFalse(AppSettings(defaults: defaults).restoreUkrainianInserts)
+    }
+
     /// Карточки включены по умолчанию, а выключённый тумблер переживает перезапуск
     /// (дефолт `true`, поэтому `bool(forKey:)` не отличил бы «выключен» от «не задан»).
     func testCardsWhenNoFieldDefaultsOnAndPersists() {

@@ -76,7 +76,8 @@ struct CLI {
                 language: options.language,
                 config: AppSettings.shared.gptConfig,
                 timeout: 10,
-                translateToEnglish: options.translate
+                translateToEnglish: options.translate,
+                restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts
             )
         } catch {
             // Слой 3 не обязателен: отдаём результат слоя 2 и предупреждаем.

@@ -37,6 +37,7 @@ public final class AppSettings: ObservableObject {
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
         static let skipGPTForShort = "skipGPTForShort"
+        static let restoreUkrainianInserts = "restoreUkrainianInserts"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
@@ -98,6 +99,13 @@ public final class AppSettings: ObservableObject {
     /// зато стоит целый круг к модели. Перевода это не касается — он делается тем же вызовом.
     @Published public var skipGPTForShort: Bool {
         didSet { defaults.set(skipGPTForShort, forKey: Key.skipGPTForShort) }
+    }
+
+    /// Русская диктовка с украинскими вставками: чистка возвращает украинским словам,
+    /// которые распознавание записало на слух по-русски, украинское написание. Работает
+    /// только на русских сессиях и только на чистке — на переводе текст уедет в английский.
+    @Published public var restoreUkrainianInserts: Bool {
+        didSet { defaults.set(restoreUkrainianInserts, forKey: Key.restoreUkrainianInserts) }
     }
 
     /// Граница «короткой» диктовки в словах.
@@ -170,6 +178,7 @@ public final class AppSettings: ObservableObject {
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
+        restoreUkrainianInserts = defaults.object(forKey: Key.restoreUkrainianInserts) as? Bool ?? true
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
