@@ -200,12 +200,26 @@ struct PanelPill: View {
         case .idle:
             EmptyView()
 
-        case .preparingModel(let progress):
+        case .preparingModel(.downloading(let progress)):
             HStack(spacing: 8) {
                 ProgressView(value: progress)
                     .progressViewStyle(.linear)
                     .frame(width: 80)
-                Text("Загружаю…")
+                Text("Качаю модель… \(Int(progress * 100))%")
+            }
+            .transition(ticker)
+
+        case .preparingModel(.warming(let since)):
+            // Полосы тут нет намеренно: прогресса компиляции под нейродвижок CoreML не
+            // сообщает, а полная полоса, стоящая на месте, читается как «зависло» —
+            // именно так это и выглядело на первом запуске. Секунды честнее.
+            HStack(spacing: 8) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                TimelineView(.periodic(from: since, by: 1)) { context in
+                    Text("Готовлю модель · \(Self.elapsed(from: since, to: context.date))")
+                }
             }
             .transition(ticker)
 
@@ -281,6 +295,13 @@ struct PanelPill: View {
 
     private static func flag(_ language: Language) -> String {
         language == .ru ? "🇷🇺" : "🇺🇦"
+    }
+
+    /// Время прогрева в виде «0:07». Минуты появляются сами, когда до них доходит:
+    /// первая компиляция большой модели под нейродвижок и правда идёт минуты.
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     /// Контроллер маппит причины в русский текст сам, так что ветки ниже в норме недостижимы —

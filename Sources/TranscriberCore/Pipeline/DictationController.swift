@@ -4,10 +4,20 @@ import Foundation
 import OSLog
 
 /// Единственный канал прогресса и ошибок конвейера: UI подписан на `DictationController.state`.
+/// Две очень разные стадии подготовки модели, и путать их нельзя: у скачивания прогресс
+/// настоящий, у прогрева его нет вовсе. CoreML не сообщает, сколько осталось до конца
+/// компиляции под нейродвижок, а она идёт минуты — поэтому вместо выдуманных процентов
+/// показываем прошедшее время: видно, что работа идёт, и никто не обманут.
+public enum ModelPreparation: Sendable, Equatable {
+    /// Доля скачанного, 0...1.
+    case downloading(Double)
+    /// Прогрев и компиляция под нейродвижок. Момент входа — чтобы считать от него секунды.
+    case warming(since: Date)
+}
+
 public enum DictationState: Sendable, Equatable {
     case idle
-    /// Доля скачанного/загрузки модели, 0...1.
-    case preparingModel(Double)
+    case preparingModel(ModelPreparation)
     /// `live` всегда пуст: живого превью в панели больше нет, но форма кейса сохранена
     /// ради совместимости с внешним кодом, который на него сопоставляется.
     case recording(live: String, level: Float)
@@ -1016,15 +1026,25 @@ public final class DictationController: ObservableObject {
 
     private func apply(_ modelState: ASRModelState) {
         switch modelState {
-        case .downloading(let progress): state = .preparingModel(progress)
-        case .loading: state = .preparingModel(1)
-        case .notLoaded, .ready: break
+        case .downloading(let progress):
+            state = .preparingModel(.downloading(progress))
+        case .loading:
+            startWarming()
+        case .notLoaded, .ready:
+            break
         }
+    }
+
+    /// Отметку времени ставим один раз на весь прогрев: `apply(.loading)` приходит и по
+    /// нескольку раз, а счётчик секунд в панели не должен от этого прыгать на ноль.
+    private func startWarming() {
+        if case .preparingModel(.warming) = state { return }
+        state = .preparingModel(.warming(since: Date()))
     }
 
     private func ensureVad() async throws -> SpeechGating {
         if let vad { return vad }
-        state = .preparingModel(1)
+        startWarming()
         let created = try await makeVad()
         vad = created
         return created

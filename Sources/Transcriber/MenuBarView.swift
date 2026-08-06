@@ -121,7 +121,8 @@ struct MenuBarView: View {
     private var status: String {
         switch controller.state {
         case .idle: return "Готов · \(displayLanguage.displayName)"
-        case .preparingModel(let progress): return "Загружаю модель… \(Int(progress * 100))%"
+        case .preparingModel(.downloading(let progress)): return "Качаю модель… \(Int(progress * 100))%"
+        case .preparingModel(.warming): return "Готовлю модель…"
         case .recording: return "● Идёт запись · \(displayLanguage.displayName)\(translateMark)"
         case .transcribing: return "Распознаю…"
         case .cleaning: return "✨ Чищу…"
