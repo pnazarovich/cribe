@@ -92,6 +92,20 @@ final class TermSuggesterTests: XCTestCase {
         XCTAssertEqual(suggester.suggestions.first?.count, TermSuggester.threshold)
     }
 
+    /// Английская диктовка кандидатов не даёт вовсе: там латиницей написано каждое слово,
+    /// и приём «латиница посреди кириллицы — это термин» превращается в «термин — всё».
+    func testEnglishDictationProducesNoCandidates() {
+        let suggester = TermSuggester(defaults: defaults)
+        suggester.observe("check the deploy pipeline tomorrow morning", entries: entries, language: .en)
+        suggester.observe("check the deploy pipeline tomorrow morning", entries: entries, language: .en)
+        XCTAssertTrue(suggester.suggestions.isEmpty, suggester.suggestions.description)
+
+        // Та же фраза в русской сессии — обычные кандидаты: приём работает там, где задуман.
+        suggester.observe("подними kubernetes", entries: entries, language: .ru)
+        suggester.observe("kubernetes опять упал", entries: entries, language: .ru)
+        XCTAssertEqual(suggester.suggestions.map(\.token), ["kubernetes"])
+    }
+
     /// Повтор внутри ОДНОЙ диктовки порога не даёт: это одно употребление, а не привычка.
     func testRepeatWithinOneDictationCountsOnce() {
         let suggester = TermSuggester(defaults: defaults)

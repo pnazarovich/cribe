@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml)
 
-**Local Russian/Ukrainian dictation for macOS.** Hold nothing, install nothing in the cloud:
+**Local Russian/Ukrainian/English dictation for macOS.** Hold nothing, install nothing in the cloud:
 press the right ⌘, speak, and your words land in whatever text field has the cursor.
 Speech recognition runs entirely on your Mac's Neural Engine.
 
@@ -25,12 +25,16 @@ Cloud dictation is excellent at English and mediocre at everything else — and 
 voice to somebody's server. Transcriber targets the opposite corner: Russian and Ukrainian
 speech that is full of English technical terms, recognized locally, with the terms coming out
 in Latin script the way you would type them (`деплой` → `deploy`, `в гитхабе` → `GitHub`).
+English dictation is there too, on the same model Russian already uses.
 
 ## Features
 
 - **Local recognition.** Whisper large-v3 / large-v3-turbo through
   [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML, Apple Neural Engine).
   The language is always forced — Whisper's language detection confuses `uk` with `ru`.
+- **Three languages, two downloads.** Russian, Ukrainian and English; ``⌥⇧` `` cycles through
+  them in that order. Russian and English run on the same `large-v3-turbo`, so adding English
+  costs no extra gigabytes — and the settings list them as one model with one delete button.
 - **Live preview.** A second, tiny Whisper instance transcribes as you speak so the HUD shows
   text within ~0.6 s. The final text is always a full pass of the big model.
 - **Three-layer custom dictionary.** Your terms bias the Whisper prompt (layer 1), get
@@ -39,8 +43,12 @@ in Latin script the way you would type them (`деплой` → `deploy`, `в г
 - **Optional GPT cleanup.** Punctuation, capitalization, filler removal, and voice commands
   ("new line", "comma"). Authenticate with an OpenAI API key *or* by signing in with your
   ChatGPT account. Turn it off and everything still works — layer 2 is the guarantee.
-- **Mixed RU + UK speech.** A toggle that keeps Russian sessions on `large-v3` instead of
-  `turbo`, because turbo drops Ukrainian words inserted into Russian sentences.
+- **Mixed RU + UK speech.** A toggle that appends a code-switched sample to the Whisper
+  prompt, so Ukrainian words inserted into Russian sentences survive instead of being
+  Russified. The sample is mostly Russian with one Ukrainian island inside: a fully Ukrainian
+  sample made the decoder flip the whole sentence to Ukrainian. The model does not change —
+  measurements showed `large-v3` costs 5.5× the pass time without recognizing the inclusions
+  any better.
 - **Glass HUD.** A non-activating floating panel — it never steals focus, so the insert always
   goes to the window you were typing in.
 
@@ -66,9 +74,10 @@ in Latin script the way you would type them (`деплой` → `deploy`, `в г
 
 - Apple Silicon Mac (M1 or newer) — CoreML/ANE inference is the whole point.
 - macOS 14 or newer.
-- Free disk for the Whisper models, per language: Russian pulls `large-v3-turbo` ≈ 1.5 GB,
-  Ukrainian pulls `large-v3` ≈ 2.9 GB, plus `tiny` for the live preview ≈ 75 MB. Languages
-  download separately from Hugging Face — one language is enough.
+- Free disk for the Whisper models: Russian and English share `large-v3-turbo` ≈ 1.5 GB,
+  Ukrainian pulls `large-v3` ≈ 2.9 GB, plus `tiny` for the live preview ≈ 75 MB. Models
+  download separately from Hugging Face — one model is enough, and adding English to an
+  existing Russian setup downloads nothing.
 - Xcode (for the Swift toolchain) to build from source.
 
 ## Build and install
@@ -138,11 +147,12 @@ appears again once you have seen it (**Initial setup…** in the menu brings it 
 2. **Accessibility** — to synthesize the ⌘V that inserts text, and to read the right-⌘ tap.
    Without it the text still lands in the clipboard and the HUD tells you to paste manually.
    Granting it in System Settings is picked up live; no restart needed.
-3. **Models** — downloaded per language, so Russian-only users are not made to fetch 4.4 GB:
-   `ru` is 1.5 GB, `uk` is 2.9 GB, each with its own button and progress. This step does not
-   block anything — skip it and the first dictation fetches what it needs. Each model is
-   compiled for the Neural Engine the first time it is loaded, which takes a couple of
-   minutes, once per model.
+3. **Models** — downloaded per model, so Russian-only users are not made to fetch 4.4 GB:
+   `ru`+`en` share one 1.5 GB download, `uk` is 2.9 GB, each with its own button and progress.
+   Removing a shared model removes it for both of its languages, and the confirmation says so.
+   This step does not block anything — skip it and the first dictation fetches what it needs.
+   Each model is compiled for the Neural Engine the first time it is loaded, which takes a
+   couple of minutes, once per model.
 4. **ChatGPT** — optional. Signing in happens right there in the window (device code +
    confirmation page); on success punctuation cleanup and English translation are configured
    with no further choices. Skippable, and an OpenAI API key works instead
@@ -199,7 +209,8 @@ folder to replace the built-in chimes, which are otherwise synthesized in memory
 - **The App Store is impossible.** The app needs a global event tap and synthetic keystrokes;
   the App Sandbox forbids both. Distribution is Developer ID + notarization only.
 - **Mixed-language speech is a compromise.** No Whisper model handles code-switching well;
-  the "Mixed RU + UK" toggle just picks the model that degrades most gracefully.
+  the "Mixed RU + UK" toggle only biases the prompt, and long Ukrainian inclusions still come
+  back mangled sometimes. It does keep the dominant language of the sentence intact.
 - With macOS "natural scrolling" disabled, the card swipe gesture goes the other way.
 
 ## Architecture
@@ -220,7 +231,7 @@ Swift package with three targets:
   GPT client, text insertion, settings.
 - `Transcriber` — the SwiftUI/AppKit app: menu bar, HUD panel, cards, dictionary editor.
 - `TranscriberCLI` — runs the whole pipeline over a WAV file, which is how the pipeline is
-  exercised without a UI: `swift run TranscriberCLI file.wav --lang ru --no-gpt`.
+  exercised without a UI: `swift run TranscriberCLI file.wav --lang ru|uk|en --no-gpt`.
 
 See `docs/superpowers/specs/` for the design document (in Russian) and `docs/research/` for the
 model comparison that led to these choices.

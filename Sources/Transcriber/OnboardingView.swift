@@ -52,12 +52,8 @@ struct OnboardingView: View {
         )
     }
 
-    private func state(of language: Language) -> ModelDownloadState {
-        downloader.states[language] ?? .missing
-    }
-
     private func isInstalled(_ language: Language) -> Bool {
-        if case .installed = state(of: language) { return true }
+        if case .installed = downloader.state(of: language) { return true }
         return false
     }
 
@@ -102,8 +98,8 @@ struct OnboardingView: View {
             Text("Transcriber")
                 .font(.largeTitle.weight(.semibold))
             Text(
-                "Диктовка на русском и украинском: нажали клавишу, сказали — текст появился "
-                    + "в поле с курсором, а речь распозналась прямо на этом компьютере."
+                "Диктовка на русском, украинском и английском: нажали клавишу, сказали — текст "
+                    + "появился в поле с курсором, а речь распозналась прямо на этом компьютере."
             )
             .font(.title3)
             .foregroundStyle(.secondary)
@@ -246,12 +242,13 @@ struct OnboardingView: View {
     @ViewBuilder
     private var modelsBody: some View {
         caption(
-            "Языки качаются по отдельности: нужен только русский — украинские "
-                + "\(Language.uk.modelSizeText) скачивать незачем. Загрузка разовая, "
-                + "дальше распознавание идёт без интернета."
+            "Модели качаются по отдельности: нужен только русский — украинские "
+                + "\(ModelBundle.bundle(for: .uk).sizeText) скачивать незачем. У русского "
+                + "и English модель общая. Загрузка разовая, дальше распознавание идёт "
+                + "без интернета."
         )
-        ForEach(Language.allCases, id: \.self) { language in
-            modelRow(language)
+        ForEach(ModelBundle.all) { bundle in
+            modelRow(bundle)
         }
         HStack(spacing: 10) {
             Button("Позже") { modelsSkipped = true }
@@ -260,39 +257,39 @@ struct OnboardingView: View {
         .font(.callout)
     }
 
-    /// Строка одного языка: слева имя и вес, справа — то единственное, что с ним сейчас
-    /// можно сделать. Кнопка языка диктовки выделена: с него первый запуск и начнётся.
+    /// Строка одной модели: слева языки и вес, справа — то единственное, что с ней сейчас
+    /// можно сделать. Кнопка модели языка диктовки выделена: с неё первый запуск и начнётся.
     @ViewBuilder
-    private func modelRow(_ language: Language) -> some View {
+    private func modelRow(_ bundle: ModelBundle) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(language.displayName)
-                Text(language.modelSizeText).font(.caption).foregroundStyle(.secondary)
+                Text(bundle.displayName)
+                Text(bundle.sizeText).font(.caption).foregroundStyle(.secondary)
             }
-            .frame(width: 110, alignment: .leading)
+            .frame(width: 150, alignment: .leading)
 
-            switch state(of: language) {
+            switch downloader.state(of: bundle) {
             case .missing, .failed:
                 Button("Скачать") {
-                    Task { await downloader.download(language, engine: engine) }
+                    Task { await downloader.download(bundle, engine: engine) }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .tint(language == settings.language ? Color.accentColor : Color.secondary)
+                .tint(bundle.languages.contains(settings.language) ? Color.accentColor : Color.secondary)
                 Spacer()
             case .downloading(let fraction):
                 ProgressView(value: fraction)
                 Text("\(Int(fraction * 100)) %")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Button("Отмена") { downloader.cancel(language) }
+                Button("Отмена") { downloader.cancel(bundle) }
             case .installed(let bytes):
                 Label(Self.size(bytes), systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Spacer()
             }
         }
-        if case .failed(let message) = state(of: language) {
+        if case .failed(let message) = downloader.state(of: bundle) {
             Text(message).font(.caption).foregroundStyle(.red)
         }
     }

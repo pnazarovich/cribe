@@ -177,16 +177,19 @@ private struct GeneralPane: View {
             } footer: {
                 caption(
                     "Смешанная речь подсказывает распознаванию украинские слова внутри "
-                        + "русской диктовки. На скорость не влияет."
+                        + "русской диктовки: вкрапления остаются украинскими, а основа — "
+                        + "русской. На скорость не влияет."
                 )
             }
 
             Section {
-                ForEach(Language.allCases, id: \.self) { language in
+                // Строка — модель, а не язык: русский и английский работают на одной,
+                // и двумя строками она обещала бы вторые полтора гигабайта, которых нет.
+                ForEach(ModelBundle.all) { bundle in
                     // Движок в приложении один и живёт в `AppCore`: сцена настроек создаётся
                     // без него, а выгружать прогретую модель перед удалением надо у того же.
                     ModelDownloadRow(
-                        language: language,
+                        bundle: bundle,
                         downloader: downloader,
                         engine: AppCore.shared.engine
                     )
@@ -195,8 +198,10 @@ private struct GeneralPane: View {
                 Text("Модели распознавания")
             } footer: {
                 caption(
-                    "Каждый язык качается отдельно и один раз — модель остаётся в Application "
-                        + "Support. Пока её нет, первая диктовка на этом языке начнётся с загрузки."
+                    "Каждая модель качается отдельно и один раз — она остаётся в Application "
+                        + "Support. Пока её нет, первая диктовка на этом языке начнётся с загрузки. "
+                        + "Русский и English работают на одной модели: второй раз она не качается "
+                        + "и удаляется сразу для обоих."
                 )
             }
 
@@ -269,22 +274,23 @@ private struct GeneralPane: View {
     }
 }
 
-/// Строка одного языка: состояние модели и одна кнопка к нему — «Скачать», «Отмена»
-/// или «Удалить». Удаление спрашивает подтверждение: это гигабайты и повторное скачивание.
+/// Строка одной модели: языки, которые на ней работают, её состояние и одна кнопка —
+/// «Скачать», «Отмена» или «Удалить». Удаление спрашивает подтверждение: это гигабайты,
+/// повторное скачивание, а на общей модели — сразу оба её языка.
 private struct ModelDownloadRow: View {
-    let language: Language
+    let bundle: ModelBundle
     @ObservedObject var downloader: ModelDownloader
     let engine: WhisperEngine
 
     @State private var confirmingRemoval = false
     @State private var removalError: String?
 
-    private var state: ModelDownloadState { downloader.states[language] ?? .missing }
+    private var state: ModelDownloadState { downloader.state(of: bundle) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
-                Text(language.displayName)
+                Text(bundle.displayName)
                 Spacer(minLength: 8)
                 status
                 action
@@ -294,7 +300,7 @@ private struct ModelDownloadRow: View {
             }
         }
         .confirmationDialog(
-            "Удалить модель «\(language.displayName)»?",
+            "Удалить модель «\(bundle.displayName)»?",
             isPresented: $confirmingRemoval,
             titleVisibility: .visible
         ) {
@@ -302,7 +308,14 @@ private struct ModelDownloadRow: View {
             Button("Отмена", role: .cancel) {}
         } message: {
             if case let .installed(bytes) = state {
-                Text("Освободится \(Self.size(bytes)). Скачать заново можно в любой момент.")
+                // На общей модели удаление уносит оба языка сразу — это и есть то, что
+                // обязано быть сказано до нажатия, а не выясниться следующей диктовкой.
+                Text(
+                    bundle.languages.count > 1
+                        ? "Освободится \(Self.size(bytes)) — модель уйдёт сразу у языков "
+                            + "\(bundle.displayName). Скачать заново можно в любой момент."
+                        : "Освободится \(Self.size(bytes)). Скачать заново можно в любой момент."
+                )
             }
         }
     }
@@ -311,7 +324,7 @@ private struct ModelDownloadRow: View {
     private var status: some View {
         switch state {
         case .missing:
-            Text("Не скачана · ≈\(Self.size(ModelDownloader.approximateBytes(for: language)))")
+            Text("Не скачана · ≈\(Self.size(ModelDownloader.approximateBytes(for: bundle)))")
                 .foregroundStyle(.secondary)
         case let .downloading(fraction):
             ProgressView(value: fraction)
@@ -334,10 +347,10 @@ private struct ModelDownloadRow: View {
         switch state {
         case .missing, .failed:
             Button("Скачать") {
-                Task { await downloader.download(language, engine: engine) }
+                Task { await downloader.download(bundle, engine: engine) }
             }
         case .downloading:
-            Button("Отмена") { downloader.cancel(language) }
+            Button("Отмена") { downloader.cancel(bundle) }
         case .installed:
             Button("Удалить") { confirmingRemoval = true }
         }
@@ -346,7 +359,7 @@ private struct ModelDownloadRow: View {
     private func remove() {
         do {
             removalError = nil
-            try downloader.remove(language, engine: engine)
+            try downloader.remove(bundle, engine: engine)
         } catch {
             removalError = error.localizedDescription
         }

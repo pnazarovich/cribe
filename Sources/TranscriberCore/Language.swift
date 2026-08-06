@@ -3,31 +3,90 @@ import Foundation
 public enum Language: String, CaseIterable, Codable, Sendable {
     case ru
     case uk
+    case en
 
     /// Модель сессии — её выбирает только язык. «Смешанная речь» на этот выбор не влияет:
-    /// см. комментарий у `WhisperModel`.
+    /// см. комментарий у `WhisperModel`. Английский идёт на ту же turbo, что и русский:
+    /// модель мультиязычная, на английском она сильнее всего, и отдельных гигабайтов
+    /// третий язык не стоит (см. `ModelBundle`).
     public var whisperModel: String {
-        self == .ru ? WhisperModel.turbo : WhisperModel.large
+        switch self {
+        case .ru, .en: return WhisperModel.turbo
+        case .uk: return WhisperModel.large
+        }
     }
 
     public var displayName: String {
-        self == .ru ? "Русский" : "Українська"
+        switch self {
+        case .ru: return "Русский"
+        case .uk: return "Українська"
+        case .en: return "English"
+        }
     }
 
-    /// Сколько весит модель этого языка. Первый запуск называет число до нажатия кнопки и
-    /// качает языки по отдельности: 1.5 ГБ и 2.9 ГБ — разные решения, и тому, кому нужен
-    /// только русский, незачем отдавать 4.4 ГБ. Числа — вес репозиториев WhisperKit.
-    public var modelSizeGB: Double {
-        self == .ru ? 1.5 : 2.9
-    }
-
-    /// Тот же размер подписью в интерфейсе (запятая — десятичный разделитель русского).
-    public var modelSizeText: String {
-        self == .ru ? "1,5 ГБ" : "2,9 ГБ"
+    /// Пишется ли язык кириллицей. От этого зависит, есть ли смысл в кириллических
+    /// вариантах словаря: английскую сессию распознаватель отдаёт латиницей.
+    public var isCyrillic: Bool {
+        self != .en
     }
 }
 
-/// Варианты моделей Whisper. Русский обслуживает turbo, украинский — large-v3.
+/// Модель распознавания как единица скачивания: один вариант Whisper и языки, которые его делят.
+///
+/// Языки — это не модели. Русский и английский живут на одной turbo, и показывать их двумя
+/// строками по 1,5 ГБ значит врать про вес; удалять порознь их тем более нельзя — файлы одни
+/// и те же, и «удалил английский» означало бы «сломал русский».
+public struct ModelBundle: Identifiable, Hashable, Sendable {
+    /// Вариант WhisperKit — он же ключ: одна папка на диске, одна загрузка, одно удаление.
+    public let variant: String
+    /// Языки, которые обслуживает эта модель, в порядке `Language.allCases`.
+    public let languages: [Language]
+
+    public var id: String { variant }
+
+    /// Языки строкой: «Русский · English».
+    public var displayName: String {
+        languages.map(\.displayName).joined(separator: " · ")
+    }
+
+    /// Язык, от имени которого ходим в движок: тот ключует модели вариантом, так что любой
+    /// из языков модели приведёт к той же папке на диске.
+    public var primaryLanguage: Language {
+        languages.first ?? .ru
+    }
+
+    /// Сколько весит модель. Первый запуск называет число до нажатия кнопки и качает модели
+    /// по отдельности: 1,5 ГБ и 2,9 ГБ — разные решения, и тому, кому нужен только русский,
+    /// незачем отдавать 4,4 ГБ. Числа — вес репозиториев WhisperKit.
+    public var sizeGB: Double {
+        variant == WhisperModel.large ? 2.9 : 1.5
+    }
+
+    /// Тот же размер подписью в интерфейсе (запятая — десятичный разделитель русского).
+    public var sizeText: String {
+        variant == WhisperModel.large ? "2,9 ГБ" : "1,5 ГБ"
+    }
+
+    /// Все модели в порядке первого языка, который их просит.
+    public static let all: [ModelBundle] = {
+        var order: [String] = []
+        var languages: [String: [Language]] = [:]
+        for language in Language.allCases {
+            let variant = language.whisperModel
+            if languages[variant] == nil { order.append(variant) }
+            languages[variant, default: []].append(language)
+        }
+        return order.map { ModelBundle(variant: $0, languages: languages[$0] ?? []) }
+    }()
+
+    /// Модель, на которой работает язык.
+    public static func bundle(for language: Language) -> ModelBundle {
+        all.first { $0.variant == language.whisperModel }
+            ?? ModelBundle(variant: language.whisperModel, languages: [language])
+    }
+}
+
+/// Варианты моделей Whisper. Русский и английский обслуживает turbo, украинский — large-v3.
 ///
 /// «Смешанная речь (RU + UK)» когда-то уводила русские сессии с turbo на large-v3 — из общего
 /// соображения, что turbo слабее на украинском (22.8 % WER против 13.7 %). Замер на семи
@@ -44,7 +103,7 @@ public enum Language: String, CaseIterable, Codable, Sendable {
 /// Поэтому тумблер смешанной речи остался ровно тем, что действительно работает, —
 /// добавкой к промпту (`PromptBuilder`), и стоит теперь примерно ничего.
 public enum WhisperModel {
-    /// Быстрая модель русских сессий.
+    /// Быстрая модель русских и английских сессий.
     public static let turbo = "openai_whisper-large-v3-v20240930_turbo"
     /// Большая модель — основная для украинского.
     public static let large = "openai_whisper-large-v3"
