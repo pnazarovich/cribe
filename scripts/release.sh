@@ -17,7 +17,12 @@
 #                 Список установленных: security find-identity -v -p codesigning
 #                 Особое значение "-" — ad-hoc подпись; годится ТОЛЬКО с --skip-notarize,
 #                 чтобы проверить упаковку без сертификата.
-#   APPLE_ID      обязательна без --skip-notarize. Apple ID аккаунта разработчика.
+#   NOTARY_PROFILE  имя сохранённого профиля notarytool. Задан — APPLE_ID/TEAM_ID/APP_PASSWORD
+#                 не нужны вовсе, и пароль не появляется ни в командах, ни в истории оболочки.
+#                 Создаётся один раз:
+#                     xcrun notarytool store-credentials "имя" \
+#                       --apple-id … --team-id … --password …
+#   APPLE_ID      обязательна без --skip-notarize и без NOTARY_PROFILE. Apple ID разработчика.
 #   TEAM_ID       обязательна без --skip-notarize. Team ID (10 символов), виден
 #                 на https://developer.apple.com/account → Membership details.
 #   APP_PASSWORD  обязательна без --skip-notarize. App-specific password, создаётся на
@@ -80,15 +85,26 @@ if [ "$DEVELOPER_ID" = "-" ] && [ "$SKIP_NOTARIZE" -eq 0 ]; then
   Либо укажите настоящий сертификат Developer ID, либо добавьте --skip-notarize."
 fi
 
-if [ "$SKIP_NOTARIZE" -eq 0 ]; then
+if [ "$SKIP_NOTARIZE" -eq 0 ] && [ -z "${NOTARY_PROFILE:-}" ]; then
   for name in APPLE_ID TEAM_ID APP_PASSWORD; do
     if [ -z "${!name:-}" ]; then
       fail "не задана $name — она нужна для нотаризации.
-  Задайте APPLE_ID, TEAM_ID и APP_PASSWORD (см. шапку $0)
-  или запустите с --skip-notarize, чтобы собрать только DMG."
+  Задайте NOTARY_PROFILE (сохранённый профиль notarytool) либо APPLE_ID, TEAM_ID
+  и APP_PASSWORD (см. шапку $0), или запустите с --skip-notarize, чтобы собрать только DMG."
     fi
   done
 fi
+
+# Учётные данные notarytool: сохранённый профиль (пароль лежит в связке ключей и в командах
+# не появляется вовсе) либо три переменные окружения. Функцией, а не массивом аргументов, —
+# по той же причине, что и у ключа Sparkle ниже: bash 3.2 под `set -u`.
+notarytool_run() {
+  if [ -n "${NOTARY_PROFILE:-}" ]; then
+    xcrun notarytool "$@" --keychain-profile "$NOTARY_PROFILE"
+  else
+    xcrun notarytool "$@" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD"
+  fi
+}
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
 # Sparkle сравнивает выпуски по CFBundleVersion, а не по «человеческой» версии: не поднять
@@ -200,8 +216,7 @@ if [ "$SKIP_NOTARIZE" -eq 1 ]; then
   step "Нотаризация пропущена (--skip-notarize)"
 else
   step "Нотаризация .app"
-  xcrun notarytool submit "$ZIP" \
-    --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
+  notarytool_run submit "$ZIP" --wait
 
   step "Степлер .app"
   xcrun stapler staple "$APP"
@@ -274,8 +289,7 @@ rm -f "$RWDMG"
 if [ "$SKIP_NOTARIZE" -eq 0 ]; then
   step "Подпись, нотаризация и степлер DMG"
   codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG"
-  xcrun notarytool submit "$DMG" \
-    --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
+  notarytool_run submit "$DMG" --wait
   xcrun stapler staple "$DMG"
   xcrun stapler validate "$DMG"
 fi
