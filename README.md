@@ -43,12 +43,6 @@ English dictation is there too, on the same model Russian already uses.
 - **Optional GPT cleanup.** Punctuation, capitalization, filler removal, and voice commands
   ("new line", "comma"). Authenticate with an OpenAI API key *or* by signing in with your
   ChatGPT account. Turn it off and everything still works — layer 2 is the guarantee.
-- **Mixed RU + UK speech.** A toggle that appends a code-switched sample to the Whisper
-  prompt, so Ukrainian words inserted into Russian sentences survive instead of being
-  Russified. The sample is mostly Russian with one Ukrainian island inside: a fully Ukrainian
-  sample made the decoder flip the whole sentence to Ukrainian. The model does not change —
-  measurements showed `large-v3` costs 5.5× the pass time without recognizing the inclusions
-  any better.
 - **Glass HUD.** A non-activating floating panel — it never steals focus, so the insert always
   goes to the window you were typing in.
 
@@ -237,9 +231,15 @@ several times longer. If it is not on disk, the app tells you it is 2.9 GB and a
   Subsequent launches are fast.
 - **The App Store is impossible.** The app needs a global event tap and synthetic keystrokes;
   the App Sandbox forbids both. Distribution is Developer ID + notarization only.
-- **Mixed-language speech is a compromise.** No Whisper model handles code-switching well;
-  the "Mixed RU + UK" toggle only biases the prompt, and long Ukrainian inclusions still come
-  back mangled sometimes. It does keep the dominant language of the sentence intact.
+- **Code-switching is not supported.** Pick the language you are dictating in; the session
+  forces it. A "Mixed RU + UK" toggle used to append a code-switched sample to the Whisper
+  prompt, and on synthesized fixtures it measured fine — on real speech it turned out to be a
+  language switch rather than a hint: a Russian dictation came back entirely in Ukrainian, and
+  the GPT pass then polished the Ukrainian instead of undoing it. A dose ladder over real
+  recordings (0, 2, 4, 8 Ukrainian words in the prompt) found no middle ground: prompts that
+  kept the Russian base produced no Ukrainian words at all, and the one that produced Ukrainian
+  produced it everywhere. The toggle is gone; Ukrainian words spoken inside a Russian dictation
+  come back Russified.
 - With macOS "natural scrolling" disabled, the card swipe gesture goes the other way.
 
 ## Architecture

@@ -55,17 +55,6 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).cardsWhenNoField)
     }
 
-    /// Смешанная речь выключена по умолчанию: украинский образец в промпте нужен не всем,
-    /// а тем, кто мешает языки. Ключ хранения — старый (`ruUsesLargeModel`), иначе тумблер
-    /// сбросился бы у тех, кто его уже включил.
-    func testMixedSpeechIsOffByDefaultAndPersists() {
-        XCTAssertFalse(AppSettings(defaults: defaults).mixedSpeech)
-
-        AppSettings(defaults: defaults).mixedSpeech = true
-        XCTAssertTrue(AppSettings(defaults: defaults).mixedSpeech)
-        XCTAssertTrue(defaults.bool(forKey: "ruUsesLargeModel"))
-    }
-
     /// У перевода своя пара «модель + усилие» с собственными дефолтами.
     func testTranslateModelDefaults() {
         let settings = AppSettings(defaults: defaults)

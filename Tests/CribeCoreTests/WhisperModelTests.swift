@@ -54,15 +54,12 @@ final class WhisperModelTests: XCTestCase {
         }
     }
 
-    /// Смешанная речь на выбор модели не влияет — она живёт целиком в промпте.
-    /// Проверяем именно это: промпт русской сессии меняется, а модель — нет.
-    func testMixedSpeechChangesPromptNotModel() {
-        let plain = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: false)
-        let mixed = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
-
-        XCTAssertNotEqual(plain, mixed)
-        XCTAssertTrue(mixed.contains("перевірити налаштування"))
-        XCTAssertFalse(plain.contains("перевірити налаштування"))
+    /// Русская сессия работает на turbo, украинская — на large-v3, и выбор этот делает
+    /// только язык. Смешанной речи среди оснований больше нет: моделью её не лечат
+    /// (см. `WhisperModel`), а промптом — тем более (см. `PromptBuilder`).
+    func testModelIsChosenByLanguageAlone() {
         XCTAssertEqual(Language.ru.whisperModel, WhisperModel.turbo)
+        XCTAssertEqual(Language.en.whisperModel, WhisperModel.turbo)
+        XCTAssertEqual(Language.uk.whisperModel, WhisperModel.large)
     }
 }
