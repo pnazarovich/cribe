@@ -13,16 +13,16 @@
 #
 # ГДЕ ВЗЯТЬ ПРОФИЛЬ (разово, на developer.apple.com):
 #   1. Certificates, Identifiers & Profiles → Identifiers → App ID
-#      `online.nazarovych.transcriber`, включить Keychain Sharing с группой
-#      `online.nazarovych.transcriber` (Team ID добавляется системой).
+#      `online.nazarovych.cribe`, включить Keychain Sharing с группой
+#      `online.nazarovych.cribe` (Team ID добавляется системой).
 #   2. Profiles → «Developer ID» (macOS, distribution) для этого App ID → скачать.
-#   3. Положить файл в корень репозитория как `Transcriber.provisionprofile`
+#   3. Положить файл в корень репозитория как `Cribe.provisionprofile`
 #      (или указать путь в PROVISION_PROFILE) и пересобрать.
 #
 # Печатает в stdout путь к entitlements-файлу для codesign.
 prepare_entitlements() {
   local source="$1" app="$2" identity="$3"
-  local profile="${PROVISION_PROFILE:-Transcriber.provisionprofile}"
+  local profile="${PROVISION_PROFILE:-Cribe.provisionprofile}"
 
   if [ "$identity" != "-" ] && [ -f "$profile" ]; then
     # Профиль должен лежать внутри бандла до подписи: codesign запечатывает Contents/.

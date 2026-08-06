@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Transcriber",
+    name: "Cribe",
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(
@@ -15,33 +15,33 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "TranscriberCore",
+            name: "CribeCore",
             dependencies: [
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ]
         ),
         .executableTarget(
-            name: "Transcriber",
+            name: "Cribe",
             dependencies: [
-                "TranscriberCore",
+                "CribeCore",
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),
         .executableTarget(
-            name: "TranscriberCLI",
-            dependencies: ["TranscriberCore"]
+            name: "CribeCLI",
+            dependencies: ["CribeCore"]
         ),
         .testTarget(
-            name: "TranscriberCoreTests",
-            dependencies: ["TranscriberCore"]
+            name: "CribeCoreTests",
+            dependencies: ["CribeCore"]
         ),
         // Тесты самого приложения: стопка карточек живёт окнами, и её поведение
         // (вытеснение, освобождение окна) проверяется только здесь.
         .testTarget(
-            name: "TranscriberAppTests",
-            dependencies: ["Transcriber"]
+            name: "CribeAppTests",
+            dependencies: ["Cribe"]
         ),
     ]
 )

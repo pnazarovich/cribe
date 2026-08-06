@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Лента обновлений Sparkle. Приложение читает её по адресу
-  https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml
+  https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml
   то есть отдаёт ленту сам GitHub, а отдельного хостинга у проекта нет.
 
   Файл пишет scripts/release.sh — руками сюда лазить не нужно. Свежий <item> он
@@ -10,9 +10,9 @@
 -->
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>Transcriber</title>
-    <link>https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml</link>
-    <description>Обновления Transcriber</description>
+    <title>Cribe</title>
+    <link>https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml</link>
+    <description>Обновления Cribe</description>
     <language>ru</language>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>

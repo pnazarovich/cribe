@@ -10,7 +10,7 @@
 	<true/>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>JC6637SY79.online.nazarovych.transcriber</string>
+		<string>JC6637SY79.online.nazarovych.cribe</string>
 	</array>
 </dict>
 </plist>

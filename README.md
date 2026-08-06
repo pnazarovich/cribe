@@ -1,6 +1,6 @@
-# Transcriber
+# Cribe
 
-[![CI](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/pnazarovich/transcriber/actions/workflows/ci.yml)
+[![CI](https://github.com/pnazarovich/cribe/actions/workflows/ci.yml/badge.svg)](https://github.com/pnazarovich/cribe/actions/workflows/ci.yml)
 
 **Local Russian/Ukrainian/English dictation for macOS.** Hold nothing, install nothing in the cloud:
 press the right ⌘, speak, and your words land in whatever text field has the cursor.
@@ -22,7 +22,7 @@ working normally with the same key. Both shortcuts are remappable in Settings.
 ## Why it exists
 
 Cloud dictation is excellent at English and mediocre at everything else — and it ships your
-voice to somebody's server. Transcriber targets the opposite corner: Russian and Ukrainian
+voice to somebody's server. Cribe targets the opposite corner: Russian and Ukrainian
 speech that is full of English technical terms, recognized locally, with the terms coming out
 in Latin script the way you would type them (`деплой` → `deploy`, `в гитхабе` → `GitHub`).
 English dictation is there too, on the same model Russian already uses.
@@ -83,11 +83,11 @@ English dictation is there too, on the same model Russian already uses.
 ## Build and install
 
 ```bash
-git clone https://github.com/pnazarovich/transcriber.git
-cd transcriber
+git clone https://github.com/pnazarovich/cribe.git
+cd cribe
 bash scripts/build-app.sh
-cp -R dist/Transcriber.app /Applications/
-open /Applications/Transcriber.app
+cp -R dist/Cribe.app /Applications/
+open /Applications/Cribe.app
 ```
 
 By default the app is signed **ad-hoc**, which means macOS forgets the microphone and
@@ -103,7 +103,7 @@ SIGN_IDENTITY="Apple Development: Jane Doe (ABCDE12345)" bash scripts/build-app.
 > the SPM accessor can find it at runtime. `swift build` / `swift test` are fine for the
 > library and the tests.
 
-The bundle identifier is `online.nazarovych.transcriber` (in `Info.plist`). Change it to your
+The bundle identifier is `online.nazarovych.cribe` (in `Info.plist`). Change it to your
 own reverse-DNS identifier if you plan to distribute your build — it also names the keychain
 service, the keychain access group in `Release.entitlements` / `Dev.entitlements`, and the
 `os_log` subsystem.
@@ -117,7 +117,7 @@ the script.
 Released builds update themselves through [Sparkle 2](https://sparkle-project.org). The app
 reads its appcast from
 
-    https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml
+    https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml
 
 so GitHub serves the feed and there is no separate hosting to keep alive. Every release ships
 two artifacts: a `.dmg` for people installing for the first time, and a `.zip` next to it that
@@ -139,7 +139,7 @@ stop, permanently, for everyone who already installed the app).
 
 ## First run
 
-Install by dragging **Transcriber.app** from the DMG onto **Applications**, then launch it.
+Install by dragging **Cribe.app** from the DMG onto **Applications**, then launch it.
 A setup window comes up on its own — it is a single screen with a checklist, and it never
 appears again once you have seen it (**Initial setup…** in the menu brings it back).
 
@@ -182,10 +182,10 @@ appears again once you have seen it (**Initial setup…** in the menu brings it 
 
 | What | Where |
 | --- | --- |
-| Dictionary | `~/Library/Application Support/Transcriber/dictionary.json` |
-| Recordings | `~/Library/Application Support/Transcriber/recordings/` |
-| Custom sounds | `~/Library/Application Support/Transcriber/sounds/` |
-| API key and ChatGPT tokens | System keychain, service `online.nazarovych.transcriber` |
+| Dictionary | `~/Library/Application Support/Cribe/dictionary.json` |
+| Recordings | `~/Library/Application Support/Cribe/recordings/` |
+| Custom sounds | `~/Library/Application Support/Cribe/sounds/` |
+| API key and ChatGPT tokens | System keychain, service `online.nazarovych.cribe` |
 | Everything else | Settings window (hotkeys, language, model, effort, auto-stop, input device) |
 
 The dictionary is watched for changes, so you can edit the JSON in any editor and the app
@@ -210,7 +210,7 @@ it again.
 
 | What | Value |
 | --- | --- |
-| Where | `~/Library/Application Support/Transcriber/recordings/` |
+| Where | `~/Library/Application Support/Cribe/recordings/` |
 | Format | 16 kHz mono 16-bit WAV (~1.9 MB per minute) |
 | How many | The 3 most recent by default — Settings → General → *Recordings* (none / 1 / 3) |
 | How long | 5 minutes per recording; anything longer is stored truncated |
@@ -256,11 +256,11 @@ hotkey ▶ AudioRecorder (AVAudioEngine, 16 kHz mono, pre-warmed)
 
 Swift package with three targets:
 
-- `TranscriberCore` — everything testable and UI-free: audio, ASR, the dictionary layers, the
+- `CribeCore` — everything testable and UI-free: audio, ASR, the dictionary layers, the
   GPT client, text insertion, settings.
-- `Transcriber` — the SwiftUI/AppKit app: menu bar, HUD panel, cards, dictionary editor.
-- `TranscriberCLI` — runs the whole pipeline over a WAV file, which is how the pipeline is
-  exercised without a UI: `swift run TranscriberCLI file.wav --lang ru|uk|en --no-gpt`.
+- `Cribe` — the SwiftUI/AppKit app: menu bar, HUD panel, cards, dictionary editor.
+- `CribeCLI` — runs the whole pipeline over a WAV file, which is how the pipeline is
+  exercised without a UI: `swift run CribeCLI file.wav --lang ru|uk|en --no-gpt`.
 
 See `docs/superpowers/specs/` for the design document (in Russian) and `docs/research/` for the
 model comparison that led to these choices.
@@ -288,7 +288,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## По-русски
 
-**Transcriber — локальная диктовка для macOS на русском и украинском.**
+**Cribe — локальная диктовка для macOS на русском и украинском.**
 
 Правый **⌘** — начать диктовку, он же — закончить и вставить текст в поле с курсором.
 Правый **⌥** — то же самое с переводом на английский. **Esc** — отмена.
@@ -309,23 +309,23 @@ MIT — see [LICENSE](LICENSE).
 
 ```bash
 bash scripts/build-app.sh
-cp -R dist/Transcriber.app /Applications/
+cp -R dist/Cribe.app /Applications/
 ```
 
-Готовый DMG ставится перетаскиванием Transcriber.app на «Программы». При первом запуске
+Готовый DMG ставится перетаскиванием Cribe.app на «Программы». При первом запуске
 приложение само откроет окно настройки: микрофон, Универсальный доступ (без него текст
 всё равно попадёт в буфер обмена), модель нужного языка и — по желанию — вход в ChatGPT
 прямо в этом окне. Скачивание модели ничего не держит: пропустили — первая диктовка
 дотянет сама. Каждая модель один раз компилируется под нейродвижок, это пара минут.
 
-Словарь живёт в `~/Library/Application Support/Transcriber/dictionary.json` и перечитывается
+Словарь живёт в `~/Library/Application Support/Cribe/dictionary.json` и перечитывается
 на лету; свои звуки старта и остановки кладутся в соседнюю папку `sounds/`.
 
 **Запись диктовки не пропадает.** Распознавание иногда теряет речь — на тихом входе, на
 длинном плотном монологе, просто на неудачном проходе. Раньше звук исчезал вместе с
 неудачей; теперь он остаётся на диске, а меню → **История…** позволяет разобрать его заново.
 
-- Лежит в `~/Library/Application Support/Transcriber/recordings/`, WAV 16 кГц моно
+- Лежит в `~/Library/Application Support/Cribe/recordings/`, WAV 16 кГц моно
   (~1,9 МБ на минуту). Никуда не отправляется.
 - Хранятся **три последние** записи (настройки → Общие → «Записи диктовок»: не хранить /
   последнюю / три последних). Одна запись — не длиннее пяти минут, дольше ляжет обрезанной.

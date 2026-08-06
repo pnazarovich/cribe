@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>ru</string>
 	<key>CFBundleExecutable</key>
-	<string>Transcriber</string>
+	<string>Cribe</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>online.nazarovych.transcriber</string>
+	<string>online.nazarovych.cribe</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Transcriber</string>
+	<string>Cribe</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,13 +25,13 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Transcriber использует микрофон для записи вашей речи и её распознавания на этом компьютере.</string>
+	<string>Cribe использует микрофон для записи вашей речи и её распознавания на этом компьютере.</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUEnableSystemProfiling</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>Lkmv193uXVcWRpbvpjn0LtsLSDdT9/GC4+r+aZhK/eA=</string>
 	<key>SUScheduledCheckInterval</key>

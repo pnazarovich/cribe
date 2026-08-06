@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Релизная сборка Transcriber: .app → подпись Developer ID → нотаризация → .dmg,
+# Релизная сборка Cribe: .app → подпись Developer ID → нотаризация → .dmg,
 # а следом — то, что нужно автообновлению: .zip, его подпись EdDSA и новый <item>
 # в appcast.xml.
 #
 # ЧТО ПОЛУЧАЕТСЯ
-#   dist/Transcriber-<версия>.dmg  — для тех, кто ставит впервые (перетащить в Программы);
-#   dist/Transcriber-<версия>.zip  — для Sparkle (по zip обновление ставится надёжнее);
+#   dist/Cribe-<версия>.dmg  — для тех, кто ставит впервые (перетащить в Программы);
+#   dist/Cribe-<версия>.zip  — для Sparkle (по zip обновление ставится надёжнее);
 #   appcast.xml                    — обновлён новым выпуском (коммит и пуш — за вами).
 #   Оба файла нужно приложить к релизу на GitHub с тегом v<версия>: адрес zip в appcast
 #   рассчитан именно на этот тег и на это имя файла.
@@ -37,7 +37,7 @@
 #
 # ЗАПУСК
 #   DEVELOPER_ID="Developer ID Application: …" APPLE_ID=… TEAM_ID=… APP_PASSWORD=… \
-#     SPARKLE_PRIVATE_KEY_FILE=~/.keys/transcriber-sparkle.key \
+#     SPARKLE_PRIVATE_KEY_FILE=~/.keys/cribe-sparkle.key \
 #     bash scripts/release.sh
 #
 #   # проверка упаковки без сертификата и без нотаризации (получится неподписанный DMG,
@@ -114,7 +114,7 @@ PUBLIC_ED_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" Info.plist)
 NOTES="release-notes/$VERSION.md"
 APPCAST="appcast.xml"
 ANCHOR="NEW-ITEM-ANCHOR"
-RELEASE_URL="https://github.com/pnazarovich/transcriber/releases/download/v$VERSION"
+RELEASE_URL="https://github.com/pnazarovich/cribe/releases/download/v$VERSION"
 
 # Заглушка из репозитория: пока владелец не вставил свой публичный ключ, подписывать
 # обновления нечем — и выпускать их нельзя, иначе установленные копии получат архив,
@@ -164,14 +164,14 @@ sign_update_run() {
   fi
 }
 
-APP="dist/Transcriber.app"
-ZIP="dist/Transcriber-$VERSION.zip"
-DMG="dist/Transcriber-$VERSION.dmg"
+APP="dist/Cribe.app"
+ZIP="dist/Cribe-$VERSION.zip"
+DMG="dist/Cribe-$VERSION.dmg"
 STAGE="dist/dmg-stage"
 # Имя тома видно в Finder и в /Volumes — версия там только мешает: пользователю нужно
-# «Transcriber», а номер сборки и так стоит в имени файла DMG.
-VOLNAME="Transcriber"
-RWDMG="dist/Transcriber-rw.dmg"
+# «Cribe», а номер сборки и так стоит в имени файла DMG.
+VOLNAME="Cribe"
+RWDMG="dist/Cribe-rw.dmg"
 
 # --- Сборка ------------------------------------------------------------------
 
@@ -262,7 +262,7 @@ tell application "Finder"
     set icon size of theViewOptions to 128
     set text size of theViewOptions to 13
     -- Приложение слева, папка «Программы» справа: перетаскивание читается само собой.
-    set position of item "Transcriber.app" of container window to {160, 170}
+    set position of item "Cribe.app" of container window to {160, 170}
     set position of item "Applications" of container window to {480, 170}
     close
     open

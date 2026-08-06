@@ -1,0 +1,931 @@
+import AppKit
+import KeyboardShortcuts
+import ServiceManagement
+import SwiftUI
+import CribeCore
+
+/// Раздел настроек: строка бокового списка и панель за ней.
+private enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case ai
+    case dictionary
+    case about
+
+    /// Идентификатор — сам раздел: выбор в боковом списке привязан к `SettingsPane?`,
+    /// а `List` берёт тип выбора из `ID` своих строк.
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .general: return "Общие"
+        case .ai: return "AI"
+        case .dictionary: return "Словарь"
+        case .about: return "О программе"
+        }
+    }
+
+    /// Символы без `.circle`-вариантов: строка списка и так читается контейнером.
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .ai: return "sparkles"
+        case .dictionary: return "text.book.closed"
+        case .about: return "info"
+        }
+    }
+}
+
+/// Настройки боковым списком, как в системных: разделов четыре, и вкладками поверху
+/// они переставали читаться с первого взгляда.
+struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+    let dictionaryURL: URL
+
+    @State private var selection: SettingsPane? = .general
+
+    /// Список моделей и вход в ChatGPT живут выше панелей: панель раздела пересоздаётся на
+    /// каждом переключении, а загруженный список и идущий device-code этого пережить
+    /// обязаны — иначе вход обрывался бы щелчком по соседней строке.
+    @StateObject private var models = ModelListModel()
+    @StateObject private var codex = CodexAuthModel()
+
+    private var pane: SettingsPane { selection ?? .general }
+
+    var body: some View {
+        // Две колонки руками, а не `NavigationSplitView`: тот на macOS 26 рисует сайдбару
+        // собственную вставную панель со своим радиусом внутри радиуса окна — «двойной
+        // бортик», который Apple откатила в следующем релизе, и погасить его снаружи нечем
+        // (ни `scrollContentBackground`, ни `backgroundStyle` до него не достают —
+        // проверено). Заодно уходит и кнопка сворачивания: сворачивать список на четыре
+        // раздела незачем, а висела она одна в пустом тулбаре.
+        HStack(spacing: 0) {
+            list
+            // Граница колонок — волосяная линия, как и вся глубина в окне: ступень фона
+            // плюс hairline, без бортиков и теней.
+            Divider()
+            detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // Заголовок окна — текущий раздел.
+        .navigationTitle(pane.title)
+        // Сквозь окно настроек видно рабочий стол. Плашки секций рисует сама `Form`
+        // полупрозрачной заливкой — им остаётся только эта подложка (см. `settingsForm`).
+        .glassWindow()
+        // Границы окна: ширина от нижней планки до чего угодно, высоту при открытии задаёт
+        // `idealHeight`. Без него окно тянулось по самой длинной панели и под четырьмя
+        // строками списка оставалась пустая треть.
+        .frame(
+            minWidth: 640, maxWidth: .infinity,
+            minHeight: 440, idealHeight: 520, maxHeight: .infinity
+        )
+        // Поллинг device-code живёт до 15 минут — закрытые настройки не должны
+        // продолжать долбить auth.openai.com каждые пять секунд.
+        .onDisappear { codex.cancel() }
+    }
+
+    /// Боковой список: до краёв окна, без своего фона и без своего радиуса. Фоном ему
+    /// служит подложка окна — та же, что и у панели справа.
+    private var list: some View {
+        List(SettingsPane.allCases, selection: $selection) { row in
+            Label {
+                Text(row.title)
+            } icon: {
+                // Иконка цветная и следует за системным акцентом. У выделенной строки
+                // тинт снимаем: там заливка акцентом, и акцент по акценту не читается —
+                // цвет содержимого выделения система подбирает сама.
+                Image(systemName: row.icon)
+                    .foregroundStyle(row == selection ? AnyShapeStyle(.foreground)
+                                                      : AnyShapeStyle(Color.accentColor))
+            }
+        }
+        // Стиль сайдбара — ради выделения скруглённой заливкой; фон при этом свой.
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        // Ширина под самую длинную строку — «О программе».
+        .frame(width: 200)
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch pane {
+        case .general: GeneralPane(settings: settings)
+        case .ai: AIPane(settings: settings, models: models, codex: codex)
+        case .dictionary: DictionaryPane(url: dictionaryURL)
+        case .about: AboutPane()
+        }
+    }
+}
+
+// MARK: - Общие
+
+private struct GeneralPane: View {
+    @ObservedObject var settings: AppSettings
+
+    /// Загрузчик один на приложение: настройки и онбординг показывают одно состояние.
+    @ObservedObject private var downloader = ModelDownloader.shared
+
+    /// Тумблер автопроверки ходит прямо в Sparkle — своего флага у настроек нет.
+    @ObservedObject private var updates = UpdateController.shared
+
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchNote: String?
+    @State private var accessibilityGranted = TextInserter.hasAccessibility
+    /// Сколько записей лежит на диске прямо сейчас: обещание «предсказуемый объём» стоит
+    /// ровно столько, сколько его видно.
+    @State private var recordingBytes = RecordingStore.shared.bytesOnDisk()
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Кнопка записи:", selection: $settings.dictationHotkeyMode) {
+                    Text("Правый ⌘").tag(HotkeyMode.rightCommand)
+                    Text("Свой шорткат").tag(HotkeyMode.custom)
+                }
+
+                switch settings.dictationHotkeyMode {
+                case .rightCommand:
+                    EmptyView()
+                case .custom:
+                    KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
+                    KeyboardShortcuts.Recorder("Диктовка с переводом:", name: .toggleTranslateDictation)
+                }
+
+                KeyboardShortcuts.Recorder("Сменить язык:", name: .switchLanguage)
+            } header: {
+                Text("Запись")
+            } footer: {
+                switch settings.dictationHotkeyMode {
+                case .rightCommand:
+                    caption(
+                        accessibilityGranted
+                            ? "Правый ⌥ — диктовка с переводом на английский. Esc отменяет запись."
+                            : "Правый ⌥ — диктовка с переводом на английский. "
+                                + "Нужно разрешение Accessibility."
+                    )
+                case .custom:
+                    caption("Esc отменяет запись в любом режиме.")
+                }
+            }
+
+            Section {
+                Picker("Язык:", selection: $settings.language) {
+                    ForEach(Language.allCases, id: \.self) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+
+                Toggle("Смешанная речь (RU + UK)", isOn: $settings.mixedSpeech)
+                Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
+            } header: {
+                Text("Распознавание")
+            } footer: {
+                caption(
+                    "Смешанная речь подсказывает распознаванию украинские слова внутри "
+                        + "русской диктовки: вкрапления остаются украинскими, а основа — "
+                        + "русской. На скорость не влияет."
+                )
+            }
+
+            Section {
+                // Строка — модель, а не язык: русский и английский работают на одной,
+                // и двумя строками она обещала бы вторые полтора гигабайта, которых нет.
+                ForEach(ModelBundle.all) { bundle in
+                    // Движок в приложении один и живёт в `AppCore`: сцена настроек создаётся
+                    // без него, а выгружать прогретую модель перед удалением надо у того же.
+                    ModelDownloadRow(
+                        bundle: bundle,
+                        downloader: downloader,
+                        engine: AppCore.shared.engine
+                    )
+                }
+            } header: {
+                Text("Модели распознавания")
+            } footer: {
+                caption(
+                    "Каждая модель качается отдельно и один раз — она остаётся в Application "
+                        + "Support. Пока её нет, первая диктовка на этом языке начнётся с загрузки. "
+                        + "Русский и English работают на одной модели: второй раз она не качается "
+                        + "и удаляется сразу для обоих."
+                )
+            }
+
+            Section {
+                Picker("Хранить записи:", selection: $settings.keptRecordings) {
+                    Text("Не хранить").tag(0)
+                    Text("Последнюю").tag(1)
+                    Text("Три последних").tag(3)
+                }
+
+                Button("Стереть записи") {
+                    RecordingStore.shared.removeAll()
+                    recordingBytes = 0
+                }
+                .disabled(recordingBytes == 0)
+            } header: {
+                Text("Записи диктовок")
+            } footer: {
+                caption(
+                    "Звук диктовки остаётся на диске, чтобы потерянную речь можно было "
+                        + "распознать заново из «Истории…». Лежит в Application Support → "
+                        + "Cribe → recordings, никуда не отправляется. Сейчас занято: "
+                        + ByteCountFormatter.string(fromByteCount: recordingBytes, countStyle: .file)
+                        + ". Одна запись — не длиннее пяти минут."
+                )
+            }
+
+            Section {
+                Toggle("Карточки, если нет поля ввода", isOn: $settings.cardsWhenNoField)
+            } header: {
+                Text("Вставка")
+            } footer: {
+                caption(
+                    "Текст покажется карточкой внизу слева — её можно перетащить в любое поле. "
+                        + "Выключено: Cmd-V уходит в приложение всегда."
+                )
+            }
+
+            Section {
+                Toggle("Звуки старта и окончания записи", isOn: $settings.soundsEnabled)
+
+                // Тумблер ведомый: значение меняем только после успешного вызова SMAppService,
+                // иначе галочка врала бы о фактическом состоянии.
+                Toggle("Запускать при входе в систему", isOn: Binding(
+                    get: { launchAtLogin },
+                    set: { setLaunchAtLogin($0) }
+                ))
+
+                Toggle("Проверять обновления автоматически", isOn: $updates.automaticallyChecks)
+            } header: {
+                Text("Приложение")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let launchNote {
+                        caption(launchNote)
+                    }
+                    caption(
+                        "Проверка идёт раз в сутки. Найденное обновление ждёт строкой в меню — "
+                            + "окно не открывается поверх работы само."
+                    )
+                }
+            }
+        }
+        .settingsForm()
+        .onAppear {
+            syncLaunchState()
+            // Разрешение выдают в системном окне — при возврате в настройки перечитываем.
+            accessibilityGranted = TextInserter.hasAccessibility
+            // Модель могла доехать мимо настроек — например, её дотянула первая диктовка.
+            downloader.refresh()
+            recordingBytes = RecordingStore.shared.bytesOnDisk()
+        }
+        // Кольцо укоротили — лишние записи уходят сразу, а не после следующей диктовки:
+        // «не хранить» должно означать «уже не хранится».
+        .onChange(of: settings.keptRecordings) { _, keeping in
+            RecordingStore.shared.prune(keeping: keeping)
+            recordingBytes = RecordingStore.shared.bytesOnDisk()
+        }
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            syncLaunchState()
+        } catch {
+            launchNote = error.localizedDescription
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    private func syncLaunchState() {
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        launchNote = status == .requiresApproval
+            ? "Разрешите Cribe в «Основные → Объекты входа»."
+            : nil
+    }
+}
+
+/// Строка одной модели: языки, которые на ней работают, её состояние и одна кнопка —
+/// «Скачать», «Отмена» или «Удалить». Удаление спрашивает подтверждение: это гигабайты,
+/// повторное скачивание, а на общей модели — сразу оба её языка.
+private struct ModelDownloadRow: View {
+    let bundle: ModelBundle
+    @ObservedObject var downloader: ModelDownloader
+    let engine: WhisperEngine
+
+    @State private var confirmingRemoval = false
+    @State private var removalError: String?
+
+    private var state: ModelDownloadState { downloader.state(of: bundle) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text(bundle.displayName)
+                Spacer(minLength: 8)
+                status
+                action
+            }
+            if let removalError {
+                Text(removalError).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Удалить модель «\(bundle.displayName)»?",
+            isPresented: $confirmingRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Удалить", role: .destructive) { remove() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            if case let .installed(bytes) = state {
+                // На общей модели удаление уносит оба языка сразу — это и есть то, что
+                // обязано быть сказано до нажатия, а не выясниться следующей диктовкой.
+                Text(
+                    bundle.languages.count > 1
+                        ? "Освободится \(Self.size(bytes)) — модель уйдёт сразу у языков "
+                            + "\(bundle.displayName). Скачать заново можно в любой момент."
+                        : "Освободится \(Self.size(bytes)). Скачать заново можно в любой момент."
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch state {
+        case .missing:
+            Text("Не скачана · ≈\(Self.size(ModelDownloader.approximateBytes(for: bundle)))")
+                .foregroundStyle(.secondary)
+        case let .downloading(fraction):
+            ProgressView(value: fraction)
+                .frame(width: 120)
+            Text(fraction.formatted(.percent.precision(.fractionLength(0))))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        case let .installed(bytes):
+            Text("Установлена · \(Self.size(bytes))")
+                .foregroundStyle(.secondary)
+        case let .failed(message):
+            Text(message)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        switch state {
+        case .missing, .failed:
+            Button("Скачать") {
+                Task { await downloader.download(bundle, engine: engine) }
+            }
+        case .downloading:
+            Button("Отмена") { downloader.cancel(bundle) }
+        case .installed:
+            Button("Удалить") { confirmingRemoval = true }
+        }
+    }
+
+    private func remove() {
+        do {
+            removalError = nil
+            try downloader.remove(bundle, engine: engine)
+        } catch {
+            removalError = error.localizedDescription
+        }
+    }
+
+    private static func size(_ bytes: Int64) -> String {
+        bytes.formatted(.byteCount(style: .file))
+    }
+}
+
+// MARK: - AI
+
+/// Всё про GPT одним разделом: доступ к модели, чистка и перевод. Перевод жил отдельно,
+/// пока у него был свой тумблер; без тумблера остались две пары «модель + усилие», и держать
+/// ради второй пары отдельный раздел — значит прятать её от глаз. Пары не смешиваются:
+/// у каждой свой заголовок, а карточки рекомендаций стоят внутри своей секции.
+private struct AIPane: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var models: ModelListModel
+    @ObservedObject var codex: CodexAuthModel
+
+    @State private var apiKey = ""
+    @State private var apiKeyNote: String?
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Доступ:", selection: $settings.gptMode) {
+                    Text("Аккаунт ChatGPT").tag(GPTAuthMode.codex)
+                    Text("API-ключ OpenAI").tag(GPTAuthMode.apiKey)
+                }
+                .onChange(of: settings.gptMode) { _, mode in
+                    // Списки моделей у бэкендов разные: старый выбор в новом режиме не существует.
+                    models.clear()
+                    settings.gptModel = GPTConfig.defaultModel(for: mode)
+                    // Уход в режим API-ключа прячет блок входа — поллинг за ним не оставляем.
+                    codex.cancel()
+                }
+
+                switch settings.gptMode {
+                case .apiKey: apiKeySection
+                case .codex: codexSection
+                }
+            } header: {
+                Text("Доступ")
+            } footer: {
+                caption(
+                    "Ключ и вход в ChatGPT хранятся в связке ключей macOS — в современной её "
+                        + "части, где доступ даёт подпись разработчика, а не отдельная сборка. "
+                        + "Поэтому пароль от связки приложение не спрашивает, даже после обновления."
+                )
+            }
+
+            Section {
+                Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
+                Toggle("Короткие диктовки — без GPT", isOn: $settings.skipGPTForShort)
+                if settings.skipGPTForShort {
+                    Stepper(
+                        "до \(settings.shortDictationWordLimit) слов",
+                        value: $settings.shortDictationWordLimit,
+                        in: 1...30
+                    )
+                }
+                ModelRow(models: models, selection: $settings.gptModel, config: settings.gptConfig)
+                EffortPicker(selection: $settings.gptEffort)
+                RecommendationCards(
+                    mode: settings.gptMode,
+                    model: $settings.gptModel,
+                    effort: $settings.gptEffort
+                )
+            } header: {
+                Text("Чистка текста")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    caption(
+                        "GPT расставляет знаки, убирает слова-паразиты и держит термины словаря. "
+                            + "На «ок» и «да, давай» чистить нечего — целый круг к модели там лишний."
+                    )
+                    caption(ModelRecommendations.disclaimer)
+                }
+            }
+
+            Section {
+                ModelRow(
+                    models: models,
+                    selection: $settings.translateModel,
+                    config: settings.gptConfig
+                )
+                EffortPicker(selection: $settings.translateEffort)
+                RecommendationCards(
+                    mode: settings.gptMode,
+                    model: $settings.translateModel,
+                    effort: $settings.translateEffort
+                )
+            } header: {
+                Text("Перевод на английский")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    caption(
+                        "Тот же вызов и чистит, и переводит — модель покрупнее здесь окупается. "
+                            + "Постоянный перевод включается в меню строки состояния, "
+                            + "разовый — правым ⌥."
+                    )
+                    caption(ModelRecommendations.disclaimer)
+                }
+            }
+        }
+        .settingsForm()
+        .task {
+            apiKey = SecretStore.getString(SecretStore.apiKeyAccount) ?? ""
+            await codex.refreshStatus()
+        }
+    }
+
+    // MARK: API-ключ
+
+    @ViewBuilder
+    private var apiKeySection: some View {
+        SecureField("API-ключ:", text: $apiKey)
+            .onSubmit { saveAPIKey() }
+        HStack {
+            Button("Сохранить ключ") { saveAPIKey() }
+            if let apiKeyNote {
+                Text(apiKeyNote).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Ключ живёт только в связке ключей: ни UserDefaults, ни файлов.
+    private func saveAPIKey() {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            SecretStore.delete(SecretStore.apiKeyAccount)
+            apiKeyNote = "Ключ удалён"
+        } else {
+            SecretStore.setString(trimmed, account: SecretStore.apiKeyAccount)
+            apiKeyNote = "Ключ сохранён"
+        }
+    }
+
+    // MARK: Аккаунт ChatGPT
+
+    @ViewBuilder
+    private var codexSection: some View {
+        if codex.isAuthorized {
+            HStack {
+                Label("Авторизован", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                Spacer()
+                Button("Выйти") { Task { await codex.logout() } }
+            }
+        } else if let session = codex.session {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Код подтверждения:").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text(session.userCode)
+                        .font(.title.monospaced())
+                        .textSelection(.enabled)
+                    Button {
+                        copy(session.userCode)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .help("Скопировать код")
+                }
+                Link("Открыть страницу подтверждения", destination: session.verificationURL)
+                if codex.isPolling {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Ожидаю подтверждения…").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Отмена") { codex.cancel() }
+                    }
+                }
+            }
+        } else {
+            Button("Авторизоваться") { codex.start() }
+        }
+
+        if let message = codex.message {
+            Text(message).font(.caption).foregroundStyle(.red)
+        }
+    }
+
+    private func copy(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+// MARK: - Словарь
+
+private struct DictionaryPane: View {
+    let url: URL
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Form {
+            Section {
+                Button("Открыть редактор словаря…") {
+                    WindowPresenter.shared.present { openWindow(id: WindowID.dictionary) }
+                }
+            } header: {
+                Text("Редактор")
+            } footer: {
+                caption(
+                    "Термины словаря подсказываются Whisper, дожимаются локальными правилами "
+                        + "с учётом падежей и закрепляются GPT-проходом."
+                )
+            }
+
+            Section {
+                Text(url.path)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Показать в Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            } header: {
+                Text("Файл словаря")
+            } footer: {
+                caption("Обычный JSON: правки снаружи приложение подхватывает само.")
+            }
+        }
+        .settingsForm()
+    }
+}
+
+// MARK: - О программе
+
+private struct AboutPane: View {
+    private static let repository = URL(string: "https://github.com/pnazarovich/cribe")!
+
+    private static let credits: [(name: String, role: String, url: URL)] = [
+        (
+            "WhisperKit",
+            "распознавание речи на Neural Engine",
+            URL(string: "https://github.com/argmaxinc/WhisperKit")!
+        ),
+        (
+            "FluidAudio",
+            "определение речи и тишины",
+            URL(string: "https://github.com/FluidInference/FluidAudio")!
+        ),
+        (
+            "KeyboardShortcuts",
+            "глобальные сочетания клавиш",
+            URL(string: "https://github.com/sindresorhus/KeyboardShortcuts")!
+        ),
+        (
+            "Sparkle",
+            "обновление приложения",
+            URL(string: "https://github.com/sparkle-project/Sparkle")!
+        ),
+    ]
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(alignment: .center, spacing: 16) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 72, height: 72)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Cribe").font(.title2)
+                        Text("Версия \(Self.version)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Link("github.com/pnazarovich/cribe", destination: Self.repository)
+                            .font(.callout)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+            } footer: {
+                caption(
+                    "Локальная диктовка на русском и украинском: правый ⌘ — говорите, "
+                        + "и текст появляется в поле ввода. Речь распознаётся на самом Mac."
+                )
+            }
+
+            Section {
+                ForEach(Self.credits, id: \.name) { credit in
+                    HStack(alignment: .firstTextBaseline) {
+                        Link(credit.name, destination: credit.url)
+                        Text(credit.role)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                    }
+                }
+            } header: {
+                Text("Открытый код")
+            } footer: {
+                caption("Сам Cribe — под лицензией MIT.")
+            }
+        }
+        .settingsForm()
+    }
+
+    /// Версия из Info.plist. В сборке из SwiftPM (без бандла) ключей нет — тогда прочерк.
+    private static var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        guard let build = info?["CFBundleVersion"] as? String else { return short }
+        return "\(short) (\(build))"
+    }
+}
+
+// MARK: - Общие детали
+
+extension View {
+    /// Оформление панели раздела — одно на все четыре.
+    ///
+    /// Свой фон у формы гасим: он рисуется непрозрачным и закрыл бы подложку окна. А вот
+    /// плашки секций система рисует полупрозрачной заливкой поверх фона — проверено на
+    /// цветной подложке, — и над прозрачным окном они и оказываются стеклом: блюр даёт
+    /// подложка окна, плотность — сама плашка. Третьего слоя блюра здесь нет.
+    ///
+    /// Радиусы, отступы, кант и высоты строк считает `Form`, поэтому они одинаковы во всех
+    /// разделах по построению, а не по недосмотру.
+    fileprivate func settingsForm() -> some View {
+        formStyle(.grouped).scrollContentBackground(.hidden)
+    }
+}
+
+/// Пояснение под секцией: один стиль на все разделы.
+private func caption(_ text: String) -> some View {
+    Text(text)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+}
+
+/// Список моделей бэкенда: один на обе пары «модель + усилие» и живущий выше панелей,
+/// чтобы загруженный список переживал переключение разделов.
+@MainActor
+private final class ModelListModel: ObservableObject {
+    @Published private(set) var models: [String] = []
+    @Published private(set) var isLoading = false
+
+    func refresh(config: GPTConfig) async {
+        isLoading = true
+        defer { isLoading = false }
+        models = (try? await GPTClient(config: config).listModels()) ?? []
+    }
+
+    func clear() {
+        models = []
+    }
+
+    /// Сохранённая модель может отсутствовать в свежем списке — иначе пикер показал бы пустоту.
+    func options(selected: String) -> [String] {
+        models.contains(selected) ? models : [selected] + models
+    }
+}
+
+/// Пикер модели с кнопкой обновления списка.
+private struct ModelRow: View {
+    @ObservedObject var models: ModelListModel
+    @Binding var selection: String
+    let config: GPTConfig
+
+    var body: some View {
+        HStack {
+            Picker("Модель:", selection: $selection) {
+                ForEach(models.options(selected: selection), id: \.self) { Text($0).tag($0) }
+            }
+            if models.isLoading {
+                ProgressView().controlSize(.small)
+            } else {
+                Button {
+                    Task { await models.refresh(config: config) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Обновить список моделей")
+            }
+        }
+    }
+}
+
+/// Порядок как в спеке; Codex-бэкенд нормализует `none`/`minimal` в `low` сам.
+private struct EffortPicker: View {
+    @Binding var selection: String
+
+    private static let efforts = ["none", "minimal", "low", "medium", "high"]
+
+    var body: some View {
+        Picker("Усилие рассуждения:", selection: $selection) {
+            ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
+        }
+    }
+}
+
+/// Рекомендации тремя карточками в ряд: ⚡ / ⚖️ / 💎. Щелчок по карточке ставит и модель,
+/// и усилие — пара всегда применяется целиком, порознь она ничего не значит.
+/// Строки пересобираются из режима доступа: у режимов разные усилия и пояснения. Таблица
+/// одна и та же и для чистки, и для перевода — ведёт она ту пару, которую ей передали.
+private struct RecommendationCards: View {
+    let mode: GPTAuthMode
+    @Binding var model: String
+    @Binding var effort: String
+
+    private static let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ForEach(ModelRecommendations.list(for: mode)) { recommendation in
+                card(recommendation)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func card(_ recommendation: ModelRecommendation) -> some View {
+        let isSelected = model == recommendation.model
+
+        return Button {
+            model = recommendation.model
+            effort = recommendation.effort
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(recommendation.tier.emoji)
+                    Text(recommendation.tier.title).font(.callout)
+                    Spacer(minLength: 0)
+                    // Выбранной модели кнопка не нужна — вместо неё галочка.
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                Text(recommendation.model)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Text(recommendation.note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            // Карточка лежит внутри стеклянной плашки секции, поэтому заливка и кант —
+            // системные полупрозрачные, а не проценты от `.primary`: за ними обои, и на
+            // светлых пятипроцентная заливка исчезала бы вовсе. Радиус 6 — фиксированный,
+            // как у любого чипа в середине плашки: концентричность тут нечему считать.
+            .background(Self.shape.fill(isSelected ? AnyShapeStyle(.tint.opacity(0.16))
+                                                   : AnyShapeStyle(.quaternary)))
+            .overlay(
+                Self.shape.strokeBorder(
+                    isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator)
+                )
+            )
+            .contentShape(Self.shape)
+        }
+        .buttonStyle(.plain)
+        .help(
+            isSelected
+                ? "Уже выбрана"
+                : "Выбрать \(recommendation.model), усилие \(recommendation.effort)"
+        )
+    }
+}
+
+/// Device-code flow: старт, ожидание подтверждения, статус. Держит одну задачу поллинга.
+@MainActor
+private final class CodexAuthModel: ObservableObject {
+    @Published private(set) var isAuthorized = false
+    @Published private(set) var session: DeviceFlowSession?
+    @Published private(set) var isPolling = false
+    @Published private(set) var message: String?
+
+    private var task: Task<Void, Never>?
+    /// Номер попытки входа: хвост отменённой задачи не должен трогать состояние следующей.
+    private var generation = 0
+
+    func refreshStatus() async {
+        isAuthorized = await CodexAuth.shared.isAuthorized()
+    }
+
+    func start() {
+        cancel()
+        message = nil
+        let generation = self.generation
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let session = try await CodexAuth.shared.startDeviceFlow()
+                guard generation == self.generation else { return }
+                self.session = session
+                isPolling = true
+
+                try await CodexAuth.shared.pollUntilAuthorized(session)
+                guard generation == self.generation else { return }
+                isAuthorized = true
+                message = nil
+            } catch {
+                guard generation == self.generation else { return }
+                // deviceCodeDisabled сам объясняет, что включить в настройках ChatGPT.
+                message = Self.isCancellation(error) ? nil : error.localizedDescription
+            }
+            guard generation == self.generation else { return }
+            session = nil
+            isPolling = false
+        }
+    }
+
+    /// Идемпотентна: повторный вызов на уже остановленном входе ничего не меняет.
+    func cancel() {
+        task?.cancel()
+        task = nil
+        generation += 1
+        session = nil
+        isPolling = false
+    }
+
+    func logout() async {
+        cancel()
+        await CodexAuth.shared.logout()
+        isAuthorized = false
+    }
+
+    /// Отмена — не ошибка: `Task` бросает `CancellationError`, URLSession — `URLError.cancelled`.
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+}

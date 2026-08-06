@@ -3,7 +3,7 @@
 #
 # Зачем это отдельным файлом. У Sparkle install name — `@rpath/Sparkle.framework/Versions/B/Sparkle`,
 # то есть фреймворк ОБЯЗАН лежать в `Contents/Frameworks` самого приложения, а бандл мы
-# собираем руками: xcodebuild кладёт продукты в свою папку и про наш `dist/Transcriber.app`
+# собираем руками: xcodebuild кладёт продукты в свою папку и про наш `dist/Cribe.app`
 # ничего не знает. Само оно туда не попадёт — значит, кладём и прописываем rpath здесь.
 #
 # Второе: внутри Sparkle.framework лежит своя вложенная программа — `Autoupdate`,
@@ -62,7 +62,7 @@ embed_sparkle() {
 
   # Свой rpath xcodebuild исполняемому файлу SwiftPM-цели не обещает, а второй такой же
   # записи dyld не прощает — поэтому сначала смотрим, нет ли её уже.
-  local binary="$app/Contents/MacOS/Transcriber"
+  local binary="$app/Contents/MacOS/Cribe"
   if ! otool -l "$binary" | grep -q '@executable_path/../Frameworks'; then
     install_name_tool -add_rpath @executable_path/../Frameworks "$binary"
   fi

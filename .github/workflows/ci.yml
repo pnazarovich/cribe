@@ -37,7 +37,7 @@ jobs:
       # Ядро: 182 теста на чистых функциях — ни микрофона, ни сети, ни Accessibility.
       # Это жёсткий гейт: он обязан быть зелёным.
       - name: swift test — ядро
-        run: swift test --filter TranscriberCoreTests
+        run: swift test --filter CribeCoreTests
 
       # Тесты приложения заводят настоящие NSWindow и считают NSApplication.shared.windows,
       # то есть им нужна графическая сессия. У раннера она есть, но гарантией это не является
@@ -45,4 +45,4 @@ jobs:
       # зелёный, снимите continue-on-error, и он станет обычным гейтом.
       - name: swift test — приложение (окна, нужна графическая сессия)
         continue-on-error: true
-        run: swift test --filter TranscriberAppTests
+        run: swift test --filter CribeAppTests

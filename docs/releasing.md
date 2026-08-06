@@ -3,7 +3,7 @@
 Обновления доставляет [Sparkle 2](https://sparkle-project.org). Установленное приложение раз в
 сутки читает ленту
 
-    https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml
+    https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml
 
 и, если там появился выпуск свежее, предлагает его поставить. Ленту отдаёт сам GitHub —
 отдельного хостинга у проекта нет. Архивы лежат в GitHub Releases.
@@ -12,8 +12,8 @@
 
 | Файл | Кому |
 | --- | --- |
-| `Transcriber-<версия>.dmg` | человеку, который ставит впервые |
-| `Transcriber-<версия>.zip` | Sparkle — по zip обновление ставится надёжнее |
+| `Cribe-<версия>.dmg` | человеку, который ставит впервые |
+| `Cribe-<версия>.zip` | Sparkle — по zip обновление ставится надёжнее |
 
 ---
 
@@ -51,8 +51,8 @@ A public key has been generated and saved in your keychain. Add the following to
 ключей на каждом выпуске. Выгрузить ключ из связки в файл:
 
 ```bash
-bash scripts/sparkle-tool.sh generate_keys -x ~/.keys/transcriber-sparkle.key
-chmod 600 ~/.keys/transcriber-sparkle.key
+bash scripts/sparkle-tool.sh generate_keys -x ~/.keys/cribe-sparkle.key
+chmod 600 ~/.keys/cribe-sparkle.key
 ```
 
 > **Файл с ключом хранится ВНЕ репозитория.** В `.gitignore` стоят `*.key` и
@@ -106,9 +106,13 @@ SPARKLE_KEY_SOURCE=keychain bash scripts/release.sh
 ```bash
 DEVELOPER_ID="Developer ID Application: … (JC6637SY79)" \
 APPLE_ID=… TEAM_ID=… APP_PASSWORD=… \
-SPARKLE_PRIVATE_KEY_FILE=~/.keys/transcriber-sparkle.key \
+SPARKLE_PRIVATE_KEY_FILE=~/.keys/cribe-sparkle.key \
   bash scripts/release.sh
 ```
+
+Сохранённый профиль notarytool у владельца называется `transcriber` — имя историческое, из-под
+прежнего названия продукта; переименование продукта его не касается, и трогать профиль не нужно
+(`NOTARY_PROFILE=transcriber bash scripts/release.sh` вместо трёх переменных Apple ID).
 
 Скрипт соберёт `.app`, подпишет его вместе с вложенной Sparkle, нотаризует, приклеит степлер,
 соберёт DMG, соберёт zip **уже со степлером внутри**, подпишет zip ключом EdDSA и допишет новый
@@ -144,29 +148,29 @@ T=/tmp/update-test
 P=/usr/libexec/PlistBuddy
 
 # 1. отдельная копия приложения ПРЕДЫДУЩЕЙ версии
-mkdir -p $T/feed && ditto dist/Transcriber.app $T/Transcriber.app
+mkdir -p $T/feed && ditto dist/Cribe.app $T/Cribe.app
 
 # 2. подменить у копии ленту, ключ и bundle id
-$P -c "Set :SUFeedURL http://localhost:8791/appcast.xml"  $T/Transcriber.app/Contents/Info.plist
-$P -c "Set :SUPublicEDKey <публичный ключ тестовой пары>" $T/Transcriber.app/Contents/Info.plist
-$P -c "Set :CFBundleIdentifier online.nazarovych.transcriber.updatetest" \
-                                                          $T/Transcriber.app/Contents/Info.plist
+$P -c "Set :SUFeedURL http://localhost:8791/appcast.xml"  $T/Cribe.app/Contents/Info.plist
+$P -c "Set :SUPublicEDKey <публичный ключ тестовой пары>" $T/Cribe.app/Contents/Info.plist
+$P -c "Set :CFBundleIdentifier online.nazarovych.cribe.updatetest" \
+                                                          $T/Cribe.app/Contents/Info.plist
 # без этого ATS не пустит обычный http даже на localhost
-$P -c "Add :NSAppTransportSecurity dict"                          $T/Transcriber.app/Contents/Info.plist
-$P -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" $T/Transcriber.app/Contents/Info.plist
-codesign --force --deep --sign - $T/Transcriber.app
+$P -c "Add :NSAppTransportSecurity dict"                          $T/Cribe.app/Contents/Info.plist
+$P -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" $T/Cribe.app/Contents/Info.plist
+codesign --force --deep --sign - $T/Cribe.app
 
 # 3. локальный сервер с лентой и архивом «новой» версии
 cd $T/feed && python3 -m http.server 8791
 
 # 4. запустить копию: плановая проверка сработает сразу после старта
-open -n $T/Transcriber.app
+open -n $T/Cribe.app
 ```
 
 Три вещи, на которых легко споткнуться:
 
 - **Свой `CFBundleIdentifier` у копии обязателен.** Иначе копия пишет настройки в домен
-  установленного Transcriber и портит их — там же лежит и «когда проверяли в прошлый раз».
+  установленного Cribe и портит их — там же лежит и «когда проверяли в прошлый раз».
 - **`NSAllowsLocalNetworking`** — без него запрос к `http://localhost` молча не уходит.
 - Правка `Info.plist` ломает подпись, поэтому копию пересобираем ad-hoc. Раздавать такую копию,
   разумеется, нельзя.
@@ -174,18 +178,18 @@ open -n $T/Transcriber.app
 Чтобы проверка сработала сразу, а не через сутки, «последнюю проверку» сдвигают в прошлое:
 
 ```bash
-defaults write online.nazarovych.transcriber.updatetest SULastCheckTime \
+defaults write online.nazarovych.cribe.updatetest SULastCheckTime \
   -date "2020-01-01 00:00:00 +0000"
 ```
 
 Обновление, найденное **сразу после запуска**, Sparkle показывает окном поверх всего.
 Найденное позже — не показывает вовсе: оно ждёт строкой в меню (это и есть «мягкое
-напоминание», см. `Sources/Transcriber/Updater.swift`). Оба поведения — норма, а не ошибка.
+напоминание», см. `Sources/Cribe/Updater.swift`). Оба поведения — норма, а не ошибка.
 
 ### После выкладки
 
 ```bash
-curl -s https://raw.githubusercontent.com/pnazarovich/transcriber/main/appcast.xml | head -40
+curl -s https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml | head -40
 ```
 
 Лента отдаётся через CDN GitHub и обновляется не мгновенно — до пяти минут. Дальше в самом

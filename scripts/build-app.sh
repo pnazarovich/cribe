@@ -1,5 +1,5 @@
 #!/bin/bash
-# Локальная сборка Transcriber.app.
+# Локальная сборка Cribe.app.
 #
 # SIGN_IDENTITY — имя сертификата подписи; по умолчанию «-» (ad-hoc).
 # Своё имя видно в `security find-identity -v -p codesigning`, например:
@@ -7,7 +7,7 @@
 # Ad-hoc подпись работает, но macOS будет заново спрашивать разрешения
 # (микрофон, Accessibility) после каждой пересборки.
 #
-# PROVISION_PROFILE — путь к provisioning profile (по умолчанию Transcriber.provisionprofile
+# PROVISION_PROFILE — путь к provisioning profile (по умолчанию Cribe.provisionprofile
 # в корне). Есть профиль — подпись получает keychain-access-groups и секреты уезжают в
 # современную связку ключей без диалогов; нет — группа вырезается (см. scripts/entitlements.sh).
 set -euo pipefail
@@ -22,12 +22,12 @@ if [ -z "${SIGN_IDENTITY:-}" ] && [ -f .signing-identity ]; then
   SIGN_IDENTITY="$(cat .signing-identity)"
 fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-xcodebuild -scheme Transcriber -configuration Release \
+xcodebuild -scheme Cribe -configuration Release \
   -derivedDataPath .ddata -destination 'platform=macOS,arch=arm64' \
   CODE_SIGNING_ALLOWED=NO build
-APP=dist/Transcriber.app
+APP=dist/Cribe.app
 rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .ddata/Build/Products/Release/Transcriber "$APP/Contents/MacOS/"
+cp .ddata/Build/Products/Release/Cribe "$APP/Contents/MacOS/"
 cp -R .ddata/Build/Products/Release/*.bundle "$APP/Contents/Resources/" 2>/dev/null || true
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp Info.plist "$APP/Contents/Info.plist"

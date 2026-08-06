@@ -3,7 +3,7 @@
 #
 #   bash scripts/sparkle-tool.sh generate_keys            # разовое создание ключа
 #   bash scripts/sparkle-tool.sh generate_keys -x key.txt # выгрузить приватный ключ в файл
-#   bash scripts/sparkle-tool.sh sign_update -f key.txt dist/Transcriber-0.2.0.zip
+#   bash scripts/sparkle-tool.sh sign_update -f key.txt dist/Cribe-0.2.0.zip
 #
 # Утилиты лежат в артефактах SwiftPM, а их точный путь зависит от того, чем собирали
 # (swift build или xcodebuild), — поэтому его ищут, а не пишут руками.

@@ -1,0 +1,569 @@
+import AppKit
+import SwiftUI
+import CribeCore
+
+/// Одна карточка — одно окно. Так стопка переживает свайпы между рабочими столами (каждое
+/// окно само по себе `.canJoinAllSpaces`) и так же независимо анимируется: уход одной
+/// карточки не заставляет пересобирать остальные.
+@MainActor
+final class CardPanel {
+    let text: String
+
+    /// Стопка убирает карточку из себя сама — панель лишь сообщает, что её больше нет.
+    var onDismiss: ((CardPanel) -> Void)?
+
+    /// Перетаскивание началось (`true`) или закончилось (`false`). Слушает стопка: на время
+    /// жеста ВСЕ её окна обязаны стать сквозными для мыши (см. `setTransparentToDrag`).
+    var onDragStateChanged: ((Bool) -> Void)?
+
+    /// Высота видимой карточки, без прозрачного запаса вокруг: по ней стопка считает раскладку.
+    private(set) var cardHeight: CGFloat
+
+    /// Появление — пружина с лёгким перелётом, как у пилюли: карточка выезжает слева и
+    /// «садится» на место. Уход короче и без пружины.
+    private static var appearAnimation: Animation {
+        HUDAccessibility.shared.reduceMotion
+            ? .easeInOut(duration: 0.2)
+            : .spring(response: 0.38, dampingFraction: 0.72)
+    }
+
+    private static var disappearAnimation: Animation {
+        HUDAccessibility.shared.reduceMotion ? .easeInOut(duration: 0.16) : .easeIn(duration: 0.2)
+    }
+
+    /// Конец перелёта пилюли: карточка не выезжает, а проявляется ровно за то время, что
+    /// летящая фигура растворяется. Оба конца шва идут одной длительностью — иначе он виден.
+    private static var handoffAnimation: Animation {
+        .easeOut(duration: CardFlight.handoff)
+    }
+
+    /// Окно живёт, пока карточка доигрывает уход: убрать его раньше — обрезать анимацию.
+    /// Не private: на эту же паузу стопка откладывает приезд карточки, вытеснившей соседку.
+    static let exitDuration: Duration = .milliseconds(240)
+    /// Сколько держится вспышка «Скопировано».
+    private static let copyFlash: Duration = .milliseconds(1200)
+    /// Когда появление отыграно и тень можно пересчитать по готовому кадру.
+    private static let appearSettle: Duration = .milliseconds(420)
+
+    private let model: CardModel
+    private let panel: NSPanel
+    private let container: CardContainerView
+    private var closeTask: Task<Void, Never>?
+    private var copyTask: Task<Void, Never>?
+    private var translateTask: Task<Void, Never>?
+    private var isLeaving = false
+    /// Перевод текста карточки. Подставляется приложением: ядро о GPT-настройках знает,
+    /// а карточка — нет, и знать не должна.
+    private let translator: CardTranslator
+
+    init(text: String, translator: CardTranslator = .unavailable) {
+        self.text = text
+        self.translator = translator
+        model = CardModel(text: text)
+        model.canTranslate = translator.isAvailable()
+
+        let host = PassthroughHostingView(rootView: CardView(model: model))
+        // Ширину задаёт сама карточка, высоту считает SwiftUI по числу строк текста.
+        let size = host.fittingSize
+        cardHeight = max(0, size.height - CardMetrics.bleed * 2)
+        let frame = NSRect(origin: .zero, size: size)
+        host.frame = frame
+        host.autoresizingMask = [.width, .height]
+
+        container = CardContainerView(frame: frame)
+        container.cardHeight = cardHeight
+        container.autoresizingMask = [.width, .height]
+        container.addSubview(host)
+
+        panel = NonActivatingCardPanel(
+            contentRect: frame,
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        // Ярус и поведение — общий рецепт HUD (см. `HUDWindow`), тот же, что у пилюли.
+        // Без `.stationary`: карточки обязаны ехать за пользователем между рабочими столами,
+        // как скриншоты CleanShot, — на то они и «висят, пока не уберёшь».
+        panel.level = HUDWindow.level
+        panel.collectionBehavior = HUDWindow.spaceBehavior
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        // Тень рисует AppKit по альфе содержимого и СНАРУЖИ рамки окна — она не стоит ни
+        // одного пикселя запаса и, главное, ни одного проглоченного клика. Своя тень в
+        // SwiftUI красила бы прозрачный запас, а WindowServer маршрутизирует мышь по альфе:
+        // полупрозрачный ореол ловил бы клики, не пропуская их в окно под карточкой.
+        panel.hasShadow = true
+        panel.animationBehavior = .none
+        panel.isMovableByWindowBackground = false
+        // Карточка интерактивна — в отличие от пилюли, клики нужны ей самой.
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
+        panel.contentView = container
+
+        container.model = model
+        // Payload перетаскивания читается в момент жеста: после перевода уезжает перевод,
+        // а до конца подмены — всё ещё оригинал, ровно как и видно на карточке.
+        container.payload = { [weak model] in model?.displayText ?? text }
+        // Масштаб — того экрана, на котором карточка окажется. Панель ещё не поставлена
+        // на место, поэтому берём экран курсора: стопка выбирает его же.
+        let scale = (NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main)?
+            .backingScaleFactor ?? 2
+        container.dragImage = Self.dragImage(text: text, cardHeight: cardHeight, scale: scale)
+        container.onCopy = { [weak self] in self?.copy() }
+        container.onClose = { [weak self] in self?.dismiss() }
+        container.onTranslate = { [weak self] in self?.translate() }
+        container.onSwipe = { [weak self] offset in self?.model.swipeOffset = offset }
+        container.onSwipeEnded = { [weak self] dismissing in
+            guard let self else { return }
+            guard dismissing else {
+                // Не дотянули: карточка возвращается на место пружиной.
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { self.model.swipeOffset = 0 }
+                return
+            }
+            dismiss(swiped: true)
+        }
+        container.onDragBegan = { [weak self] in
+            guard let self else { return }
+            model.isDragging = true
+            onDragStateChanged?(true)
+        }
+        container.onDragEnded = { [weak self] accepted in
+            guard let self else { return }
+            model.isDragging = false
+            onDragStateChanged?(false)
+            // Текст приняли — карточка своё отработала. Отказ (`operation == []`) оставляет
+            // её на месте: картинку AppKit сам возвращает в исходную точку.
+            if accepted { dismiss() }
+        }
+    }
+
+    /// Сквозное для мыши окно на время перетаскивания.
+    ///
+    /// Карточки живут на ярусе `.statusBar` (25) — ВЫШЕ окна, куда текст роняют, — и в
+    /// нижнем левом углу экрана, то есть ровно там, где у мессенджеров поле ввода. Пока
+    /// окно ловит мышь, точка сброса, попавшая на карточку, достаётся НАМ, а мы дропы не
+    /// принимаем (`registerForDraggedTypes` нигде не зовётся): жест кончается ничем.
+    /// Отсюда правило — на время жеста наши окна перестают существовать для мыши, и
+    /// сброс уходит в окно под ними.
+    func setTransparentToDrag(_ transparent: Bool) {
+        panel.ignoresMouseEvents = transparent
+    }
+
+    /// Что уедет в чужое поле. Пустой (или из одних пробелов) текст перетаскиванием не
+    /// отправляем: приёмник такой сброс отклоняет, и жест выглядит сорвавшимся.
+    static func dragPayload(_ text: String?) -> String? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
+    /// Размер окна: карточка плюс прозрачный запас со всех сторон.
+    var windowSize: NSSize {
+        panel.frame.size
+    }
+
+    /// Картинка, которая поедет под курсором. Нужна тесту пропорций: сплющивание иначе
+    /// ловится только глазом.
+    var dragImageForTesting: NSImage? { container.dragImage }
+
+    // MARK: - Швы для тестов перевода
+    //
+    // Кнопки карточки ведёт AppKit-контейнер, и нажать их из теста нечем: панель никогда
+    // не становится key. Поэтому тест дёргает то же действие напрямую и читает то же,
+    // что видит глаз.
+
+    /// Настоящее перетаскивание в прогоне не завести — сессию начинает только живая мышь.
+    /// Поэтому тест дёргает те же callbacks контейнера, что и AppKit.
+    func dragBeganForTesting() { container.onDragBegan?() }
+    func dragEndedForTesting(accepted: Bool) { container.onDragEnded?(accepted) }
+
+    func translateForTesting() { translate() }
+    var showsTranslationForTesting: Bool { model.showsTranslation }
+    var displayedTextForTesting: String { model.displayText }
+    var dragTextForTesting: String { container.payload?() ?? "" }
+    var canTranslateForTesting: Bool { model.canTranslate }
+    var failureForTesting: String? { model.failure }
+
+    /// Видимый прямоугольник карточки на экране, без прозрачного запаса вокруг: в него
+    /// целится перелёт капсулы.
+    var cardFrameOnScreen: CGRect {
+        CGRect(
+            x: panel.frame.minX + CardMetrics.bleed,
+            y: panel.frame.minY + CardMetrics.bleed,
+            width: CardMetrics.width,
+            height: cardHeight
+        )
+    }
+
+    /// `fading` — карточка не выезжает слева, а проявляется на месте: так заканчивается
+    /// перелёт пилюли, и шов между летящей фигурой и настоящей карточкой не виден.
+    func present(fading: Bool = false) {
+        // Заявка на «все пространства» подтверждается показом (см. `HUDWindow`).
+        HUDWindow.orderFront(panel)
+        model.entersByFading = fading
+        withAnimation(fading ? Self.handoffAnimation : Self.appearAnimation) { model.isPresented = true }
+        // Тень AppKit кэширует по альфе содержимого, а содержимое как раз приезжает —
+        // без пересчёта после анимации она осталась бы от пустого кадра.
+        Task { [panel] in
+            try? await Task.sleep(for: Self.appearSettle)
+            panel.invalidateShadow()
+        }
+    }
+
+    /// Уход с анимацией и снятие окна следом. Повторный вызов (двойной клик по ✕, дроп
+    /// на уже уходящей карточке) ничего не делает.
+    ///
+    /// `swiped` — карточку смахнули: она не гаснет на месте, а доезжает за левый край
+    /// от того сдвига, где её отпустили. Прыжка на старое место при этом нет.
+    func dismiss(swiped: Bool = false) {
+        guard !isLeaving else { return }
+        isLeaving = true
+        if swiped, !HUDAccessibility.shared.reduceMotion {
+            withAnimation(.easeOut(duration: 0.18)) {
+                model.swipeOffset = -(CardMetrics.width + CardMetrics.bleed * 2)
+            }
+        }
+        withAnimation(Self.disappearAnimation) { model.isPresented = false }
+        // Ссылка на себя тут ОБЯЗАНА быть сильной. Вытесненная шестой карточка выпадает из
+        // стопки последней ссылкой, и со слабой `self` задача просыпалась в пустоту: окно
+        // при этом остаётся показанным (его держит список окон приложения) — то есть висит
+        // на экране навсегда. Цикла нет: задача заканчивается и отпускает себя сама.
+        closeTask = Task {
+            try? await Task.sleep(for: Self.exitDuration)
+            panel.orderOut(nil)
+            onDismiss?(self)
+        }
+    }
+
+    /// Левый нижний угол окна. Анимация — только на перекладку стопки: новая карточка
+    /// ставится сразу на место и выезжает уже своим движением.
+    func setOrigin(_ origin: NSPoint, animated: Bool) {
+        guard animated, !HUDAccessibility.shared.reduceMotion else {
+            panel.setFrameOrigin(origin)
+            return
+        }
+        let target = NSRect(origin: origin, size: panel.frame.size)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.3
+            // Лёгкий перелёт в конце: то же ощущение пружины, что у появления пилюли.
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1.06)
+            panel.animator().setFrame(target, display: true)
+        } completionHandler: { [panel] in
+            // Переезд окна тень не пересчитывает — после него она осталась бы от старого места.
+            panel.invalidateShadow()
+        }
+    }
+
+    /// Перевод по кнопке. Второй раз в сеть не ходим: полученный перевод живёт в модели,
+    /// и кнопка после него просто переключает «оригинал ↔ перевод».
+    private func translate() {
+        guard model.canTranslate, !model.isTranslating else { return }
+        guard !model.hasTranslation else {
+            model.toggleTranslation()
+            return
+        }
+        model.beganTranslating()
+        translateTask?.cancel()
+        translateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let translated = try await translator.translate(text)
+                guard !Task.isCancelled else { return }
+                model.apply(translation: translated)
+                } catch {
+                guard !Task.isCancelled else { return }
+                model.failedTranslating()
+            }
+        }
+    }
+
+    private func copy() {
+        TextInserter.copy(model.displayText)
+        copyTask?.cancel()
+        model.didCopy = true
+        copyTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.copyFlash)
+            guard !Task.isCancelled else { return }
+            self?.model.didCopy = false
+        }
+    }
+
+    /// Картинка под курсором. Рисуем её один раз при создании карточки: во время самого
+    /// перетаскивания рендерить уже поздно.
+    ///
+    /// Габарит задаётся ЖЁСТКО — ровно та карточка, что на экране, плюс поле под тень.
+    /// Иначе картинка выходит своей высоты (в превью нет шапки), AppKit растягивает её
+    /// в переданный кадр, и карточка под курсором сплющивается. Пропорция картинки и кадра
+    /// обязана совпадать — это и проверяет тест.
+    private static func dragImage(text: String, cardHeight: CGFloat, scale: CGFloat) -> NSImage? {
+        let renderer = ImageRenderer(
+            content: CardDragPreview(text: text, height: cardHeight)
+        )
+        // Масштаб экрана самой карточки: на Retina картинка иначе была бы мыльной.
+        renderer.scale = scale
+        return renderer.nsImage
+    }
+
+    /// Кадр летящей под курсором картинки: карточка плюс поле под тень и лёгкое увеличение —
+    /// стандартный намёк «предмет оторвался от стола». Пропорции при этом не меняются:
+    /// множитель один на обе стороны, поле одинаково со всех сторон.
+    static func dragFrame(cardRect: CGRect) -> CGRect {
+        let withShadow = cardRect.insetBy(dx: -CardMetrics.dragShadow, dy: -CardMetrics.dragShadow)
+        // Увеличение вокруг центра: обе стороны умножаются на одно число, поэтому
+        // пропорция картинки и кадра остаётся общей.
+        let grow = CardMetrics.dragScale - 1
+        return withShadow.insetBy(
+            dx: -withShadow.width * grow / 2,
+            dy: -withShadow.height * grow / 2
+        )
+    }
+}
+
+/// Откуда карточка берёт перевод. Отдельный тип — это шов: приложение подставляет сюда
+/// GPT-путь со своими настройками и словарём, ядро остаётся без UI, а тест — без сети.
+struct CardTranslator {
+    /// Доступен ли перевод прямо сейчас (в настройках включён GPT).
+    var isAvailable: @MainActor () -> Bool
+    var translate: @MainActor (String) async throws -> String
+
+    /// Переводить нечем: так живут CLI и прогон тестов.
+    static let unavailable = CardTranslator(
+        isAvailable: { false },
+        translate: { _ in throw CancellationError() }
+    )
+}
+
+/// `canBecomeKey` / `canBecomeMain` у NSWindow только для чтения — отключаются переопределением.
+/// Ключевой инвариант тот же, что у пилюли: окно не должно забирать фокус у целевого поля.
+private final class NonActivatingCardPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Тело карточки мышь не ловит вовсе: наведение, клики и перетаскивание ведёт контейнер.
+private final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Мышь карточки целиком на AppKit.
+///
+/// Причина простая: панель никогда не становится key, а приложение почти всегда неактивно —
+/// в таком окне SwiftUI-кнопки и `.onHover` срабатывают через раз (первый клик съедается,
+/// трекинг живёт только у активного приложения). Контейнер же сам раскладывает карточку,
+/// поэтому попадание в кнопки считает точно, а трекинг ставит с `.activeAlways`.
+private final class CardContainerView: NSView, NSDraggingSource {
+    var model: CardModel?
+    /// Что уезжает в чужое поле: спрашивается в момент жеста, а не кэшируется.
+    var payload: (() -> String)?
+    var dragImage: NSImage?
+    var cardHeight: CGFloat = 0
+
+    var onCopy: (() -> Void)?
+    var onClose: (() -> Void)?
+    var onTranslate: (() -> Void)?
+    /// Текущий сдвиг под пальцами.
+    var onSwipe: ((CGFloat) -> Void)?
+    /// Жест закончился: `true` — карточку смахнули, `false` — вернуть на место.
+    var onSwipeEnded: ((Bool) -> Void)?
+    var onDragBegan: (() -> Void)?
+    /// `true` — текст приняли; `false` — бросили в пустоту, карточка остаётся.
+    var onDragEnded: ((Bool) -> Void)?
+
+    /// Дальше этого сдвига нажатие считается перетаскиванием, а не кликом.
+    private static let dragThreshold: CGFloat = 3
+
+    private var trackingArea: NSTrackingArea?
+    private var pressedControl: CardControl?
+    private var downPoint: NSPoint?
+    private var isDragging = false
+    /// Идёт смахивание: путь пальцев с начала жеста и последняя дельта (она же скорость,
+    /// потому что события приходят ровным потоком).
+    private var swipeTravel: CGFloat?
+    private var swipeSpeed: CGFloat = 0
+
+    /// Совпадает со SwiftUI: начало координат слева сверху.
+    override var isFlipped: Bool { true }
+
+    /// Приложение неактивно, окно не key — каждый клик по карточке «первый».
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Видимая карточка внутри окна; вокруг неё прозрачный запас под тень.
+    private var cardRect: CGRect {
+        CGRect(
+            x: CardMetrics.bleed,
+            y: CardMetrics.bleed,
+            width: CardMetrics.width,
+            height: cardHeight
+        )
+    }
+
+    /// Клики мимо карточки (в прозрачный запас) должны доходить до окна под ней.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        cardRect.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: cardRect,
+            // `.activeAlways` — иначе наведение работало бы только у активного приложения,
+            // а карточка живёт как раз поверх чужих окон.
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    // MARK: - Наведение
+
+    override func mouseEntered(with event: NSEvent) {
+        model?.isHovered = true
+        updateHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        model?.isHovered = false
+        model?.hoveredControl = nil
+        NSCursor.arrow.set()
+    }
+
+    private func updateHover(at point: NSPoint) {
+        let control = self.control(at: point)
+        model?.hoveredControl = control
+        // Раскрытая ладонь над телом карточки — стандартный намёк «это можно тащить».
+        (control == nil ? NSCursor.openHand : NSCursor.arrow).set()
+    }
+
+    private func control(at point: NSPoint) -> CardControl? {
+        let local = CGPoint(x: point.x - CardMetrics.bleed, y: point.y - CardMetrics.bleed)
+        return CardControl.allCases.first { CardMetrics.controlRect($0).contains(local) }
+    }
+
+    // MARK: - Клики и перетаскивание
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        downPoint = point
+        pressedControl = control(at: point)
+        isDragging = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // Начатое на кнопке движение — не перетаскивание: кнопку либо нажмут, либо уедут с неё.
+        // Идущее смахивание перетаскивание тоже не начинает: два жеста разом — это рывок
+        // картинки посреди смахивания.
+        guard !isDragging, pressedControl == nil, swipeTravel == nil, let downPoint else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard hypot(point.x - downPoint.x, point.y - downPoint.y) > Self.dragThreshold else { return }
+        isDragging = beginDrag(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            downPoint = nil
+            pressedControl = nil
+        }
+        guard !isDragging, let pressedControl else { return }
+        // Нажали и отпустили на одной кнопке — как у обычной кнопки AppKit.
+        guard control(at: convert(event.locationInWindow, from: nil)) == pressedControl else { return }
+        switch pressedControl {
+        case .translate: onTranslate?()
+        case .copy: onCopy?()
+        case .close: onClose?()
+        }
+    }
+
+    // MARK: - Смахивание двумя пальцами
+
+    /// Двумя пальцами влево — карточка уходит.
+    ///
+    /// Знак замерен на живой системе: при естественной прокрутке (значение по умолчанию)
+    /// пальцы влево дают `scrollingDeltaX < 0` — та же дельта, с которой содержимое любого
+    /// NSScrollView едет влево вместе с пальцами. Поэтому сдвиг просто копит дельту.
+    ///
+    /// Мышиное колесо жестом не считается (`hasPreciseScrollingDeltas`), инерционный хвост
+    /// после отпускания — тоже: карточка не должна уезжать сама, когда пальцы уже сняты.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, event.momentumPhase == [], !isDragging else {
+            super.scrollWheel(with: event)
+            return
+        }
+        switch event.phase {
+        case .began:
+            swipeTravel = 0
+            swipeSpeed = 0
+        case .changed:
+            // Поток бывает и без `.began` (жест начался за пределами карточки) — тогда
+            // считаем от первого же события: пропустить смахивание хуже, чем начать позже.
+            let travel = (swipeTravel ?? 0) + event.scrollingDeltaX
+            swipeTravel = travel
+            swipeSpeed = event.scrollingDeltaX
+            onSwipe?(CardSwipe.offset(forFingerTravel: travel, width: CardMetrics.width))
+        case .ended, .cancelled:
+            guard let travel = swipeTravel else { return }
+            swipeTravel = nil
+            let offset = CardSwipe.offset(forFingerTravel: travel, width: CardMetrics.width)
+            onSwipeEnded?(
+                event.phase == .cancelled
+                    ? false
+                    : CardSwipe.dismisses(offset: offset, speed: swipeSpeed, width: CardMetrics.width)
+            )
+        default:
+            break
+        }
+    }
+
+    /// `false` — жест не начат: тащить нечего, и пустой сброс приёмник всё равно отклонит.
+    private func beginDrag(with event: NSEvent) -> Bool {
+        guard let text = CardPanel.dragPayload(payload?()) else { return false }
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        let dragged = NSDraggingItem(pasteboardWriter: item)
+        // Кадр считается ровно по картинке (см. `CardPanel.dragFrame`): любое расхождение
+        // пропорций AppKit исправит растяжением — карточка поедет сплющенной.
+        dragged.setDraggingFrame(CardPanel.dragFrame(cardRect: cardRect), contents: dragImage)
+
+        let session = beginDraggingSession(with: [dragged], event: event, source: self)
+        // Не приняли — картинка возвращается на карточку сама, без нашего участия.
+        session.animatesToStartingPositionsOnCancelOrFail = true
+        onDragBegan?()
+        return true
+    }
+
+    // MARK: - NSDraggingSource
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // Внутри своего приложения ронять некуда — принимают только чужие поля ввода.
+        context == .outsideApplication ? [.copy, .generic] : []
+    }
+
+    /// Модификаторы не должны превращать копию в ссылку или перемещение.
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        isDragging = false
+        downPoint = nil
+        pressedControl = nil
+        // Курсор уехал вместе с картинкой и обратно уже не «войдёт» — трекинг события входа
+        // не пришлёт. Без сброса отказавшаяся карточка навсегда осталась бы подсвеченной.
+        model?.isHovered = false
+        model?.hoveredControl = nil
+        // Пустая маска — единственный надёжный признак «никто не взял»: конкретную операцию
+        // приёмник выбирает сам (кто-то отвечает `.copy`, кто-то `.generic`).
+        onDragEnded?(operation != [])
+    }
+}
