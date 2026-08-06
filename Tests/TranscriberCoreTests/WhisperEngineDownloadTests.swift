@@ -61,6 +61,23 @@ final class WhisperEngineDownloadTests: XCTestCase {
         XCTAssertEqual(variants.sorted(), [Language.ru.whisperModel, Language.uk.whisperModel].sorted())
     }
 
+    /// Английский работает на модели русского: у кого скачан русский, тот за английским
+    /// в сеть не идёт вовсе. Это и есть причина не показывать английскому отдельные 1,5 ГБ.
+    func testEnglishReusesTheRussianDownload() async throws {
+        let engine = WhisperEngine(store: store)
+        let runs = Runs()
+        engine.downloadVariant = { [self] variant, _ in
+            try install(variant)
+            await runs.add(variant)
+        }
+
+        try await engine.download(language: .ru, onProgress: { _ in })
+        try await engine.download(language: .en, onProgress: { _ in })
+
+        let variants = await runs.variants
+        XCTAssertEqual(variants, [WhisperModel.turbo], "английский обязан обойтись уже скачанным")
+    }
+
     /// Отмена обрывает скачивание и освобождает место в списке идущих: следующая попытка
     /// начинается заново, а не залипает на отменённой.
     func testCancelledDownloadThrowsAndCanBeRetried() async throws {

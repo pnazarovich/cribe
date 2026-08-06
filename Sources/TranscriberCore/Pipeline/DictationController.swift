@@ -408,7 +408,12 @@ public final class DictationController: ObservableObject {
         // Язык сессии от этого не меняется (см. `activeSessionLanguage`), но потоковый путь
         // должен быть гарантированно однородным — на живой записи просто выключаем его.
         if case .recording = state { languageSwitchedDuringSession = true }
-        settings.language = settings.language == .ru ? .uk : .ru
+        // По кругу в порядке `Language.allCases`: русский → украинский → English → русский.
+        // Один и тот же порядок в меню, в настройках и под хоткеем — иначе третий язык
+        // превратил бы шорткат в лотерею.
+        let all = Language.allCases
+        let index = all.firstIndex(of: settings.language) ?? 0
+        settings.language = all[(index + 1) % all.count]
     }
 
     /// Прогон файла для CLI: VAD-обрезка → Whisper → словарь → (опционально) GPT. Без вставки и истории.
@@ -822,7 +827,7 @@ public final class DictationController: ObservableObject {
             // в поле ввода: у перевода кандидатом оказалось бы каждое английское слово.
             // Текст уже прошёл словарь — всё, что тот умел заменить, стоит канонической
             // формой и в подсказки не полезет.
-            suggester.observe(text, entries: entries)
+            suggester.observe(text, entries: entries, language: language)
             await finishBackup(backup)
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {

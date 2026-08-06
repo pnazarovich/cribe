@@ -293,8 +293,31 @@ final class DictationControllerTests: XCTestCase {
         let mixed = try await sessionPrompt(mixedSpeech: true)
         let plain = try await sessionPrompt(mixedSpeech: false)
 
-        XCTAssertTrue(mixed.contains("Українською"))
-        XCTAssertFalse(plain.contains("Українською"))
+        XCTAssertTrue(mixed.contains("перевірити налаштування"))
+        XCTAssertFalse(plain.contains("перевірити налаштування"))
+    }
+
+    /// Хоткей смены языка гоняет языки по кругу в порядке `Language.allCases`. С тремя языками
+    /// это единственное, что делает его предсказуемым: третий язык не имеет права превращать
+    /// шорткат в тумблер, который «иногда попадает».
+    func testSwitchLanguageCyclesThroughEveryLanguage() {
+        let settings = makeSettings()
+        settings.language = .ru
+        let controller = DictationController(
+            engine: GatedEngine(),
+            dictionary: UserDictionary(url: dictionaryURL),
+            settings: settings,
+            recorder: StubRecorder()
+        )
+
+        var seen: [Language] = []
+        for _ in Language.allCases {
+            controller.switchLanguage()
+            seen.append(settings.language)
+        }
+
+        XCTAssertEqual(seen, [.uk, .en, .ru], "круг обязан пройти все языки и вернуться в начало")
+        XCTAssertEqual(Set(seen), Set(Language.allCases))
     }
 
     /// Промпт, с которым сессия дошла до распознавания.

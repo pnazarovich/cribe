@@ -57,7 +57,12 @@ public final class TermSuggester: ObservableObject {
 
     /// Финальный текст одной диктовки: каждое слово-кандидат считается один раз,
     /// сколько бы раз оно в этой диктовке ни повторилось.
-    public func observe(_ text: String, entries: [DictionaryEntry]) {
+    ///
+    /// Английская диктовка проходит мимо: весь приём держится на том, что латинское слово
+    /// посреди кириллицы — почти наверняка термин, а в английской речи латиницей написано
+    /// каждое слово, и кандидатом стало бы всё подряд («morning», «before», «production»).
+    public func observe(_ text: String, entries: [DictionaryEntry], language: Language = .ru) {
+        guard language.isCyrillic else { return }
         let known = Self.knownTokens(entries)
         let found = Self.candidates(in: text, known: known)
         for token in found where !ignored.contains(token) {

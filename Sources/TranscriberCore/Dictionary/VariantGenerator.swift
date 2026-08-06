@@ -31,7 +31,11 @@ public enum VariantGenerator {
     /// Транслитерация без сети: тот же результат при тех же входных данных.
     /// Пусто — в термине нет латиницы (транслитерировать «ТЗ» не во что).
     public static func localVariants(for canonical: String) -> [String] {
-        let generated = Language.allCases.flatMap { Transliterator.forms(for: canonical, language: $0) }
+        // Только кириллические языки: вариант — это то, как распознаватель записал латинский
+        // термин кириллицей, а английская сессия отдаёт его латиницей и заменять там нечего.
+        let generated = Language.allCases
+            .filter(\.isCyrillic)
+            .flatMap { Transliterator.forms(for: canonical, language: $0) }
         return normalized(generated, canonical: canonical)
     }
 

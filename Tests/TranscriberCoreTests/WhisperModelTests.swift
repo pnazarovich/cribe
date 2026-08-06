@@ -18,23 +18,39 @@ final class WhisperModelTests: XCTestCase {
         XCTAssertEqual(Language.uk.whisperModel, WhisperModel.large)
     }
 
-    /// Языки не делят один вариант: иначе кэш движка отдавал бы прогретую не ту модель.
-    func testLanguagesPickDifferentVariants() {
-        XCTAssertNotEqual(Language.ru.whisperModel, Language.uk.whisperModel)
+    /// Английская сессия идёт на turbo — той же самой, что у русского. Это не мелочь
+    /// раскладки: у кого скачан русский, у того английский уже скачан, и вторых 1,5 ГБ
+    /// третий язык не стоит.
+    func testEnglishSharesTheRussianVariant() {
+        XCTAssertEqual(Language.en.whisperModel, WhisperModel.turbo)
+        XCTAssertEqual(Language.en.whisperModel, Language.ru.whisperModel)
+        XCTAssertNotEqual(Language.en.whisperModel, Language.uk.whisperModel)
     }
 
-    /// Размер модели — не украшение подписи, а само основание качать языки по отдельности:
-    /// украинская вдвое тяжелее русской, и тому, кому нужен только русский, эти гигабайты
-    /// навязывать нечем. Первый запуск называет числа до нажатия кнопки.
-    func testModelSizeIsNamedPerLanguageAndUkrainianIsHeavier() {
-        XCTAssertEqual(Language.ru.modelSizeGB, 1.5, accuracy: 0.01)
-        XCTAssertEqual(Language.uk.modelSizeGB, 2.9, accuracy: 0.01)
-        XCTAssertGreaterThan(Language.uk.modelSizeGB, Language.ru.modelSizeGB)
+    /// Модель — единица скачивания, язык — нет: turbo обслуживает русский и английский,
+    /// large-v3 — украинский. Каждый язык попадает ровно в одну модель.
+    func testBundlesGroupLanguagesByVariant() {
+        XCTAssertEqual(ModelBundle.all.map(\.variant), [WhisperModel.turbo, WhisperModel.large])
+        XCTAssertEqual(ModelBundle.all.map(\.languages), [[.ru, .en], [.uk]])
+        XCTAssertEqual(Set(ModelBundle.all.flatMap(\.languages)), Set(Language.allCases))
+        XCTAssertEqual(ModelBundle.bundle(for: .en), ModelBundle.bundle(for: .ru))
+        XCTAssertEqual(ModelBundle.bundle(for: .ru).displayName, "Русский · English")
+    }
 
-        XCTAssertEqual(Language.ru.modelSizeText, "1,5 ГБ")
-        XCTAssertEqual(Language.uk.modelSizeText, "2,9 ГБ")
-        for language in Language.allCases {
-            XCTAssertTrue(language.modelSizeText.hasSuffix(" ГБ"), "единица измерения обязана быть видна")
+    /// Размер модели — не украшение подписи, а само основание качать модели по отдельности:
+    /// украинская вдвое тяжелее, и тому, кому нужен только русский, эти гигабайты навязывать
+    /// нечем. Первый запуск называет числа до нажатия кнопки — и у общей модели число одно.
+    func testModelSizeIsNamedPerModelAndUkrainianIsHeavier() {
+        XCTAssertEqual(ModelBundle.bundle(for: .ru).sizeGB, 1.5, accuracy: 0.01)
+        XCTAssertEqual(ModelBundle.bundle(for: .uk).sizeGB, 2.9, accuracy: 0.01)
+        XCTAssertGreaterThan(ModelBundle.bundle(for: .uk).sizeGB, ModelBundle.bundle(for: .ru).sizeGB)
+        // Английский не добавляет ни гигабайта: это та же модель, что у русского.
+        XCTAssertEqual(ModelBundle.bundle(for: .en).sizeGB, ModelBundle.bundle(for: .ru).sizeGB)
+
+        XCTAssertEqual(ModelBundle.bundle(for: .ru).sizeText, "1,5 ГБ")
+        XCTAssertEqual(ModelBundle.bundle(for: .uk).sizeText, "2,9 ГБ")
+        for bundle in ModelBundle.all {
+            XCTAssertTrue(bundle.sizeText.hasSuffix(" ГБ"), "единица измерения обязана быть видна")
         }
     }
 
@@ -45,7 +61,8 @@ final class WhisperModelTests: XCTestCase {
         let mixed = PromptBuilder.initialPrompt(entries: [], language: .ru, mixedSpeech: true)
 
         XCTAssertNotEqual(plain, mixed)
-        XCTAssertTrue(mixed.contains("Українською"))
-        XCTAssertFalse(plain.contains("Українською"))
+        XCTAssertTrue(mixed.contains("украинские слова"))
+        XCTAssertFalse(plain.contains("украинские слова"))
+        XCTAssertEqual(Language.ru.whisperModel, WhisperModel.turbo)
     }
 }

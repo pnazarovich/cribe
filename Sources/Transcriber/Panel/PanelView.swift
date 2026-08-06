@@ -294,7 +294,11 @@ struct PanelPill: View {
     }
 
     private static func flag(_ language: Language) -> String {
-        language == .ru ? "🇷🇺" : "🇺🇦"
+        switch language {
+        case .ru: return "🇷🇺"
+        case .uk: return "🇺🇦"
+        case .en: return "🇬🇧"
+        }
     }
 
     /// Время прогрева в виде «0:07». Минуты появляются сами, когда до них доходит:

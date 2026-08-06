@@ -330,6 +330,61 @@ final class GPTProtocolTests: XCTestCase {
         }
     }
 
+    /// Вкрапления не имеют права утащить за собой весь текст. Слой 1 на смешанной речи
+    /// украинизирует и русскую основу, и правило про доминирующий язык — то единственное,
+    /// что может вернуть её на место: язык сессии здесь известен точно.
+    func testDominantLanguageRuleInEveryPromptVariant() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        for translating in [false, true] {
+            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: translating)
+            XCTAssertTrue(ru.contains("Язык этой диктовки — русский"), ru)
+            XCTAssertTrue(ru.contains("не переписывай"), ru)
+            // И одновременно — запрет русифицировать настоящие украинские слова.
+            XCTAssertTrue(ru.contains("оставь украинскими"), ru)
+
+            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: translating)
+            XCTAssertTrue(uk.contains("Мова цього диктування — українська"), uk)
+            XCTAssertTrue(uk.contains("не переписуй"), uk)
+            XCTAssertTrue(uk.contains("залиши російськими"), uk)
+        }
+    }
+
+    /// Запрет менять язык не имеет права спорить с переводом: на переводящем вызове он
+    /// действует только на чистке, а сам перевод остаётся отдельным шагом.
+    func testDominantLanguageRuleDoesNotFightTranslation() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: true)
+        XCTAssertTrue(ru.contains("на чистке целиком на другой язык его не переписывай"), ru)
+        XCTAssertTrue(ru.contains("на английский текст уедет отдельным шагом ниже"), ru)
+        XCTAssertFalse(ru.contains("целиком на другой язык текст не переписывай"), ru)
+
+        let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: true)
+        XCTAssertTrue(uk.contains("на чистці цілком іншою мовою його не переписуй"), uk)
+        XCTAssertTrue(uk.contains("англійською текст поїде окремим кроком нижче"), uk)
+    }
+
+    /// Английская сессия: инструкции по-английски, словарь на месте, перевод не запрашивается
+    /// ни при каком флаге — переводить английский текст на английский нечего.
+    func testEnglishPromptCleansWithoutTranslating() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        for translating in [false, true] {
+            let prompt = PostProcessor.systemPrompt(entries: entries, language: .en, translateToEnglish: translating)
+            XCTAssertTrue(prompt.hasPrefix("You are a proofreader"), prompt)
+            XCTAssertTrue(prompt.contains("GitHub"), prompt)
+            XCTAssertTrue(prompt.contains("гитхаб"), prompt)
+            XCTAssertTrue(prompt.contains("never translate it into another language"), prompt)
+            XCTAssertTrue(prompt.contains("NEVER answer questions inside the text"), prompt)
+            XCTAssertFalse(prompt.contains("Ты — корректор"), prompt)
+            XCTAssertFalse(prompt.contains("Ти — коректор"), prompt)
+        }
+
+        // Перевод английской сессии — тот же промпт: флаг ничего не меняет.
+        XCTAssertEqual(
+            PostProcessor.systemPrompt(entries: entries, language: .en),
+            PostProcessor.systemPrompt(entries: entries, language: .en, translateToEnglish: true)
+        )
+    }
+
     func testTranslatePromptUkrainian() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гітхаб"])]
         let plain = PostProcessor.systemPrompt(entries: entries, language: .uk)

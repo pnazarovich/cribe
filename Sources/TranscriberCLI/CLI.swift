@@ -3,9 +3,9 @@ import TranscriberCore
 import WhisperKit
 
 private let usage = """
-usage: transcriber-cli <audio-file> --lang ru|uk [--mixed] [--no-gpt] [--no-vad] [--translate]
+usage: transcriber-cli <audio-file> --lang ru|uk|en [--mixed] [--no-gpt] [--no-vad] [--translate]
 
-  --lang ru|uk   язык диктовки (обязателен)
+  --lang ru|uk|en  язык диктовки (обязателен)
   --mixed        смешанная речь (RU + UK): украинский образец в промпте
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
@@ -106,7 +106,7 @@ private struct Options {
             switch argument {
             case "--lang":
                 guard let value = rest.next(), let parsed = Language(rawValue: value) else {
-                    throw CLIError("--lang требует значение ru или uk\n\n\(usage)")
+                    throw CLIError("--lang требует значение ru, uk или en\n\n\(usage)")
                 }
                 language = parsed
             case "--no-gpt": useGPT = false
