@@ -129,6 +129,9 @@ private struct GeneralPane: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchNote: String?
     @State private var accessibilityGranted = TextInserter.hasAccessibility
+    /// Сколько записей лежит на диске прямо сейчас: обещание «предсказуемый объём» стоит
+    /// ровно столько, сколько его видно.
+    @State private var recordingBytes = RecordingStore.shared.bytesOnDisk()
 
     var body: some View {
         Form {
@@ -201,6 +204,30 @@ private struct GeneralPane: View {
             }
 
             Section {
+                Picker("Хранить записи:", selection: $settings.keptRecordings) {
+                    Text("Не хранить").tag(0)
+                    Text("Последнюю").tag(1)
+                    Text("Три последних").tag(3)
+                }
+
+                Button("Стереть записи") {
+                    RecordingStore.shared.removeAll()
+                    recordingBytes = 0
+                }
+                .disabled(recordingBytes == 0)
+            } header: {
+                Text("Записи диктовок")
+            } footer: {
+                caption(
+                    "Звук диктовки остаётся на диске, чтобы потерянную речь можно было "
+                        + "распознать заново из «Истории…». Лежит в Application Support → "
+                        + "Transcriber → recordings, никуда не отправляется. Сейчас занято: "
+                        + ByteCountFormatter.string(fromByteCount: recordingBytes, countStyle: .file)
+                        + ". Одна запись — не длиннее пяти минут."
+                )
+            }
+
+            Section {
                 Toggle("Карточки, если нет поля ввода", isOn: $settings.cardsWhenNoField)
             } header: {
                 Text("Вставка")
@@ -243,6 +270,13 @@ private struct GeneralPane: View {
             accessibilityGranted = TextInserter.hasAccessibility
             // Модель могла доехать мимо настроек — например, её дотянула первая диктовка.
             downloader.refresh()
+            recordingBytes = RecordingStore.shared.bytesOnDisk()
+        }
+        // Кольцо укоротили — лишние записи уходят сразу, а не после следующей диктовки:
+        // «не хранить» должно означать «уже не хранится».
+        .onChange(of: settings.keptRecordings) { _, keeping in
+            RecordingStore.shared.prune(keeping: keeping)
+            recordingBytes = RecordingStore.shared.bytesOnDisk()
         }
     }
 

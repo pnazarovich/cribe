@@ -150,8 +150,9 @@ appears again once you have seen it (**Initial setup…** in the menu brings it 
 
 ## Privacy
 
-- **Audio never leaves your machine.** Recognition is local; recordings are kept only until the
-  text is successfully inserted, then discarded.
+- **Audio never leaves your machine.** Recognition is local. The last few recordings are kept
+  on disk so that a dictation whose recognition went wrong can be transcribed again — see
+  [Recording backup](#recording-backup) for exactly what is stored and how to erase it.
 - **Text leaves your machine only if you enable GPT cleanup or English translation.** In that
   case the transcript is sent to OpenAI (`api.openai.com`, or the Codex backend when you sign
   in with a ChatGPT account) and nothing else is. With GPT off, the app makes no network
@@ -172,6 +173,7 @@ appears again once you have seen it (**Initial setup…** in the menu brings it 
 | What | Where |
 | --- | --- |
 | Dictionary | `~/Library/Application Support/Transcriber/dictionary.json` |
+| Recordings | `~/Library/Application Support/Transcriber/recordings/` |
 | Custom sounds | `~/Library/Application Support/Transcriber/sounds/` |
 | API key and ChatGPT tokens | System keychain, service `online.nazarovych.transcriber` |
 | Everything else | Settings window (hotkeys, language, model, effort, auto-stop, input device) |
@@ -188,6 +190,33 @@ Set it to `false` for abbreviations and anything whose stem collides with a real
 
 Drop your own `start.wav` and `stop.wav` (or `.m4a`/`.mp3`/`.caf`/`.aiff`) into the `sounds`
 folder to replace the built-in chimes, which are otherwise synthesized in memory.
+
+## Recording backup
+
+Recognition can go wrong: quiet input, a long dense monologue, a bad decode. Before, the audio
+was gone the moment the pipeline finished, so a lost dictation was lost for good. Now every
+dictation leaves its audio behind for a short while, and **History…** in the menu can transcribe
+it again.
+
+| What | Value |
+| --- | --- |
+| Where | `~/Library/Application Support/Transcriber/recordings/` |
+| Format | 16 kHz mono 16-bit WAV (~1.9 MB per minute) |
+| How many | The 3 most recent by default — Settings → General → *Recordings* (none / 1 / 3) |
+| How long | 5 minutes per recording; anything longer is stored truncated |
+| Worst case on disk | ~29 MB; a typical three-minute-total ring is ~6 MB |
+| Erase | Settings → General → *Recordings* → **Erase recordings**, or delete the folder |
+
+Nothing is uploaded — the folder is only ever read by the app itself, and only when you press
+*Transcribe again*. Cancelled dictations (Esc) leave no audio at all. Set *Recordings* to
+**none** and the folder is emptied immediately and stays empty.
+
+**Transcribe again** deliberately takes a *different* route from the live pipeline, because
+repeating the same route would lose the same words: one full pass over the whole buffer, no
+streaming finalization, no timestamp stitching, no VAD trimming, and no dictionary prompt (the
+dictionary still applies as layer 2). There is a second button for `large-v3`; it is honestly
+labelled, because for Russian the big model is usually *worse* — it Ukrainizes words and runs
+several times longer. If it is not on disk, the app tells you it is 2.9 GB and asks first.
 
 ## Known limitations
 
@@ -280,4 +309,24 @@ cp -R dist/Transcriber.app /Applications/
 
 Словарь живёт в `~/Library/Application Support/Transcriber/dictionary.json` и перечитывается
 на лету; свои звуки старта и остановки кладутся в соседнюю папку `sounds/`.
+
+**Запись диктовки не пропадает.** Распознавание иногда теряет речь — на тихом входе, на
+длинном плотном монологе, просто на неудачном проходе. Раньше звук исчезал вместе с
+неудачей; теперь он остаётся на диске, а меню → **История…** позволяет разобрать его заново.
+
+- Лежит в `~/Library/Application Support/Transcriber/recordings/`, WAV 16 кГц моно
+  (~1,9 МБ на минуту). Никуда не отправляется.
+- Хранятся **три последние** записи (настройки → Общие → «Записи диктовок»: не хранить /
+  последнюю / три последних). Одна запись — не длиннее пяти минут, дольше ляжет обрезанной.
+  Худший случай на диске — около 29 МБ.
+- Стереть: та же секция настроек, кнопка «Стереть записи». Выбор «не хранить» вычищает
+  папку сразу. Отменённая по Esc диктовка звука не оставляет вовсе.
+
+«Распознать заново» намеренно идёт **другим** путём, а не повторяет тот же: один полный
+проход по всему буферу, без потоковой финализации и склейки по таймкодам, без обрезки
+воротами речи и без словарного промпта (словарь всё равно отработает слоем 2). Рядом —
+кнопка на `large-v3` с честной подписью: для русского большая модель обычно хуже
+(украинизирует слова) и идёт в разы дольше, а если её нет на диске, приложение сначала
+скажет про 2,9 ГБ и спросит.
+
 Подробности, ограничения и архитектура — в английской части выше.

@@ -52,8 +52,17 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     public func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
+        try await prepare(variant: language.whisperModel, language: language, onState: onState)
+    }
+
+    /// Вариант модели названа явно: язык её больше не выбирает. Нужно повторному разбору
+    /// записи — там русскую диктовку можно попросить разобрать на large-v3.
+    public func prepare(
+        variant: String,
+        language: Language,
+        onState: @escaping @Sendable (ASRModelState) -> Void
+    ) async throws {
         let pending: (task: Task<Void, Error>, joined: Bool)? = queue.sync {
-            let variant = language.whisperModel
             if pipelines[variant] != nil { return nil }
             if let inflight = loading[variant] { return (inflight, true) }
             // Тот же вариант уже качается по кнопке «Скачать» — дожидаемся файлов вместо
@@ -119,7 +128,16 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     public func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        Self.text(of: try await run(samples, language: language, prompt: prompt))
+        try await transcribe(samples, language: language, variant: language.whisperModel, prompt: prompt)
+    }
+
+    public func transcribe(
+        _ samples: [Float],
+        language: Language,
+        variant: String,
+        prompt: String
+    ) async throws -> String {
+        Self.text(of: try await run(samples, language: language, variant: variant, prompt: prompt))
     }
 
     /// Те же опции, что и у `transcribe` (они считаются в одном месте — `run`), другой разбор
@@ -185,8 +203,13 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Один проход большой модели. Опции здесь ровно одни на все проходы сессии —
     /// иначе фоновые проходы и финал распознавали бы по-разному, и склеивать их было бы нечем.
-    private func run(_ samples: [Float], language: Language, prompt: String) async throws -> [TranscriptionResult] {
-        let cached = queue.sync { pipelines[language.whisperModel] }
+    private func run(
+        _ samples: [Float],
+        language: Language,
+        variant: String? = nil,
+        prompt: String
+    ) async throws -> [TranscriptionResult] {
+        let cached = queue.sync { pipelines[variant ?? language.whisperModel] }
         guard let pipe = cached else {
             throw TranscriptionEngineError.notPrepared(language)
         }
@@ -357,6 +380,29 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         let tokens = tokenizer
             .encode(text: " " + text)
             .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-        return tokens.isEmpty ? nil : tokens
+        return tokens.isEmpty ? nil : Self.capped(tokens)
+    }
+
+    /// Сколько токенов окна отдаём промпту — четверть контекста декодера.
+    ///
+    /// Контекст у CoreML-декодера WhisperKit — 224 токена, и промпт ест их наравне с самой
+    /// расшифровкой: цикл декодера обрывается по `currentTokens.count >= 223`, а
+    /// `currentTokens` начинается ровно с промпта. WhisperKit разрешает промпту половину
+    /// (111 токенов) — ту же долю, что и эталонный Whisper, но у того контекст вдвое больше
+    /// (448), и расшифровке остаётся 224 токена против наших 112.
+    ///
+    /// Чем это кончается: когда бюджет исчерпан, поток токенов обрывается посреди слова,
+    /// WhisperKit штампует всё окно одним сегментом и перематывает `seek` за его конец —
+    /// нерасшифрованный звук выбрасывается молча, без единой ошибки.
+    ///
+    /// Замер (115 c быстрой русской речи, эталон 309 слов): без терминов — 309, 6 терминов —
+    /// 309, 12 — 309, 24 — 286, 36 — 266. То есть рабочий словарь съедал 14 % диктовки.
+    /// 56 токенов — вдвое ниже нижней границы, на которой потери начинались.
+    static let maxPromptTokens = 56
+
+    /// Режем с начала: у `PromptBuilder` важные термины стоят ближе к хвосту (и там же —
+    /// украинский образец смешанной речи), и WhisperKit сам обрезает промпт тем же концом.
+    static func capped(_ tokens: [Int]) -> [Int] {
+        Array(tokens.suffix(maxPromptTokens))
     }
 }

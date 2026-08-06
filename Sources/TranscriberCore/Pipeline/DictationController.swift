@@ -62,6 +62,25 @@ actor EngineGate {
         try await engine.prepare(language: language, onState: onState)
     }
 
+    /// То же, но вариант модели назван явно, — повторный разбор записи из истории.
+    func prepare(
+        variant: String,
+        language: Language,
+        onState: @escaping @Sendable (ASRModelState) -> Void
+    ) async throws {
+        try await engine.prepare(variant: variant, language: language, onState: onState)
+    }
+
+    func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String {
+        let previous = inFlight
+        let task = Task { [self] in
+            await previous?.value
+            return try await engine.transcribe(samples, language: language, variant: variant, prompt: prompt)
+        }
+        chain(task)
+        return try await task.value
+    }
+
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
         let previous = inFlight
         let task = Task { [self] in
@@ -210,18 +229,20 @@ public final class DictationController: ObservableObject {
     /// Потоковая финализация. Фоновый проход стартует не раньше, чем через `rollingGap`
     /// после конца предыдущего, и только если с прошлого прохода записалось ещё
     /// `rollingGrowth` звука — иначе проходы шли бы сплошняком без нового материала.
-    private static let rollingGap: TimeInterval = 0.5
+    /// Не private: длинную диктовку меряет проба `LongAudioProbeTests`, и расписание
+    /// проходов в ней обязано быть тем же самым, а не переписанным по памяти.
+    static let rollingGap: TimeInterval = 0.5
     private static let rollingPoll: TimeInterval = 0.1
-    private static let rollingGrowth = AudioCaptureFormat.samples(seconds: 2)
+    static let rollingGrowth = AudioCaptureFormat.samples(seconds: 2)
     /// Нахлёст хвоста назад: даёт склейке общие слова на стыке.
-    private static let tailOverlap = AudioCaptureFormat.samples(seconds: 0.5)
+    static let tailOverlap = AudioCaptureFormat.samples(seconds: 0.5)
     /// Короче этого потоковый путь не включаем: полный проход и так быстрый,
     /// а лишний риск на коротких диктовках не окупается.
-    private static let streamingMinSamples = AudioCaptureFormat.samples(seconds: 6)
+    static let streamingMinSamples = AudioCaptureFormat.samples(seconds: 6)
     /// Дальше этого новые проходы не стартуют. Каждый проход переписывает весь буфер, а буфер
     /// только растёт — на длинной записи это квадратичное сжигание ANE, и вдобавок стоп ждал бы
     /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
-    private static let rollingMaxSamples = AudioCaptureFormat.samples(seconds: 50)
+    static let rollingMaxSamples = AudioCaptureFormat.samples(seconds: 50)
 
     /// Меньше этого записанного при сорвавшемся захвате — распознавать нечего.
     private static let minimumUsefulSamples = AudioCaptureFormat.samples(seconds: 0.5)
@@ -239,11 +260,6 @@ public final class DictationController: ObservableObject {
     /// движка стоит ~150 мс — это дешевле, чем оранжевая точка, висящая после вставки:
     /// горящий индикатор читается как «микрофон не выключается».
     private static let micReleaseDelay: TimeInterval = 0.5
-
-    /// Бэкап последней записи — на случай, если вставка не дошла до приложения.
-    private static let backupURL: URL = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Transcriber/last-recording.wav")
 
     @Published public private(set) var state: DictationState = .idle
     /// Последняя диктовка после слоя 2 и GPT-чистки, до перевода (для действий меню).
@@ -270,6 +286,7 @@ public final class DictationController: ObservableObject {
     private let dictionary: UserDictionary
     private let settings: AppSettings
     private let history: HistoryStore
+    private let recordings: RecordingStore
     private let suggester: TermSuggester
     private let recorder: AudioCapturing
     private let delivery: TextDelivery
@@ -335,12 +352,16 @@ public final class DictationController: ObservableObject {
         delivery: TextDelivery = .system,
         // Не сам гейт, а фабрика: подъём VAD (CoreML/ANE) занимает секунды и делается лениво,
         // при первой записи. Тесты подставляют сюда заглушку и обходятся без модели.
-        makeVad: @escaping @Sendable () async throws -> SpeechGating = { try await VadGate() }
+        makeVad: @escaping @Sendable () async throws -> SpeechGating = { try await VadGate() },
+        // Записи диктовок. Тесты подставляют сюда временную папку: класть настоящий голос
+        // пользователя рядом с прогоном — не то, что тесты вправе делать.
+        recordings: RecordingStore = .shared
     ) {
         self.gate = EngineGate(engine)
         self.dictionary = dictionary
         self.settings = settings
         self.history = .shared
+        self.recordings = recordings
         self.suggester = .shared
         self.recorder = recorder
         self.delivery = delivery
@@ -420,7 +441,8 @@ public final class DictationController: ObservableObject {
             Task { @MainActor in self?.apply(modelState) }
         }
         let vad = try await ensureVad()
-        guard let speech = try await vad.trimmed(fileSamples) else { throw DictationError.noSpeech }
+        let leveled = AudioNormalizer.normalized(fileSamples)
+        guard let speech = try await vad.trimmed(leveled) else { throw DictationError.noSpeech }
 
         let entries = dictionary.entries
         state = .transcribing
@@ -590,7 +612,10 @@ public final class DictationController: ObservableObject {
                     continue
                 }
 
-                let samples = self.recorder.capturedSamples
+                // Тот же подъём уровня, что и на финале: фоновый проход обязан слышать
+                // ровно то же, что услышит хвост, иначе подтверждённая часть и склейка
+                // считаются по разному звуку.
+                let samples = AudioNormalizer.normalized(self.recorder.capturedSamples)
                 self.rollingPassSamples = samples.count
 
                 do {
@@ -736,7 +761,12 @@ public final class DictationController: ObservableObject {
     private func runPipeline(samples: [Float], language: Language) async {
         // Бэкап уходит в фон и не ждётся: кодирование и запись WAV длинной диктовки —
         // это сотни миллисекунд ровно перед распознаванием, то есть чистая задержка.
+        // На диск ложится исходная запись, без подъёма уровня: архив обязан быть тем,
+        // что и правда сказали в микрофон.
         let backup = startBackup(samples)
+        // Уровень поднимаем один раз на всю запись и дальше работаем только с поднятым:
+        // и ворота речи, и Whisper обязаны слышать одно и то же (см. `AudioNormalizer`).
+        let leveled = AudioNormalizer.normalized(samples)
         // Идущий фоновый проход обязателен к ожиданию: он и досчитывает подтверждённую часть,
         // и в любом случае занимает единственный инстанс WhisperKit.
         await rollingTask?.value
@@ -744,11 +774,13 @@ public final class DictationController: ObservableObject {
         do {
             let entries = dictionary.entries
             let raw: String
-            if let streamed = await streamedTranscript(samples: samples, language: language) {
+            if let streamed = await streamedTranscript(samples: leveled, language: language) {
                 raw = streamed
             } else {
                 let vad = try await ensureVad()
-                guard let speech = try await vad.trimmed(samples) else { throw DictationError.noSpeech }
+                guard let speech = try await vad.trimmed(leveled) else {
+                    throw DictationError.noSpeech
+                }
                 raw = try await gate.transcribe(speech, language: language, prompt: sessionPrompt)
             }
             var text = ReplacementEngine.apply(raw, entries: entries)
@@ -807,9 +839,12 @@ public final class DictationController: ObservableObject {
                 throw DictationError.noSpeech
             }
             // Последняя точка отмены: дальше идут вставка, буфер обмена и история — ровно то,
-            // чего отменённая диктовка оставить не должна. Бэкап-WAV при этом остаётся лежать
-            // на диске: он безвреден и его перезапишет следующая запись.
-            if consumeCancel() { return }
+            // чего отменённая диктовка оставить не должна. Заодно убираем и запись: без
+            // строки в истории она стала бы файлом, до которого нет ни одной двери.
+            if consumeCancel() {
+                await discardBackup(backup)
+                return
+            }
             lastOriginal = text
             lastOriginalLanguage = language
             lastTranslation = translation
@@ -817,16 +852,28 @@ public final class DictationController: ObservableObject {
             // Непустой по построению: перевод либо непустой, либо сброшен в nil выше.
             let output = translation ?? text
             let destination = await deliver(output)
-            history.add(output, language: language)
+            let saved = await backup.value
+            history.add(output, language: language, audio: saved?.name, seconds: saved?.seconds)
             // Кандидаты в словарь считаем по тексту диктовки, а не по тому, что уехало
             // в поле ввода: у перевода кандидатом оказалось бы каждое английское слово.
             // Текст уже прошёл словарь — всё, что тот умел заменить, стоит канонической
             // формой и в подсказки не полезет.
             suggester.observe(text, entries: entries)
-            await finishBackup(backup)
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
                 degradations.append(Self.clipboardMessage(reason))
+            }
+            // Речи на выходе подозрительно мало для такой длинной записи. Молчать об этом
+            // нельзя: именно так и выглядит потерянная диктовка — текст вроде есть, а половины
+            // сказанного в нём нет, и заметить это можно только по памяти.
+            if TranscriptQuality.looksTruncated(text: output, seconds: saved?.seconds) {
+                logger.error(
+                    """
+                    Мало текста на \(saved?.seconds ?? 0, format: .fixed(precision: 0)) c записи: \
+                    \(ShortDictation.wordCount(output), privacy: .public) слов
+                    """
+                )
+                degradations.append("распознано мало для записи — «История…» даст распознать заново")
             }
             // Оговорка про AI-чистку не должна съедать главную новость: текст не в документе,
             // а в карточке — без этого пользователь пойдёт искать его не там.
@@ -846,17 +893,38 @@ public final class DictationController: ObservableObject {
         } catch {
             // Отменённая диктовка не ругается: пользователь уже сказал, что результат ему
             // не нужен, и сбой досчитанного впустую конвейера — не его новость.
-            if consumeCancel() { return }
-            fail(message(for: error))
+            if consumeCancel() {
+                await discardBackup(backup)
+                return
+            }
+            // Текста нет, но запись есть — и это главное, что человеку сейчас нужно знать.
+            // Пустая строка в истории существует ровно затем, чтобы к звуку вела дверь.
+            let saved = await backup.value
+            if let saved {
+                history.addFailed(language: language, audio: saved.name, seconds: saved.seconds)
+            }
+            fail(message(for: error, recorded: saved != nil))
         }
+    }
+
+    /// Отменённая диктовка не оставляет ни текста, ни звука: строки в истории у неё нет,
+    /// а файл без строки — это запись, до которой не добраться и о которой не узнать.
+    private func discardBackup(_ backup: Task<RecordingStore.Saved?, Never>) async {
+        guard let saved = await backup.value else { return }
+        recordings.remove(named: saved.name)
     }
 
     /// «Речь не обнаружена» на цифровой тишине — неправда: молчал не человек, а микрофон
     /// (так ведёт себя мёртвый HFP-вход Bluetooth-гарнитуры). Говорим то, что помогает.
+    ///
+    /// А если запись сохранилась — главная новость не в том, что распознать не вышло,
+    /// а в том, что сказанное не пропало и его можно разобрать заново.
     /// Не private: подмена сообщения проверяется тестом напрямую.
-    func message(for error: Error) -> String {
-        guard error is DictationError, recorder.capturedSilence else { return error.localizedDescription }
-        return "микрофон молчит — выберите другой вход в меню «Микрофон»"
+    func message(for error: Error, recorded: Bool = false) -> String {
+        guard error is DictationError else { return error.localizedDescription }
+        if recorder.capturedSilence { return "микрофон молчит — выберите другой вход в меню «Микрофон»" }
+        guard recorded else { return error.localizedDescription }
+        return "речь не обнаружена — запись сохранена, распознайте заново в «Истории…»"
     }
 
     /// Финал по потоковому пути: подтверждённая фоном часть уже распознана, осталось
@@ -1117,31 +1185,70 @@ public final class DictationController: ObservableObject {
 
     /// Кодирование и запись WAV — вне главного потока и вне критического пути. `samples`
     /// уезжает в задачу значением (массив уже никто не меняет), поэтому снимок консистентен.
-    /// О сбое задача сообщает сама: её результата может никто не прочитать — при сбое
-    /// конвейера до `finishBackup` дело не доходит вовсе.
-    private func startBackup(_ samples: [Float]) -> Task<Void, Never> {
-        let url = Self.backupURL
-        let logger = self.logger
+    /// О сбое `RecordingStore` сообщает сам и отдаёт nil: бэкап — страховка, и ронять
+    /// из-за неё диктовку нельзя.
+    private func startBackup(_ samples: [Float]) -> Task<RecordingStore.Saved?, Never> {
+        let recordings = self.recordings
+        let keeping = settings.keptRecordings
         return Task.detached(priority: .utility) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try WavEncoder.encode(samples).write(to: url, options: .atomic)
-            } catch {
-                let message = "Бэкап записи не сохранён: \(error.localizedDescription)"
-                logger.error("\(message, privacy: .public)")
-                FileHandle.standardError.write(Data((message + "\n").utf8))
-            }
+            recordings.save(samples, keeping: keeping)
         }
     }
 
-    /// Вставка дошла до приложения — бэкап больше не нужен. Ждём саму запись: без этого
-    /// припозднившийся `write` положил бы WAV обратно уже после удаления, и в следующей
-    /// сессии на диске лежал бы чужой файл.
-    private func finishBackup(_ backup: Task<Void, Never>) async {
-        await backup.value
-        try? FileManager.default.removeItem(at: Self.backupURL)
+    // MARK: - Повторное распознавание
+
+    /// Как разбирать запись во второй раз.
+    ///
+    /// Смысл повтора — пойти ДРУГИМ путём: тот же самый потеряет речь ровно там же.
+    /// Поэтому здесь нет ни потоковой финализации со склейкой кусков по таймкодам,
+    /// ни обрезки воротами речи, ни словарного промпта — а промпт, как показал замер,
+    /// и есть главный вор слов (см. `WhisperEngine.maxPromptTokens`). Модель по умолчанию
+    /// та же: «больше» для русского не значит «лучше» (см. `WhisperModel`).
+    public enum RetranscribeMode: Sendable {
+        /// Полный однопроходный разбор целого буфера на модели языка.
+        case samePlainPass
+        /// То же самое, но на large-v3. Дольше в разы и на русском часто хуже — выбор явный.
+        case largeModel
+    }
+
+    /// Распознаёт сохранённую запись заново и возвращает текст (он же уезжает в историю).
+    /// Модели `largeModel` может не быть на диске — тогда бросает, а качать её или нет,
+    /// решает вызывающий: это 2,9 ГБ.
+    public func retranscribe(item: HistoryItem, mode: RetranscribeMode) async throws -> String {
+        guard let audio = item.audio else { throw RecordingStoreError.missing }
+        let samples = try recordings.samples(named: audio)
+        let language = item.language
+        // Вариант модели и язык распознавания — разные вещи: large-v3 на повторе берётся
+        // для того же языка, а не вместе с чужим.
+        let variant = mode == .largeModel ? WhisperModel.large : language.whisperModel
+
+        state = .transcribing
+        defer { scheduleIdle(after: Self.insertedLinger) }
+
+        try await gate.prepare(variant: variant, language: language) { [weak self] modelState in
+            Task { @MainActor in self?.apply(modelState) }
+        }
+        // Ворота речи не зовём вовсе: на повторе честнее отдать модели всё, включая тишину,
+        // чем во второй раз недосчитаться. Уровень поднимаем — это ровно то, чего тихой
+        // записи не хватало в первый раз. Промпта нет: замер показал, что именно он и есть
+        // главный вор слов (см. `WhisperEngine.maxPromptTokens`), а словарь всё равно
+        // отработает слоем 2.
+        let raw = try await gate.transcribe(
+            AudioNormalizer.normalized(samples),
+            language: language,
+            variant: variant,
+            prompt: ""
+        )
+        let text = ReplacementEngine.apply(raw, entries: dictionary.entries)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DictationError.noSpeech
+        }
+        history.replace(id: item.id, text: text)
+        lastOriginal = text
+        lastOriginalLanguage = item.language
+        lastTranslation = nil
+        delivery.copy(text)
+        state = .inserted
+        return text
     }
 }

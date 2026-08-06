@@ -42,6 +42,7 @@ public final class AppSettings: ObservableObject {
         /// Ключ старше настройки: когда-то тумблер менял модель, теперь — только промпт.
         /// Строку не трогаем, чтобы у тех, кто его включил, он остался включённым.
         static let ruUsesLargeModel = "ruUsesLargeModel"
+        static let keptRecordings = "keptRecordings"
     }
 
     private let defaults: UserDefaults
@@ -119,6 +120,13 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(mixedSpeech, forKey: Key.ruUsesLargeModel) }
     }
 
+    /// Сколько последних записей держим на диске для повторного распознавания.
+    /// Звук — самое личное, что есть у диктовки, поэтому кольцо короткое и явное: 0 —
+    /// не хранить вовсе, 3 — по умолчанию (см. `RecordingStore`).
+    @Published public var keptRecordings: Int {
+        didSet { defaults.set(keptRecordings, forKey: Key.keptRecordings) }
+    }
+
     /// Кнопка записи: правый ⌘ (по умолчанию) или шорткат из KeyboardShortcuts.
     @Published public var dictationHotkeyMode: HotkeyMode {
         didSet { defaults.set(dictationHotkeyMode.rawValue, forKey: Key.dictationHotkeyMode) }
@@ -157,6 +165,7 @@ public final class AppSettings: ObservableObject {
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         mixedSpeech = defaults.bool(forKey: Key.ruUsesLargeModel)
+        keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)

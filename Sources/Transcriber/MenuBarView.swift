@@ -64,9 +64,18 @@ struct MenuBarView: View {
                 Text("Пусто")
             } else {
                 ForEach(history.items) { item in
-                    Button(Self.title(for: item)) { copy(item.text) }
+                    // Копировать нечего — ведём туда, где запись можно разобрать заново.
+                    Button(Self.title(for: item)) {
+                        item.text.isEmpty ? openHistory() : copy(item.text)
+                    }
                 }
+
+                Divider()
             }
+
+            // Окно, а не строка меню: только там видно длительность записи и живёт
+            // повторное распознавание — единственный путь вернуть потерянную диктовку.
+            Button("Открыть окно истории…") { openHistory() }
         }
 
         Divider()
@@ -134,6 +143,12 @@ struct MenuBarView: View {
         }
     }
 
+    private func openHistory() {
+        WindowPresenter.shared.present(WindowID.history) {
+            openWindow(id: WindowID.history)
+        }
+    }
+
     private func openDictionary(_ focus: DictionaryFocus? = nil) {
         core.dictionaryFocus = focus
         WindowPresenter.shared.present(WindowID.dictionary) {
@@ -148,7 +163,10 @@ struct MenuBarView: View {
     }
 
     /// Пункт меню — одна строка: переносы схлопываем, хвост обрезаем.
+    /// Диктовка без текста — та, из которой распознавание ничего не вытащило: её запись
+    /// лежит в истории и ждёт повтора, а пустая строка в меню была бы просто дырой.
     private static func title(for item: HistoryItem) -> String {
+        guard !item.text.isEmpty else { return "⚠️ не распозналось — открыть окно истории" }
         let flat = item.text
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)

@@ -17,6 +17,7 @@ extension KeyboardShortcuts.Name {
 enum WindowID {
     static let dictionary = "dictionary"
     static let onboarding = "onboarding"
+    static let history = "history"
 }
 
 /// Долгоживущие объекты приложения: движок, словарь, конвейер, живая панель.
@@ -250,6 +251,17 @@ struct TranscriberApp: App {
                 core: AppCore.shared,
                 controller: AppCore.shared.controller,
                 history: AppCore.shared.history
+            )
+        }
+        .defaultSize(width: 680, height: 560)
+
+        // История — единственная дверь к сохранённым записям: только отсюда диктовку,
+        // из которой распознавание потеряло речь, можно разобрать заново.
+        Window("История диктовок", id: WindowID.history) {
+            HistoryView(
+                history: AppCore.shared.history,
+                controller: AppCore.shared.controller,
+                settings: AppCore.shared.settings
             )
         }
         .defaultSize(width: 680, height: 560)

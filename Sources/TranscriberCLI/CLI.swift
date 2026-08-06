@@ -28,8 +28,18 @@ struct CLI {
     }
 
     private static func run(_ options: Options) async throws -> String {
-        let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: options.path)
-        log("аудио: \(samples.count) сэмплов ≈ \(seconds(samples.count)) c @ 16 кГц")
+        let recorded = try AudioProcessor.loadAudioAsFloatArray(fromPath: options.path)
+        log("аудио: \(recorded.count) сэмплов ≈ \(seconds(recorded.count)) c @ 16 кГц")
+
+        // Тот же подъём уровня, что и в приложении: без него тихая запись (низкая громкость
+        // входа в системе) распознаётся заметно хуже — см. `AudioNormalizer`. CLI обязан
+        // повторять конвейер, иначе замер по нему ничего не значит.
+        let peak = AudioNormalizer.peak(recorded)
+        let samples = AudioNormalizer.normalized(recorded)
+        log(
+            "уровень: пик \(String(format: "%.4f", peak)) "
+                + "→ ×\(String(format: "%.1f", AudioNormalizer.gain(forPeak: peak)))"
+        )
 
         var speech = samples
         if options.useVAD {
