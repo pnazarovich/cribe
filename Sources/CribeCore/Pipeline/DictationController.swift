@@ -35,6 +35,20 @@ public enum DictationState: Sendable, Equatable {
     case error(String)
 }
 
+/// Короткая записка рядом с панелью. Пилюля одна, а дел теперь бывает два сразу (пишется
+/// одна диктовка, доезжает другая), поэтому у сообщений, которым пилюли не досталось,
+/// должен быть свой выход — иначе они просто пропадут.
+///
+/// Ядро остаётся без UI: оно называет ПОВОД, а текст и внешний вид выбирает приложение.
+public enum DictationNotice: Sendable, Equatable {
+    /// Очередь заполнена — новую диктовку начинать некуда, пока не доедет одна из идущих.
+    case queueFull(limit: Int)
+    /// Разовая подсказка: можно не ждать обработки, а сразу говорить дальше.
+    case parallelHint
+    /// Итог диктовки, которому не хватило пилюли: её занимает более срочное.
+    case result(DictationState)
+}
+
 public enum DictationError: LocalizedError, Sendable {
     case noSpeech
 
@@ -222,7 +236,83 @@ public enum WavEncoder {
     }
 }
 
+/// Одна диктовка от первого шага до последнего: сначала она пишется с микрофона, потом
+/// стоит в очереди и доезжает до поля ввода.
+///
+/// Ссылочный тип не ради удобства. Фоновый проход, начатый во время записи, досчитывает
+/// уже ПОСЛЕ стопа, и подтверждать ему надо ту самую диктовку, из которой он вырос, —
+/// а она к этому моменту уже не «текущая»: с микрофона пишется следующая.
+@MainActor
+private final class DictationSession {
+
+    // MARK: Снято на старте — дальше не меняется
+
+    let language: Language
+    /// Перевод, назначенный хоткеем (правый ⌥); nil — решает настройка.
+    let translating: Bool?
+    /// Промпт диктовки: фоновые проходы и финал обязаны идти с одним биасингом, иначе
+    /// подтверждённая часть и хвост распознаны по-разному и склейка врёт.
+    var prompt = ""
+
+    // MARK: Живёт, пока идёт запись
+
+    /// Подтверждённая фоном часть и конец последнего подтверждённого сегмента в сэмплах
+    /// от начала записи.
+    var confirmedText = ""
+    var confirmedEndSample = 0
+    /// Фоновый проход упал — на этой диктовке потоковый путь выключен.
+    var rollingFailed = false
+    /// Язык переключили прямо на записи — фоновые проходы и хвост могли бы разъехаться.
+    var languageSwitched = false
+    /// Длина буфера на момент запуска последнего фонового прохода.
+    var rollingPassSamples = 0
+    var rollingTask: Task<Void, Never>?
+    /// Диктовку сняли ещё на записи (Esc, сбой захвата): досчитавшему проходу подтверждать
+    /// уже нечего.
+    var cancelled = false
+
+    // MARK: Снято на стопе — с этим диктовка едет в очередь
+
+    var samples: [Float] = []
+    /// Тумблер перевода читаем на стопе: меню меняет его и на живой записи, а после стопа
+    /// решение принято — в очереди диктовку настройка догонять уже не вправе.
+    var translatesToEnglish = false
+    /// Записанное оказалось цифровой тишиной. Снимок, а не опрос захвата: пока диктовка
+    /// стоит в очереди, микрофон успевает записать следующую и ответил бы уже про неё.
+    var capturedSilence = false
+
+    init(language: Language, translating: Bool?) {
+        self.language = language
+        self.translating = translating
+    }
+
+    /// Итог фонового прохода. Назад не сдаём: перестройка сегментов может дать более
+    /// короткий подтверждённый префикс, и тогда честнее оставить прошлый — хвост всё
+    /// равно длиннее.
+    func confirm(_ segments: [ASRSegment]) {
+        guard !cancelled,
+              let pass = StreamingMerge.confirmed(from: segments),
+              pass.endSample > confirmedEndSample
+        else { return }
+        confirmedEndSample = pass.endSample
+        confirmedText = pass.text
+    }
+}
+
 /// Конвейер диктовки: запись → VAD → Whisper → словарь → GPT → вставка.
+///
+/// Диктовок в работе бывает несколько сразу: пока одна распознаётся и чистится, следующая
+/// уже пишется с микрофона. Поэтому контроллер разделён надвое честно, а не флагами поверх
+/// одной машины состояний:
+///
+/// * `recording` — единственная диктовка, которая пишется прямо сейчас. Ей принадлежат
+///   микрофон, ворота речи, фоновые проходы и Esc.
+/// * `pending` — очередь уже записанных диктовок, которые доезжают до поля ввода. Ей
+///   принадлежит инстанс WhisperKit и всё, что идёт после стопа.
+///
+/// Очередь разбирается строго по одной и строго в порядке речи: инстанс WhisperKit один
+/// (параллельные проходы только мешали бы друг другу), а переставленные местами
+/// предложения хуже, чем медленные.
 @MainActor
 public final class DictationController: ObservableObject {
 
@@ -244,6 +334,16 @@ public final class DictationController: ObservableObject {
     /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
     static let rollingMaxSamples = AudioCaptureFormat.samples(seconds: 50)
 
+    /// Сколько записанных диктовок вправе ждать обработки. Потолок нужен не ради памяти,
+    /// а ради контроля: за четвёртой человек уже не помнит, что сказал в первой, и очередь
+    /// из «сейчас допечатается» превращается в «где мой текст».
+    public static let maxPending = 3
+
+    /// На какой по счёту диктовке показываем разовую подсказку про наложение. Третья —
+    /// момент, когда привычка нажимать хоткей уже есть, а про то, что ждать не нужно,
+    /// человек ещё не знает.
+    private static let parallelHintAt = 3
+
     /// Меньше этого записанного при сорвавшемся захвате — распознавать нечего.
     private static let minimumUsefulSamples = AudioCaptureFormat.samples(seconds: 0.5)
 
@@ -252,7 +352,7 @@ public final class DictationController: ObservableObject {
     private static let degradedLinger: TimeInterval = 2.5
     private static let errorLinger: TimeInterval = 2
     /// Вспышка «отменено» короче остальных: сообщать не о чем, надо лишь показать,
-    /// что Esc дошёл и диктовки больше нет.
+    /// что Esc дошёл и записи больше нет.
     private static let cancelledLinger: TimeInterval = 1.2
     /// Сообщение действий меню (перевод последней диктовки) поверх простоя.
     private static let flashLinger: TimeInterval = 2
@@ -262,17 +362,22 @@ public final class DictationController: ObservableObject {
     private static let micReleaseDelay: TimeInterval = 0.5
 
     @Published public private(set) var state: DictationState = .idle
+    /// Сколько диктовок записано и ещё не доехало до поля ввода: идущая обработка плюс
+    /// очередь за ней. Живая запись сюда не входит — она ещё пишется, а не обрабатывается.
+    /// Этим числом панель показывает вторую занятость, и оно же упирается в `maxPending`.
+    @Published public private(set) var pendingCount = 0
     /// Последняя диктовка после слоя 2 и GPT-чистки, до перевода (для действий меню).
     @Published public private(set) var lastOriginal: String?
     /// Английский перевод последней диктовки: вставленный или сделанный по запросу из меню.
     @Published public private(set) var lastTranslation: String?
-    /// Язык идущей диктовки. Переключение языка на живой записи меняет настройку, но не сессию —
-    /// UI показывает отсюда, чтобы флаг не врал про то, чем на самом деле распознаётся речь.
-    /// `nil` — сессии нет, показываем `settings.language`.
+    /// Язык диктовки, которую панель сейчас называет: живой записи, если она есть, иначе
+    /// первой в очереди обработки. Переключение языка на живой записи меняет настройку,
+    /// но не саму диктовку — UI показывает отсюда, чтобы флаг не врал про то, чем на самом
+    /// деле распознаётся речь. `nil` — дел нет, показываем `settings.language`.
     @Published public private(set) var activeSessionLanguage: Language?
-    /// Перевод, назначенный этой сессии хоткеем (правый ⌥), — он сильнее настройки.
-    /// `nil` — сессии с переопределением нет, решает `settings.translateToEnglish`
-    /// (в том числе прямо на стопе: обычную сессию тумблер меню меняет и на живой записи).
+    /// Перевод, назначенный этой диктовке хоткеем (правый ⌥), — он сильнее настройки.
+    /// `nil` — переопределения нет, решает `settings.translateToEnglish` (в том числе прямо
+    /// на стопе: обычную сессию тумблер меню меняет и на живой записи).
     @Published public private(set) var activeSessionTranslate: Bool?
 
     /// Текст, которому не нашлось поля ввода, — его забирает стопка карточек в приложении.
@@ -281,6 +386,10 @@ public final class DictationController: ObservableObject {
     /// Возвращает `false`, если карточку показать не удалось, — тогда конвейер вставляет
     /// текст обычным путём. Не назначен — конвейер вставляет по-старому (так живёт CLI).
     public var onCardText: ((String) -> Bool)?
+
+    /// Короткие сообщения, для которых пилюля занята более срочным. Не назначен — сообщения
+    /// не показываются (так живёт CLI), и на работу конвейера это никак не влияет.
+    public var onNotice: ((DictationNotice) -> Void)?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -294,7 +403,22 @@ public final class DictationController: ObservableObject {
     private let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Dictation")
 
     private var vad: SpeechGating?
-    private var sessionLanguage: Language = .ru
+
+    /// Диктовка, которая пишется прямо сейчас. `nil` — микрофон свободен.
+    private var recording: DictationSession?
+    /// Записанные диктовки в порядке речи. Первая — та, что обрабатывается сейчас; из
+    /// очереди она уходит только после вставки, поэтому и потолок, и счётчик занятости,
+    /// и решение «достанется ли ей пилюля» считают её незавершённой.
+    private var pending: [DictationSession] = []
+    /// Работник очереди. Ровно один: порядок вставки обязан быть порядком речи.
+    private var queueTask: Task<Void, Never>?
+
+    /// Что хочет показать каждая из трёх сторон. Пилюля одна, и `publish()` выбирает из них
+    /// по приоритету — иначе запись и обработка затирали бы друг друга по очереди.
+    private var recordingState: DictationState?
+    private var processingState: DictationState?
+    private var flashState: DictationState?
+
     /// Язык, на котором распознана `lastOriginal`: перевод из меню должен идти с него,
     /// а не с языка, который к тому моменту стоит в настройках.
     private var lastOriginalLanguage: Language = .ru
@@ -307,34 +431,15 @@ public final class DictationController: ObservableObject {
     /// Отмену на загрузке запросил Esc, а не второй хоткей: он обязан мигнуть «Отменено».
     /// Второй хоткей гасит сессию молча — он же её и завёл, спрашивать там нечего.
     private var pendingCancelFlashes = false
-    /// Esc нажали, пока конвейер уже считал. Прервать идущий проход (или запрос к GPT)
-    /// нечем — он досчитает в никуда, а конвейер посмотрит флаг перед вставкой.
-    private var cancelRequested = false
 
-    /// Подтверждённая часть диктовки: все сегменты последнего фонового прохода, кроме
-    /// последнего (его следующий проход почти всегда переписывает), и конец последнего
-    /// подтверждённого сегмента в сэмплах от начала записи.
-    ///
-    /// Не private: тест отмены проверяет напрямую, что проход отменённой сессии сюда
-    /// не доезжает (как и подмена сообщения в `message(for:)`).
-    var confirmedText = ""
-    var confirmedEndSample = 0
-    /// Фоновый проход упал — на этой сессии потоковый путь выключен.
-    private var rollingFailed = false
-    /// Язык переключили прямо на записи — фоновые проходы и хвост могли бы разъехаться.
-    private var languageSwitchedDuringSession = false
-    /// Длина буфера на момент запуска последнего фонового прохода.
-    private var rollingPassSamples = 0
-    /// Номер сессии: проход, посчитанный до старта новой записи, к ней не относится —
-    /// тот же приём, что `generation` в `VadGate`.
-    private var sessionGeneration = 0
-    /// Промпт сессии: фоновые проходы и финал обязаны идти с одним биасингом, иначе
-    /// подтверждённая часть и хвост распознаны по-разному и склейка врёт.
-    private var sessionPrompt = ""
+    /// Подтверждённая фоном часть живой записи. Не private: тест отмены проверяет напрямую,
+    /// что проход отменённой диктовки сюда не доезжает (как и подмена сообщения
+    /// в `message(for:)`).
+    var confirmedText: String { recording?.confirmedText ?? "" }
+    var confirmedEndSample: Int { recording?.confirmedEndSample ?? 0 }
 
     private var chunks: AsyncStream<[Float]>.Continuation?
     private var vadTask: Task<Void, Never>?
-    private var rollingTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
     private var deviceSubscription: AnyCancellable?
@@ -374,7 +479,7 @@ public final class DictationController: ObservableObject {
                     guard let self else { return }
                     // На живой записи устройство не меняем: середина диктовки — не место
                     // для дырки в звуке. Новый микрофон применит `begin()` следующей.
-                    if case .recording = self.state { return }
+                    if self.recording != nil { return }
                     self.recorder.setInputDevice(uid: uid)
                 }
             }
@@ -384,29 +489,38 @@ public final class DictationController: ObservableObject {
 
     /// `translating` назначает переводом всю сессию поверх настройки; `nil` — как раньше,
     /// решает `settings.translateToEnglish`. На остановке (и на отмене загрузки) параметр
-    /// не смотрим вовсе: остановить и отменить сессию вправе любой хоткей, а решение
+    /// не смотрим вовсе: остановить и отменить запись вправе любой хоткей, а решение
     /// о переводе принято при её старте.
+    ///
+    /// Смотрим строго на живую запись, а не на общее состояние: пока предыдущая диктовка
+    /// доезжает, хоткей обязан начинать новую, а не ждать конца конвейера. Ровно в этом
+    /// наложение и состоит.
     public func toggle(translating: Bool? = nil) {
-        switch state {
+        switch recordingState {
         case .recording:
             stopAndProcess()
-        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
-            begin(translating: translating)
         case .preparingModel:
             // Первая загрузка модели идёт минутами — хоткей отменяет сессию, а не ждёт впустую.
             pendingCancel = true
-        case .transcribing, .cleaning:
-            break  // конвейер занят — хоткей игнорируем
+        case nil:
+            begin(translating: translating)
+        default:
+            break  // других состояний у записи не бывает
         }
     }
 
-    /// Esc снимает идущую диктовку на любом её шаге: записанное выбрасывается целиком —
-    /// ни распознавания, ни вставки, ни истории, ни «последней диктовки».
+    /// Esc снимает ИДУЩУЮ ЗАПИСЬ: записанное выбрасывается целиком — ни распознавания,
+    /// ни вставки, ни истории, ни «последней диктовки».
+    ///
+    /// Уже записанные диктовки Esc не трогает, даже если они всё ещё считаются. Так решено
+    /// осознанно: они почти доехали, и выбросить готовую работу обиднее, чем недоотменить.
+    /// К тому же при наложении Esc всегда означает «эту, которую я сейчас говорю» — одна
+    /// клавиша с двумя смыслами («сними запись» и «сними очередь») была бы ловушкой.
     ///
     /// Чайм остановки здесь намеренно не играем: он означает «записал, обрабатываю»,
     /// а отмена — это «ничего не было». Тишина честнее звука.
     public func cancelDictation() {
-        switch state {
+        switch recordingState {
         case .recording:
             discardRecording()
         case .preparingModel:
@@ -415,17 +529,15 @@ public final class DictationController: ObservableObject {
             // непонятно, дошло нажатие или нет.
             pendingCancel = true
             pendingCancelFlashes = true
-        case .transcribing, .cleaning:
-            cancelRequested = true
-        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
-            break  // сессии нет — отменять нечего
+        default:
+            break  // записи нет — отменять нечего
         }
     }
 
     public func switchLanguage() {
-        // Язык сессии от этого не меняется (см. `activeSessionLanguage`), но потоковый путь
+        // Язык записи от этого не меняется (см. `activeSessionLanguage`), но потоковый путь
         // должен быть гарантированно однородным — на живой записи просто выключаем его.
-        if case .recording = state { languageSwitchedDuringSession = true }
+        recording?.languageSwitched = true
         // По кругу в порядке `Language.allCases`: русский → украинский → English → русский.
         // Один и тот же порядок в меню, в настройках и под хоткеем — иначе третий язык
         // превратил бы шорткат в лотерею.
@@ -436,7 +548,10 @@ public final class DictationController: ObservableObject {
 
     /// Прогон файла для CLI: VAD-обрезка → Whisper → словарь → (опционально) GPT. Без вставки и истории.
     public func process(fileSamples: [Float], language: Language, useGPT: Bool) async throws -> String {
-        defer { state = .idle }
+        defer {
+            processingState = nil
+            publish()
+        }
 
         try await gate.prepare(language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
@@ -446,7 +561,8 @@ public final class DictationController: ObservableObject {
         guard let speech = try await vad.trimmed(leveled) else { throw DictationError.noSpeech }
 
         let entries = dictionary.entries
-        state = .transcribing
+        processingState = .transcribing
+        publish()
         let raw = try await gate.transcribe(
             speech,
             language: language,
@@ -455,7 +571,8 @@ public final class DictationController: ObservableObject {
         let text = ReplacementEngine.apply(raw, entries: entries)
         guard useGPT else { return text }
 
-        state = .cleaning
+        processingState = .cleaning
+        publish()
         return try await PostProcessor.cleanup(
             text: text,
             entries: entries,
@@ -468,11 +585,18 @@ public final class DictationController: ObservableObject {
 
     private func begin(translating: Bool?) {
         guard !isStarting else { return }  // старт уже идёт — второй хоткей игнорируем
+        // Потолок очереди. Отказ обязан быть слышен: молча не начать запись — худшее, что
+        // диктовка может сделать, потому что человек говорит в никуда и узнаёт об этом
+        // только через минуту. Отсюда записка рядом с панелью — и ни звука старта.
+        guard pending.count < Self.maxPending else {
+            logger.notice("Очередь заполнена (\(Self.maxPending, privacy: .public)) — новая диктовка не начата")
+            onNotice?(.queueFull(limit: Self.maxPending))
+            return
+        }
         isStarting = true
-        // Отмена прошлой сессии новую не трогает — все её флаги снимаем на старте.
+        // Отмена прошлой записи новую не трогает — все её флаги снимаем на старте.
         pendingCancel = false
         pendingCancelFlashes = false
-        cancelRequested = false
 
         idleTask?.cancel()
         idleTask = nil
@@ -480,14 +604,13 @@ public final class DictationController: ObservableObject {
         micReleaseTask = nil
         prewarmGPT()
 
-        let language = settings.language
-        sessionLanguage = language
-        activeSessionLanguage = language
-        activeSessionTranslate = translating
+        let session = DictationSession(language: settings.language, translating: translating)
+        recording = session
+        publish()
         Task {
             defer { isStarting = false }
             do {
-                try await gate.prepare(language: language) { [weak self] modelState in
+                try await gate.prepare(language: session.language) { [weak self] modelState in
                     Task { @MainActor in self?.apply(modelState) }
                 }
                 // Пока грузилась модель, хоткей нажали второй раз — сессия отменена.
@@ -499,8 +622,11 @@ public final class DictationController: ObservableObject {
                 // сессии. Микрофон здесь ещё не поднимаем — это делает `startCapture()` прямо
                 // перед записью, иначе индикатор загорится на секунды раньше первого звука.
                 recorder.setInputDevice(uid: settings.inputDeviceUID)
-                try await startCapture()
+                try await startCapture(session)
             } catch {
+                recording = nil
+                recordingState = nil
+                publish()
                 fail(error.localizedDescription)
             }
         }
@@ -515,24 +641,18 @@ public final class DictationController: ObservableObject {
         Task.detached(priority: .utility) { await GPTClient(config: config).prewarm() }
     }
 
-    private func startCapture() async throws {
-        // Страховка от хвостов прошлой сессии: осиротевший VAD-цикл крутился бы вечно.
+    private func startCapture(_ session: DictationSession) async throws {
+        // Страховка от хвостов прошлой записи: осиротевший VAD-цикл крутился бы вечно.
+        // Фоновые проходы здесь не трогаем — они принадлежат своей диктовке и живут ровно
+        // столько, сколько она: их снимает её стоп, а не старт следующей.
         vadTask?.cancel()
         vadTask = nil
-        rollingTask?.cancel()
-        rollingTask = nil
         chunks?.finish()
         chunks = nil
 
-        confirmedText = ""
-        confirmedEndSample = 0
-        rollingPassSamples = 0
-        rollingFailed = false
-        languageSwitchedDuringSession = false
-        sessionGeneration += 1
-        sessionPrompt = PromptBuilder.initialPrompt(
+        session.prompt = PromptBuilder.initialPrompt(
             entries: dictionary.entries,
-            language: sessionLanguage
+            language: session.language
         )
 
         let vad = try await ensureVad()
@@ -559,8 +679,10 @@ public final class DictationController: ObservableObject {
         recorder.prepare()
 
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
-        state = .recording(live: "", level: 0)
-        // Хвост чайма попадает в запись — VAD обрезает не-речь.
+        recordingState = .recording(live: "", level: 0)
+        publish()
+        // Хвост чайма попадает в запись — VAD обрезает не-речь. Чайм у каждой записи свой:
+        // наложение в этом ничего не меняет, старт и конец слышно всегда.
         if settings.soundsEnabled { SoundPlayer.shared.playStart() }
         do {
             try recorder.start { [weak self] chunk in
@@ -575,7 +697,19 @@ public final class DictationController: ObservableObject {
         }
 
         startVadLoop(stream: stream, vad: vad)
-        startRollingLoop(language: sessionLanguage)
+        startRollingLoop(session)
+        offerParallelHintIfDue()
+    }
+
+    /// Разовая подсказка про наложение — один раз за всю жизнь приложения: второй раз это
+    /// уже не новость, а помеха. Работу она не блокирует и фокус не забирает: это записка
+    /// рядом с панелью, а не диалог.
+    private func offerParallelHintIfDue() {
+        guard !settings.parallelHintShown else { return }
+        settings.dictationsStarted += 1
+        guard settings.dictationsStarted >= Self.parallelHintAt else { return }
+        settings.parallelHintShown = true
+        onNotice?(.parallelHint)
     }
 
     /// Фоновая финализация: пока идёт запись, большая модель переписывает весь накопленный
@@ -584,17 +718,23 @@ public final class DictationController: ObservableObject {
     ///
     /// Проходы стоят в общей очереди `EngineGate` — WhisperKit-инстанс один, и финальный
     /// хвост всё равно дождётся идущего прохода. Никакого состояния UI цикл не трогает.
-    private func startRollingLoop(language: Language) {
-        let prompt = sessionPrompt
-        let generation = sessionGeneration
-        rollingTask = Task { [weak self] in
+    private func startRollingLoop(_ session: DictationSession) {
+        session.rollingTask = Task { [weak self] in
             while true {
                 // Потоковый путь уже снят (упавший проход, переключённый язык) — жечь на него
-                // ANE до конца записи незачем.
-                guard let self, case .recording = self.state,
-                      generation == self.sessionGeneration,
-                      !self.rollingFailed, !self.languageSwitchedDuringSession
+                // ANE до конца записи незачем. Тождество диктовки заодно и есть признак
+                // «запись ещё идёт»: стоп и отмена отпускают `recording`.
+                guard let self, self.recording === session,
+                      !session.rollingFailed, !session.languageSwitched
                 else { return }
+
+                // Пока предыдущая диктовка не доехала, фоновые проходы молчат: инстанс
+                // WhisperKit один, и проход по растущему буферу отодвинул бы её вставку —
+                // а ждут сейчас именно её, свою будущую человек ещё договаривает.
+                guard self.pending.isEmpty else {
+                    try? await Task.sleep(nanoseconds: UInt64(Self.rollingPoll * 1_000_000_000))
+                    continue
+                }
 
                 // Опрашиваем длину, а не сам буфер: снимок массива стоит копии по записи
                 // на аудиопотоке. Дальше потолка новые проходы не стартуют вовсе.
@@ -604,7 +744,7 @@ public final class DictationController: ObservableObject {
                 // всё равно пойдёт полным проходом, а идущий проход стоп обязан дождаться —
                 // это была бы чистая потеря там, где скорость важнее всего.
                 guard captured >= Self.streamingMinSamples,
-                      captured - self.rollingPassSamples >= Self.rollingGrowth
+                      captured - session.rollingPassSamples >= Self.rollingGrowth
                 else {
                     try? await Task.sleep(nanoseconds: UInt64(Self.rollingPoll * 1_000_000_000))
                     continue
@@ -614,19 +754,19 @@ public final class DictationController: ObservableObject {
                 // ровно то же, что услышит хвост, иначе подтверждённая часть и склейка
                 // считаются по разному звуку.
                 let samples = AudioNormalizer.normalized(self.recorder.capturedSamples)
-                self.rollingPassSamples = samples.count
+                session.rollingPassSamples = samples.count
 
                 do {
                     let segments = try await self.gate.transcribeSegments(
                         samples,
-                        language: language,
-                        prompt: prompt
+                        language: session.language,
+                        prompt: session.prompt
                     )
-                    self.confirm(segments, generation: generation)
+                    session.confirm(segments)
                 } catch {
                     // Один упавший проход — и весь потоковый путь снят: финал пойдёт полным
                     // проходом, как раньше. Оптимизация не имеет права быть риском.
-                    self.rollingFailed = true
+                    session.rollingFailed = true
                     self.logger.error(
                         "Фоновый проход не удался: \(error.localizedDescription, privacy: .public)"
                     )
@@ -635,32 +775,28 @@ public final class DictationController: ObservableObject {
 
                 // Передышку берём только на живой записи: стоп ждёт эту задачу, и лишний сон
                 // после уже посчитанного прохода был бы прямой задержкой финала.
-                guard case .recording = self.state else { return }
+                guard self.recording === session else { return }
                 try? await Task.sleep(nanoseconds: UInt64(Self.rollingGap * 1_000_000_000))
             }
         }
     }
 
-    private func confirm(_ segments: [ASRSegment], generation: Int) {
-        // Пока проход считался, могла начаться новая запись — её подтверждать чужим текстом
-        // нельзя. Назад тоже не сдаём: перестройка сегментов может дать более короткий
-        // подтверждённый префикс, и тогда честнее оставить прошлый — хвост всё равно длиннее.
-        guard generation == sessionGeneration,
-              let pass = StreamingMerge.confirmed(from: segments),
-              pass.endSample > confirmedEndSample
-        else { return }
-        confirmedEndSample = pass.endSample
-        confirmedText = pass.text
-    }
-
     private func append(_ chunk: [Float]) {
-        guard case .recording = state else { return }
+        guard isRecording else { return }
         chunks?.yield(chunk)
     }
 
     private func updateLevel(_ value: Float) {
-        guard case .recording = state else { return }
-        state = .recording(live: "", level: value)
+        guard isRecording else { return }
+        recordingState = .recording(live: "", level: value)
+        publish()
+    }
+
+    /// Идёт ли прямо сейчас запись с микрофона — в отличие от подготовки модели перед ней
+    /// и от обработки уже записанного.
+    private var isRecording: Bool {
+        if case .recording = recordingState { return true }
+        return false
     }
 
     /// 2 с тишины после речи → автостоп, если он включён в настройках.
@@ -679,7 +815,7 @@ public final class DictationController: ObservableObject {
     }
 
     private func autoStop() {
-        guard case .recording = state else { return }
+        guard isRecording else { return }
         stopAndProcess()
     }
 
@@ -688,7 +824,7 @@ public final class DictationController: ObservableObject {
     /// распознавать, идём обычным стопом; если нет, честно говорим о микрофоне вместо
     /// бессмысленного «речь не обнаружена».
     private func captureFailed(_ reason: String) {
-        guard case .recording = state else { return }
+        guard let session = recording, isRecording else { return }
         // Обрывок короче полусекунды распознавать нечего — на нём конвейер выдал бы
         // «речь не обнаружена» вместо настоящей причины (микрофон отвалился).
         if recorder.capturedSampleCount >= Self.minimumUsefulSamples {
@@ -700,63 +836,114 @@ public final class DictationController: ObservableObject {
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
-        rollingTask?.cancel()
-        rollingTask = nil
+        session.rollingTask?.cancel()
+        session.cancelled = true
+        recording = nil
+        recordingState = nil
         recorder.onLevel = nil
         recorder.onFailure = nil
         _ = recorder.stop()
         scheduleMicRelease()
+        publish()
         fail(reason)
     }
 
+    /// Стоп: диктовка снимается с микрофона и уезжает в очередь обработки, а контроллер тем
+    /// же движением освобождается для следующей. Ровно в этом наложение и состоит.
     private func stopAndProcess() {
+        guard let session = recording else { return }
         chunks?.finish()
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
         // Отмена не прерывает идущий проход (он живёт своей задачей в `EngineGate`),
         // зато снимает передышку между проходами — иначе финал ждал бы её впустую.
-        rollingTask?.cancel()
+        session.rollingTask?.cancel()
         recorder.onLevel = nil
         recorder.onFailure = nil
 
-        let samples = recorder.stop()
+        session.samples = recorder.stop()
+        session.capturedSilence = recorder.capturedSilence
+        session.translatesToEnglish = session.translating ?? settings.translateToEnglish
         // Микрофон дальше не нужен: распознавание и GPT-чистка занимают секунды, и всё это
         // время индикатор записи гореть не должен. Диктовки подряд ничего не теряют —
         // `begin()` снимает этот таймер первым делом.
         scheduleMicRelease()
         if settings.soundsEnabled { SoundPlayer.shared.playStop() }
-        let language = sessionLanguage
-        state = .transcribing
-        Task { await runPipeline(samples: samples, language: language) }
+
+        recording = nil
+        recordingState = nil
+        pending.append(session)
+        // Стадию ставим синхронно со стопом, а не первым шагом работника: между ними
+        // проходит целый тик, и панель успела бы мигнуть простоем — то есть спрятаться
+        // и тут же вернуться. Работник поставит её ещё раз, это ничего не стоит.
+        if processingState == nil { processingState = .transcribing }
+        publish()
+        drainQueue()
     }
 
     /// Отмена на живой записи: захват сворачиваем так же, как на обычном стопе, но буфер
-    /// выбрасываем — он никуда не уезжает, поэтому и бэкап-WAV писать незачем.
+    /// выбрасываем — он никуда не уезжает, поэтому и бэкап-WAV писать незачем. Очередь
+    /// обработки при этом не трогаем совсем: там чужие, уже сказанные диктовки.
     private func discardRecording() {
+        guard let session = recording else { return }
         chunks?.finish()
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
         // Идущий фоновый проход не прерывается: `EngineGate` отмену не смотрит, а WhisperKit
         // не умеет её вовсе — он досчитает в никуда, как и загрузка модели на отмене.
-        // Сдвинутое поколение делает его результат заведомо мёртвым: `confirm` отбросит
-        // сегменты, даже если они придут раньше, чем начнётся следующая запись.
-        rollingTask?.cancel()
-        rollingTask = nil
-        sessionGeneration += 1
+        // Флаг делает его результат заведомо мёртвым: `confirm` отбросит сегменты, даже
+        // если они придут раньше, чем начнётся следующая запись.
+        session.rollingTask?.cancel()
+        session.cancelled = true
+        recording = nil
+        recordingState = nil
         recorder.onLevel = nil
         recorder.onFailure = nil
         _ = recorder.stop()
         // Микрофон отпускаем по обычному расписанию: отмена — не повод держать индикатор
         // записи, но и не повод рвать прогрев для следующей диктовки.
         scheduleMicRelease()
+        publish()
         cancelled()
     }
 
-    // MARK: - Конвейер
+    // MARK: - Очередь обработки
 
-    private func runPipeline(samples: [Float], language: Language) async {
+    /// Разбирает очередь строго по одной диктовке и строго в порядке речи.
+    ///
+    /// Порядок здесь — не свойство реализации, а требование: если вторая диктовка
+    /// распозналась быстрее первой и вставилась раньше, предложения меняются местами,
+    /// и функция из полезной становится вредной. Один работник — самый дешёвый способ это
+    /// гарантировать, и он ничего не стоит: инстанс WhisperKit всё равно один, так что
+    /// параллельные проходы дали бы не скорость, а толкотню.
+    private func drainQueue() {
+        guard queueTask == nil else { return }
+        queueTask = Task { [weak self] in
+            while true {
+                guard let self, let session = self.pending.first else { break }
+                let result = await self.process(session)
+                // Снимаем с очереди только теперь: пока диктовка в `pending`, она считается
+                // необработанной — и для потолка, и для счётчика занятости, и для решения,
+                // достанется ли её итогу пилюля.
+                self.pending.removeFirst()
+                // Очередь не опустела — следующая диктовка начинается прямо сейчас, и стадия
+                // обязана смениться в том же такте: пустой промежуток панель показала бы
+                // простоем и спрятала бы пилюлю между двумя диктовками.
+                self.processingState = self.pending.isEmpty ? nil : .transcribing
+                self.publish()
+                self.flashResult(result.state, linger: result.linger)
+            }
+            self?.queueTask = nil
+        }
+    }
+
+    /// Обрабатывает одну записанную диктовку и возвращает итог для панели. Доводить итог
+    /// до экрана — дело очереди: только она знает, стоит ли за этой диктовкой следующая.
+    private func process(_ session: DictationSession) async -> (state: DictationState, linger: TimeInterval) {
+        let samples = session.samples
+        let language = session.language
         // Бэкап уходит в фон и не ждётся: кодирование и запись WAV длинной диктовки —
         // это сотни миллисекунд ровно перед распознаванием, то есть чистая задержка.
         // На диск ложится исходная запись, без подъёма уровня: архив обязан быть тем,
@@ -766,28 +953,29 @@ public final class DictationController: ObservableObject {
         // и ворота речи, и Whisper обязаны слышать одно и то же (см. `AudioNormalizer`).
         let leveled = AudioNormalizer.normalized(samples)
         // Идущий фоновый проход обязателен к ожиданию: он и досчитывает подтверждённую часть,
-        // и в любом случае занимает единственный инстанс WhisperKit.
-        await rollingTask?.value
-        rollingTask = nil
+        // и в любом случае занимает единственный инстанс WhisperKit. Задачу берём у самой
+        // диктовки — на микрофоне к этому моменту может писаться уже следующая, со своей.
+        await session.rollingTask?.value
+        session.rollingTask = nil
+
+        processingState = .transcribing
+        publish()
         do {
             let entries = dictionary.entries
             let raw: String
-            if let streamed = await streamedTranscript(samples: leveled, language: language) {
+            if let streamed = await streamedTranscript(session, samples: leveled) {
                 raw = streamed
             } else {
                 let vad = try await ensureVad()
                 guard let speech = try await vad.trimmed(leveled) else {
                     throw DictationError.noSpeech
                 }
-                raw = try await gate.transcribe(speech, language: language, prompt: sessionPrompt)
+                raw = try await gate.transcribe(speech, language: language, prompt: session.prompt)
             }
             var text = ReplacementEngine.apply(raw, entries: entries)
-            // Esc уже нажали — круг к GPT отменённой диктовке не нужен: это секунды ожидания
-            // и оплаченные токены ради текста, который никто не увидит.
-            if consumeCancel() { return }
             var degradations: [String] = []
-            // Хоткей сессии сильнее настройки; без него всё как раньше — решает тумблер.
-            let wantsTranslation = activeSessionTranslate ?? settings.translateToEnglish
+            // Решение о переводе принято на стопе — здесь его только исполняем.
+            let wantsTranslation = session.translatesToEnglish
             var translation: String?
             let skipsGPT = ShortDictation.skipsGPT(
                 text: text,
@@ -797,7 +985,8 @@ public final class DictationController: ObservableObject {
             )
 
             if settings.gptEnabled, !skipsGPT {
-                state = .cleaning
+                processingState = .cleaning
+                publish()
                 do {
                     // Перевод делает тот же вызов: GPT чистит текст и сразу отдаёт английский.
                     // Поэтому и модель берём переводческую — вызов целиком принадлежит переводу.
@@ -836,19 +1025,15 @@ public final class DictationController: ObservableObject {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw DictationError.noSpeech
             }
-            // Последняя точка отмены: дальше идут вставка, буфер обмена и история — ровно то,
-            // чего отменённая диктовка оставить не должна. Заодно убираем и запись: без
-            // строки в истории она стала бы файлом, до которого нет ни одной двери.
-            if consumeCancel() {
-                await discardBackup(backup)
-                return
-            }
             lastOriginal = text
             lastOriginalLanguage = language
             lastTranslation = translation
 
             // Непустой по построению: перевод либо непустой, либо сброшен в nil выше.
             let output = translation ?? text
+            // Поле ввода ищется ровно здесь — то есть то, в котором фокус на момент
+            // готовности текста, а не на момент, когда его наговорили. При наложении это
+            // и есть нужное поведение: человек мог за это время перейти в другое окно.
             let destination = await deliver(output)
             let saved = await backup.value
             history.add(output, language: language, audio: saved?.name, seconds: saved?.seconds)
@@ -879,37 +1064,22 @@ public final class DictationController: ObservableObject {
                 degradations.append("текст в карточке")
             }
             if !degradations.isEmpty {
-                state = .degraded(degradations.joined(separator: "; "))
-                scheduleIdle(after: Self.degradedLinger)
-            } else {
-                switch destination {
-                case .card: state = .carded
-                case .pasteboard: state = .inserted
-                }
-                scheduleIdle(after: Self.insertedLinger)
+                return (.degraded(degradations.joined(separator: "; ")), Self.degradedLinger)
+            }
+            switch destination {
+            case .card: return (.carded, Self.insertedLinger)
+            case .pasteboard: return (.inserted, Self.insertedLinger)
             }
         } catch {
-            // Отменённая диктовка не ругается: пользователь уже сказал, что результат ему
-            // не нужен, и сбой досчитанного впустую конвейера — не его новость.
-            if consumeCancel() {
-                await discardBackup(backup)
-                return
-            }
             // Текста нет, но запись есть — и это главное, что человеку сейчас нужно знать.
             // Пустая строка в истории существует ровно затем, чтобы к звуку вела дверь.
             let saved = await backup.value
             if let saved {
                 history.addFailed(language: language, audio: saved.name, seconds: saved.seconds)
             }
-            fail(message(for: error, recorded: saved != nil))
+            let text = message(for: error, recorded: saved != nil, silence: session.capturedSilence)
+            return (.error(text), Self.errorLinger)
         }
-    }
-
-    /// Отменённая диктовка не оставляет ни текста, ни звука: строки в истории у неё нет,
-    /// а файл без строки — это запись, до которой не добраться и о которой не узнать.
-    private func discardBackup(_ backup: Task<RecordingStore.Saved?, Never>) async {
-        guard let saved = await backup.value else { return }
-        recordings.remove(named: saved.name)
     }
 
     /// «Речь не обнаружена» на цифровой тишине — неправда: молчал не человек, а микрофон
@@ -917,10 +1087,16 @@ public final class DictationController: ObservableObject {
     ///
     /// А если запись сохранилась — главная новость не в том, что распознать не вышло,
     /// а в том, что сказанное не пропало и его можно разобрать заново.
+    ///
+    /// `silence` — снимок, снятый на стопе именно этой диктовки: без него опрос захвата
+    /// при наложении ответил бы про следующую запись. `nil` — спросить захват (так зовут
+    /// снаружи, где снимка нет).
     /// Не private: подмена сообщения проверяется тестом напрямую.
-    func message(for error: Error, recorded: Bool = false) -> String {
+    func message(for error: Error, recorded: Bool = false, silence: Bool? = nil) -> String {
         guard error is DictationError else { return error.localizedDescription }
-        if recorder.capturedSilence { return "микрофон молчит — выберите другой вход в меню «Микрофон»" }
+        if silence ?? recorder.capturedSilence {
+            return "микрофон молчит — выберите другой вход в меню «Микрофон»"
+        }
         guard recorded else { return error.localizedDescription }
         return "речь не обнаружена — запись сохранена, распознайте заново в «Истории…»"
     }
@@ -930,29 +1106,33 @@ public final class DictationController: ObservableObject {
     ///
     /// `nil` — путь неприменим или не дал результата; вызывающий код идёт обычным полным
     /// проходом. Это железное правило: ускорение не имеет права стать риском для текста.
-    private func streamedTranscript(samples: [Float], language: Language) async -> String? {
-        guard !rollingFailed,                              // фоновый проход падал
-              !languageSwitchedDuringSession,              // язык переключали на записи
-              samples.count >= Self.streamingMinSamples,   // диктовка короче 6 с
-              confirmedEndSample > 0,                      // подтверждать нечего
-              !confirmedText.isEmpty,
-              confirmedEndSample < samples.count
+    private func streamedTranscript(_ session: DictationSession, samples: [Float]) async -> String? {
+        guard !session.rollingFailed,                            // фоновый проход падал
+              !session.languageSwitched,                         // язык переключали на записи
+              samples.count >= Self.streamingMinSamples,         // диктовка короче 6 с
+              session.confirmedEndSample > 0,                    // подтверждать нечего
+              !session.confirmedText.isEmpty,
+              session.confirmedEndSample < samples.count
         else { return nil }
 
         do {
-            let start = max(0, confirmedEndSample - Self.tailOverlap)
+            let start = max(0, session.confirmedEndSample - Self.tailOverlap)
             // Буфер целиком не обрезаем: подтверждённые сегменты уже без ведущей тишины —
             // её отрезали таймкоды Whisper. Тем же гейтом снимаем тишину по краям хвоста.
             let vad = try await ensureVad()
             guard let tail = try await vad.trimmed(Array(samples[start...])) else { return nil }
 
-            let tailText = try await gate.transcribe(tail, language: language, prompt: sessionPrompt)
+            let tailText = try await gate.transcribe(
+                tail,
+                language: session.language,
+                prompt: session.prompt
+            )
             // Пустой хвост — не «там была тишина», а признак того, что проход не удался
             // (например, окно короче внутреннего `windowClipTime` WhisperKit). Слова терять
             // нельзя, поэтому откатываемся на полный проход.
             guard !tailText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
-            return StreamingMerge.merge(confirmed: confirmedText, tail: tailText)
+            return StreamingMerge.merge(confirmed: session.confirmedText, tail: tailText)
         } catch {
             logger.error("Потоковая финализация не удалась: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -1006,13 +1186,10 @@ public final class DictationController: ObservableObject {
 
     /// Короткое сообщение поверх простоя: работающий конвейер не перебиваем.
     private func flash(_ message: String) {
-        switch state {
-        case .idle, .inserted, .carded, .cancelled, .degraded, .error:
-            state = .degraded(message)
-            scheduleIdle(after: Self.flashLinger)
-        case .preparingModel, .recording, .transcribing, .cleaning:
-            break
-        }
+        guard recordingState == nil, processingState == nil else { return }
+        flashState = .degraded(message)
+        publish()
+        scheduleIdle(after: Self.flashLinger)
     }
 
     /// Куда уехал готовый текст.
@@ -1090,10 +1267,50 @@ public final class DictationController: ObservableObject {
 
     // MARK: - Состояние и ресурсы
 
+    /// Сводит три стороны в одну пилюлю. Приоритет: живая запись сильнее обработки, обработка
+    /// сильнее итоговой вспышки. Порядок именно такой, потому что пилюля обязана показывать
+    /// самое срочное: пока человек говорит, ему нужны уровень звука и «esc», а не рассказ
+    /// о том, что доехало полминуты назад.
+    private func publish() {
+        state = recordingState ?? processingState ?? flashState ?? .idle
+        pendingCount = pending.count
+        // Флаг языка и метка перевода — про ту диктовку, которую пилюля сейчас называет.
+        if let recording {
+            activeSessionLanguage = recording.language
+            activeSessionTranslate = recording.translating
+        } else if let next = pending.first {
+            activeSessionLanguage = next.language
+            activeSessionTranslate = next.translatesToEnglish
+        } else {
+            activeSessionLanguage = nil
+            activeSessionTranslate = nil
+        }
+    }
+
+    /// Показывает итог диктовки — или, если пилюля занята более срочным, отправляет его
+    /// запиской рядом с панелью.
+    ///
+    /// Молчать нельзя: отмена, оговорка и сбой — ровно то, о чём человек обязан узнать.
+    /// А «вставлено» и «в карточку» говорят сами за себя: текст уже на экране.
+    private func flashResult(_ result: DictationState, linger: TimeInterval) {
+        guard recordingState == nil, pending.isEmpty else {
+            switch result {
+            case .cancelled, .degraded, .error:
+                onNotice?(.result(result))
+            case .idle, .preparingModel, .recording, .transcribing, .cleaning, .inserted, .carded:
+                break
+            }
+            return
+        }
+        flashState = result
+        publish()
+        scheduleIdle(after: linger)
+    }
+
     private func apply(_ modelState: ASRModelState) {
         switch modelState {
         case .downloading(let progress):
-            state = .preparingModel(.downloading(progress))
+            showPreparing(.downloading(progress))
         case .loading:
             startWarming()
         case .notLoaded, .ready:
@@ -1101,11 +1318,23 @@ public final class DictationController: ObservableObject {
         }
     }
 
+    /// Подготовка модели принадлежит тому, кто её заказал: живой записи, если она есть,
+    /// иначе внеочередному разбору (повтор из истории, прогон файла в CLI).
+    private func showPreparing(_ preparation: ModelPreparation) {
+        if recording != nil {
+            recordingState = .preparingModel(preparation)
+        } else {
+            processingState = .preparingModel(preparation)
+        }
+        publish()
+    }
+
     /// Отметку времени ставим один раз на весь прогрев: `apply(.loading)` приходит и по
     /// нескольку раз, а счётчик секунд в панели не должен от этого прыгать на ноль.
     private func startWarming() {
-        if case .preparingModel(.warming) = state { return }
-        state = .preparingModel(.warming(since: Date()))
+        if case .some(.preparingModel(.warming)) = recordingState { return }
+        if case .some(.preparingModel(.warming)) = processingState { return }
+        showPreparing(.warming(since: Date()))
     }
 
     private func ensureVad() async throws -> SpeechGating {
@@ -1117,24 +1346,14 @@ public final class DictationController: ObservableObject {
     }
 
     /// Сбой показываем как есть: черновика больше нет (live-превью убрано вместе с панелью
-    /// текста), а сама запись лежит в бэкапе `last-recording.wav`.
+    /// текста), а сама запись лежит в бэкапе.
     private func fail(_ message: String) {
-        state = .error(message)
-        scheduleIdle(after: Self.errorLinger)
+        flashResult(.error(message), linger: Self.errorLinger)
     }
 
     /// Вспышка «отменено» и возврат в простой. Отдельно от `fail`: отмена — не сбой.
     private func cancelled() {
-        cancelRequested = false
-        state = .cancelled
-        scheduleIdle(after: Self.cancelledLinger)
-    }
-
-    /// `true` — Esc нажали, пока конвейер считал: показываем вспышку, дальше не идём.
-    private func consumeCancel() -> Bool {
-        guard cancelRequested else { return false }
-        cancelled()
-        return true
+        flashResult(.cancelled, linger: Self.cancelledLinger)
     }
 
     /// Сессию отменили хоткеем на загрузке модели (Whisper или VAD): записи не было,
@@ -1143,15 +1362,16 @@ public final class DictationController: ObservableObject {
         let flashes = pendingCancelFlashes
         pendingCancel = false
         pendingCancelFlashes = false
-        // Отмену по Esc показываем так же, как на записи и на конвейере: `cancelled()` сам
-        // вернёт в простой и отпустит микрофон через `scheduleIdle`.
+        recording?.cancelled = true
+        recording = nil
+        recordingState = nil
+        publish()
+        // Отмену по Esc показываем так же, как на записи: `cancelled()` сам вернёт
+        // в простой и отпустит микрофон через `scheduleIdle`.
         guard !flashes else {
             cancelled()
             return
         }
-        state = .idle
-        activeSessionLanguage = nil
-        activeSessionTranslate = nil
         // Эта сессия микрофон поднять не успела, но прошлая могла оставить его прогретым,
         // а `begin()` снял таймер отпускания — возвращаем его, иначе индикатор записи
         // останется гореть.
@@ -1163,9 +1383,8 @@ public final class DictationController: ObservableObject {
         idleTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
-            self.state = .idle
-            self.activeSessionLanguage = nil
-            self.activeSessionTranslate = nil
+            self.flashState = nil
+            self.publish()
             self.scheduleMicRelease()
         }
     }
@@ -1176,7 +1395,9 @@ public final class DictationController: ObservableObject {
         micReleaseTask?.cancel()
         micReleaseTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.micReleaseDelay * 1_000_000_000))
-            guard !Task.isCancelled, let self else { return }
+            // Пока таймер тикал, могла начаться следующая запись — отбирать у неё микрофон
+            // нельзя: при наложении конец одной диктовки и начало другой почти совпадают.
+            guard !Task.isCancelled, let self, self.recording == nil else { return }
             self.recorder.teardown()
         }
     }
@@ -1220,8 +1441,13 @@ public final class DictationController: ObservableObject {
         // для того же языка, а не вместе с чужим.
         let variant = mode == .largeModel ? WhisperModel.large : language.whisperModel
 
-        state = .transcribing
-        defer { scheduleIdle(after: Self.insertedLinger) }
+        processingState = .transcribing
+        publish()
+        defer {
+            processingState = nil
+            publish()
+            scheduleIdle(after: Self.insertedLinger)
+        }
 
         try await gate.prepare(variant: variant, language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
@@ -1246,7 +1472,8 @@ public final class DictationController: ObservableObject {
         lastOriginalLanguage = item.language
         lastTranslation = nil
         delivery.copy(text)
-        state = .inserted
+        flashState = .inserted
+        publish()
         return text
     }
 }
