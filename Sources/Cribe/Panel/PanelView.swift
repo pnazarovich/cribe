@@ -461,11 +461,23 @@ private struct EqualizerView: View {
     /// Столбик тишины — короткий штрих, а не пустое место.
     private static let minBar: CGFloat = 2.5
 
-    /// Уровень и номер тика меняются одним присваиванием: иначе анимация ловила бы
-    /// смену высот двумя рывками — сначала уровень, потом веса.
+    /// Лента громкости: правый столбик — сейчас, левый — секунду назад. Каждый замер
+    /// сдвигает ленту влево, и по ряду едет форма настоящей речи.
+    ///
+    /// Раньше высоты считались псевдослучайным весом на каждый замер. Движения было много,
+    /// смысла — ноль: ряд одинаково дёргался и на слове, и на паузе, и глаз это распознавал
+    /// как подделку. Теперь ни одного случайного числа: что видно, то и было сказано.
     private struct Frame: Equatable {
-        var tick: Int
-        var level: Float
+        var levels: [Float]
+
+        init(level: Float) {
+            levels = Array(repeating: level, count: EqualizerView.barCount)
+        }
+
+        mutating func push(_ level: Float) {
+            levels.removeFirst()
+            levels.append(level)
+        }
     }
 
     @State private var frame: Frame
@@ -478,14 +490,14 @@ private struct EqualizerView: View {
     init(level: Float, reduceMotion: Bool) {
         self.level = level
         self.reduceMotion = reduceMotion
-        _frame = State(initialValue: Frame(tick: 0, level: level))
+        _frame = State(initialValue: Frame(level: level))
     }
 
     /// В тишине ряд не замирает плоской линией, а еле заметно дышит: молчащий эквалайзер
     /// выглядит зависшим, хотя приложение слушает. Порог низкий — дыхание не должно
     /// подмешиваться в настоящую речь.
     private var breathes: Bool {
-        !reduceMotion && MeterScale.height(of: frame.level) < 0.08
+        !reduceMotion && frame.levels.allSatisfy { MeterScale.height(of: $0) < 0.08 }
     }
 
     var body: some View {
@@ -533,9 +545,18 @@ private struct EqualizerView: View {
         // в своей фазе, и ряд заметно дрожит. Инерция здесь не работает по построению.
         .animation(.easeOut(duration: 0.1), value: frame)
         .onChange(of: level) { _, new in
-            frame = Frame(tick: frame.tick &+ 1, level: new)
+            frame.push(new)
         }
-        .onAppear { risen = true }
+        // Волна разворачивается не в тот же миг, что и капсула: сначала на экран приезжает
+        // стекло, и только потом внутри него раскрывается ряд. Без этой паузы нажатие ⌘
+        // и появление волны сливаются в один кадр, и разглядеть движение невозможно.
+        .onAppear {
+            guard !reduceMotion else {
+                risen = true
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { risen = true }
+        }
     }
 
     /// Расстояние столбика от середины ряда, 0…1. Из него растут обе задержки — и появления,
@@ -574,27 +595,14 @@ private struct EqualizerView: View {
     private static func barHeight(bar: Int, frame: Frame, breath: CGFloat) -> CGFloat {
         // Дыхание добавляется поверх уровня, а не вместо него: на настоящей речи его не
         // видно (там свои десятки процентов), в тишине оно и есть всё движение.
-        let loudness = MeterScale.height(of: frame.level) + breath * breathDepth
-        return minBar + min(1, loudness) * weight(bar: bar, tick: frame.tick) * (maxBar - minBar)
+        let loudness = MeterScale.height(of: frame.levels[bar]) + breath * breathDepth
+        return minBar + min(1, loudness) * (maxBar - minBar)
     }
 
     /// Насколько высоко поднимается дыхание тишины. Больше — и молчащий эквалайзер начнёт
     /// притворяться, что слышит речь.
     private static let breathDepth: CGFloat = 0.09
 
-    /// Вес столбика 0.35…1 — детерминированный хеш пары (столбик, тик): разброс выглядит
-    /// случайным, но один и тот же кадр всегда рисуется одинаково (важно для пробы рендера).
-    private static func weight(bar: Int, tick: Int) -> CGFloat {
-        var x = UInt64(truncatingIfNeeded: tick) &* 0x9E37_79B9_7F4A_7C15
-        x ^= UInt64(truncatingIfNeeded: bar) &* 0xBF58_476D_1CE4_E5B9
-        x ^= x >> 30
-        x = x &* 0xBF58_476D_1CE4_E5B9
-        x ^= x >> 27
-        x = x &* 0x94D0_49BB_1331_11EB
-        x ^= x >> 31
-        // Старшие 24 бита → доля 0…1.
-        return 0.35 + CGFloat(x >> 40) / CGFloat(1 << 24) * 0.65
-    }
 
     /// Акцентный градиент остаётся настоящим цветом поверх стекла — вибрантным его делать нельзя,
     /// иначе полоски выцветут в серые штрихи.
