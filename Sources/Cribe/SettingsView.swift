@@ -412,6 +412,13 @@ private struct AIPane: View {
 
     @State private var apiKey = ""
     @State private var apiKeyNote: String?
+    /// Что лежало в связке, когда окно открылось. Нужен ровно для одного: автосохранение
+    /// обязано молчать, пока значение не менялось. Иначе неудачное чтение (поле пустое,
+    /// а ключ в связке есть) при закрытии окна стёрло бы живой ключ.
+    @State private var storedAPIKey = ""
+    // Полное имя обязательно: в CribeCore живёт свой `FocusState` — про поле ввода в чужом
+    // приложении, — и короткое имя здесь неоднозначно.
+    @SwiftUI.FocusState private var apiKeyFocused: Bool
 
     var body: some View {
         Form {
@@ -506,16 +513,28 @@ private struct AIPane: View {
         .settingsForm()
         .task {
             apiKey = SecretStore.getString(SecretStore.apiKeyAccount) ?? ""
+            storedAPIKey = apiKey
             await codex.refreshStatus()
         }
+        // Окно закрыли, не выходя из поля: фокус так и не сменился, и без этого ключ
+        // пропал бы вместе с окном.
+        .onDisappear { autosaveAPIKey() }
     }
 
     // MARK: API-ключ
 
     @ViewBuilder
     private var apiKeySection: some View {
+        // Ключ сохраняется сам: по Enter, по уходу фокуса и при закрытии окна. Раньше
+        // сохранение висело только на кнопке — человек вводил ключ, закрывал настройки,
+        // и ключ не попадал в связку вовсе. Снаружи это выглядело как «при каждом
+        // перезапуске снова просят ключ», хотя терялся он в тот же миг, а не при перезапуске.
         SecureField("API-ключ:", text: $apiKey)
+            .focused($apiKeyFocused)
             .onSubmit { saveAPIKey() }
+            .onChange(of: apiKeyFocused) { _, focused in
+                if !focused { autosaveAPIKey() }
+            }
         HStack {
             Button("Сохранить ключ") { saveAPIKey() }
             if let apiKeyNote {
@@ -534,6 +553,14 @@ private struct AIPane: View {
             SecretStore.setString(trimmed, account: SecretStore.apiKeyAccount)
             apiKeyNote = "Ключ сохранён"
         }
+        storedAPIKey = trimmed
+    }
+
+    /// Сохранение без нажатия кнопки. Молчит, когда значение не менялось, — в том числе
+    /// когда поле пустое потому, что прочитать связку не удалось.
+    private func autosaveAPIKey() {
+        guard APIKeyField.changed(typed: apiKey, stored: storedAPIKey) else { return }
+        saveAPIKey()
     }
 
     // MARK: Аккаунт ChatGPT
