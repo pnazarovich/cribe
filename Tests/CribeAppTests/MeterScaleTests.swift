@@ -49,6 +49,18 @@ final class MeterScaleTests: XCTestCase {
         }
     }
 
+    /// Настоящее начало записи, снятое с трёх записей владельца: первый кадр около −50 dBFS,
+    /// второй — **пустой буфер** (−98…−115), и только с третьего идёт шум комнаты. Калибровка
+    /// по минимуму ловила именно пустой буфер: пол уезжал на −117, шум комнаты оказывался
+    /// выше потолка, и ряд вспыхивал на максимум — жалоба «всё на максимуме, а в комнате тихо».
+    func testRealStartOfRecordingDoesNotFlash() {
+        var range = MeterRange()
+        let onset: [Float] = [-52, -115, -41, -36, -39, -42, -39, -41, -41, -38, -40, -39]
+        var highest: CGFloat = 0
+        for decibels in onset { highest = max(highest, range.push(pow(10, decibels / 20))) }
+        XCTAssertLessThan(highest, 0.35, "начало записи не имеет права вспыхивать на максимум")
+    }
+
     /// Комната шумит ровно — ряд стоит внизу. Первая жалоба была именно на это.
     func testSteadyRoomNoiseSettlesAtTheBottom() {
         var range = MeterRange()

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import Security
 
 /// Хранилище секретов: связка ключей macOS, современная её половина (data protection keychain,
@@ -38,8 +39,13 @@ public final class SecretStore: @unchecked Sendable {
     public func get(_ account: String) -> Data? {
         queue.sync {
             let (status, data) = active.read(account)
-            guard fallBack(on: status) else { return data }
-            return legacy.read(account).data
+            guard fallBack(on: status) else {
+                report(status, account: account)
+                return data
+            }
+            let fallen = legacy.read(account)
+            report(fallen.status, account: account)
+            return fallen.data
         }
     }
 
@@ -60,6 +66,20 @@ public final class SecretStore: @unchecked Sendable {
     // MARK: - Внутреннее (всё — на `queue`)
 
     private var active: KeychainAccess { fellBack ? legacy : modern }
+
+    /// Почему чтение вернуло пусто. Без этой строки «секрета нет» и «связка не дала его
+    /// прочитать» выглядят снаружи одинаково — пустым результатом, — и приложение молча
+    /// показывает вход заново. Ровно на этом и застряла жалоба «при каждом перезапуске
+    /// снова просят авторизацию»: причину было неоткуда взять.
+    private func report(_ status: OSStatus, account: String) {
+        // Успех и честное отсутствие секрета — не новости.
+        guard status != errSecSuccess, status != errSecItemNotFound else { return }
+        Self.logger.error(
+            "связка не отдала «\(account, privacy: .public)»: OSStatus \(status, privacy: .public)"
+        )
+    }
+
+    private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Secrets")
 
     /// `errSecMissingEntitlement` означает одно: приложение подписано без keychain-access-groups.
     /// Переключаемся на старую связку — один раз и с одной строкой в лог.
