@@ -118,6 +118,22 @@
                  type="application/octet-stream"
                  sparkle:edSignature="ccKito7rB39pj7djDf8pjFRjKKzFg2LMK5vHpN21n5+bhNYPVb5qiPfgfXXFTmhq0eGXODB7/OyuVIrpKws2Bw==" length="7611335" />
     </item>
+    <item>
+      <title>0.1.5</title>
+      <pubDate>Fri, 07 Aug 2026 17:42:21 +0400</pubDate>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Вход в ChatGPT больше не теряется</h3>
+<ul>
+<li>Приложение записывало вход в одну связку ключей, а искало в другой — и просило войти заново после каждого запуска и каждого обновления. Теперь вход находится там, где он лежит; заходить повторно не придётся.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.5/Cribe-0.1.5.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="0ft0xZ8cBak0ncvg0cJa2xTPj672TPvY2qQXSItWW0yuXUoKJ5Bss6aYCd2hvZhsGLdBPXK028v7CTd3mpjbCw==" length="7611135" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
