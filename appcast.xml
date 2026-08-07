@@ -95,6 +95,29 @@
                  type="application/octet-stream"
                  sparkle:edSignature="WFPi6PZY6o7U0UeJvujCFZYu6xv/sYkXeu1veSGnXMeJWtBQ6KcT3P/UtRdlP3QM9Afwug0q5h5cP70xIcACBw==" length="7602873" />
     </item>
+    <item>
+      <title>0.1.4</title>
+      <pubDate>Fri, 07 Aug 2026 17:28:48 +0400</pubDate>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Перевод по правому ⌥ больше не зависит от входа в ChatGPT</h3>
+<ul>
+<li>Раньше без авторизации ChatGPT перевод молча не выполнялся — вставлялся русский текст. Теперь ChatGPT переводит первым (качество выше), а если он недоступен, переводит сама модель, и приложение предупреждает: «перевод без ChatGPT — качество ниже».</li>
+<li>Для перевода моделью нужна полная модель large-v3: быстрая turbo-модель переводить не умеет.</li>
+</ul>
+<h3>Мелочи</h3>
+<ul>
+<li>Новый звук старта и остановки: ниже, короче и мягче прежнего.</li>
+<li>Карточка диктовки подписана программой, из которой приехала, и показывает подсказку у каждой кнопки, а не только у одной.</li>
+<li>Ровные отступы в шапке карточки.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.4/Cribe-0.1.4.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="ccKito7rB39pj7djDf8pjFRjKKzFg2LMK5vHpN21n5+bhNYPVb5qiPfgfXXFTmhq0eGXODB7/OyuVIrpKws2Bw==" length="7611335" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
