@@ -39,10 +39,17 @@ public final class SecretStore: @unchecked Sendable {
     public func get(_ account: String) -> Data? {
         queue.sync {
             let (status, data) = active.read(account)
-            guard fallBack(on: status) else {
-                report(status, account: account)
-                return data
-            }
+            if let data { return data }
+            _ = fallBack(on: status)
+            report(status, account: account)
+            // Современная связка бывает не сломана, а просто пуста: подпись без entitlement
+            // валит ЗАПИСЬ, а чтение отвечает честным «ничего не найдено». Секрет тогда лежит
+            // в старой связке — туда его и положила прошлая запись, свалившись по тому же
+            // entitlement, — и не заглянуть туда значит потерять живой секрет.
+            //
+            // Ровно на этом человек и терял вход в ChatGPT после каждого запуска: писалось
+            // в одну связку, читалось из другой.
+            guard !fellBack else { return nil }
             let fallen = legacy.read(account)
             report(fallen.status, account: account)
             return fallen.data
@@ -105,7 +112,11 @@ public final class SecretStore: @unchecked Sendable {
         // пароля на каждом запуске неподписанной профилем сборки.
         if fellBack { return }
         guard existing == nil, let data = legacy.read(account).data else { return }
-        guard modern.write(data, account) == errSecSuccess else { return }
+        // Перенести не вышло — значит писать в современную связку нам нельзя вовсе.
+        // Запоминаем это: дальше вся работа идёт со старой, и второй раз спрашивать незачем.
+        let written = modern.write(data, account)
+        _ = fallBack(on: written)
+        guard written == errSecSuccess else { return }
         _ = legacy.remove(account)
     }
 }

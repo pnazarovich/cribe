@@ -80,7 +80,10 @@ final class SecretStoreTests: XCTestCase {
 
         XCTAssertEqual(legacy.items[SecretStore.apiKeyAccount], Data("tokens".utf8))
         XCTAssertTrue(legacy.removed.isEmpty)
-        XCTAssertNil(store.get(SecretStore.apiKeyAccount))
+        // И, главное, секрет остаётся ДОСТУПНЫМ. Раньше здесь стояло `XCTAssertNil` —
+        // тест закреплял ровно тот дефект, из-за которого человек терял вход в ChatGPT:
+        // не перенесли и не нашли, хотя секрет всё это время лежал на месте.
+        XCTAssertEqual(store.get(SecretStore.apiKeyAccount), Data("tokens".utf8))
     }
 
     func testFailedReadOfLegacyIsSilent() {
@@ -94,6 +97,20 @@ final class SecretStoreTests: XCTestCase {
     }
 
     // MARK: - Подпись без entitlement
+
+    /// Настоящий случай с машины владельца, снятый по журналу: современная связка на
+    /// ЧТЕНИЕ не ошибается — она просто пуста, — и только ЗАПИСЬ отвечает «нет entitlement».
+    /// Секрет при этом лежит в старой связке: туда его и положила прошлая запись, свалившись
+    /// по тому же entitlement. Читать надо оттуда, иначе живой секрет невидим — и человека
+    /// просят войти в ChatGPT заново после каждого запуска.
+    func testFindsSecretInLegacyWhenModernIsSimplyEmpty() {
+        modern.writeStatus = errSecMissingEntitlement
+        legacy.items = [SecretStore.codexTokensAccount: Data("токены".utf8)]
+
+        let store = SecretStore(modern: modern.access, legacy: legacy.access)
+
+        XCTAssertEqual(store.get(SecretStore.codexTokensAccount), Data("токены".utf8))
+    }
 
     func testFallsBackToLegacyWhenEntitlementIsMissing() {
         modern.failure = errSecMissingEntitlement
