@@ -34,6 +34,24 @@
                  type="application/octet-stream"
                  sparkle:edSignature="41Rrud55NEHBTq7DX+BnKuwCd7kgkt/B+f3t4zP2sr6cdSCYZsbVxvyoRZ5LAK857H1YacaId59R32x/mCJwCw==" length="7576577" />
     </item>
+    <item>
+      <title>0.1.1</title>
+      <pubDate>Fri, 07 Aug 2026 12:34:29 +0400</pubDate>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Починки</h3>
+<ul>
+<li>Ключ OpenAI сохраняется сам — по уходу из поля и при закрытии настроек, а не только по кнопке. Раньше введённый ключ мог не попасть в связку ключей вовсе.</li>
+<li>Индикатор громкости больше не вспыхивает на максимум в первые полсекунды записи: шкала калибруется по медиане первых замеров, а не по самому тихому из них (первые буферы микрофона бывают пустыми).</li>
+<li>Краб вместо системной волны в словаре и на карточке диктовки.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.1/Cribe-0.1.1.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="XZvPyWPxUioYrsaFVzqlWSuKAm0bz8CqFFj3RUHeaOSf8QyeEHqdSh1MyXVAJYp7G2Z9vMyYhq3lO3/Awej4AA==" length="7579831" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
