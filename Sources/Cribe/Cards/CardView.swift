@@ -217,8 +217,9 @@ struct CardView: View {
     /// зарезервировано — иначе текст прыгал бы под курсором.
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: "waveform")
-                .font(.system(size: 10, weight: .semibold))
+            // Краб крупнее подписи рядом: силуэт с полосами и ногами в десяти точках
+            // сливается в пятно, а системный символ волны читался и в них.
+            CrabGlyph(height: 12)
             Text(label)
                 .font(.system(size: 10, weight: .medium))
             if model.showsTranslation {

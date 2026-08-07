@@ -369,7 +369,7 @@ private struct MenuBarScene: Scene {
                 updates: UpdateController.shared
             )
         } label: {
-            MenuBarIcon(recording: isRecording)
+            CrabGlyph(recording: isRecording, height: CrabGlyph.menuBarHeight)
         }
         .menuBarExtraStyle(.menu)
         // Карточка попросила показать текст целиком. Открыть окно сцены умеет только вью

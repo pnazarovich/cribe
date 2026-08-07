@@ -185,7 +185,7 @@ struct DictionaryEditorView: View {
             Button {
                 model.showsDictation.toggle()
             } label: {
-                Label("Из последней диктовки", systemImage: "waveform")
+                Label { Text("Из последней диктовки") } icon: { CrabGlyph(height: 13) }
             }
             .help("Взять слово из последней диктовки и сделать его вариантом")
         }
@@ -324,7 +324,7 @@ struct DictionaryEditorView: View {
         DictionaryCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Label("Из последней диктовки", systemImage: "waveform")
+                    Label { Text("Из последней диктовки") } icon: { CrabGlyph(height: 15) }
                         .font(.headline)
                     Spacer()
                     Button {
