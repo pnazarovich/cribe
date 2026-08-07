@@ -564,6 +564,8 @@ private struct EqualizerView: View {
     @State private var risen = false
     /// Сколько кадров этой записи уже ушло в журнал.
     @State private var traced = 0
+    /// Когда началась эта запись: по нему шкала понимает, что микрофон ещё просыпается.
+    @State private var started = Date()
 
     /// Стартовый кадр берём из первого же уровня, а не из нуля: иначе первая отрисовка
     /// (и статичная проба рендера) показывала бы штрихи тишины при живом звуке.
@@ -627,7 +629,7 @@ private struct EqualizerView: View {
         // в своей фазе, и ряд заметно дрожит. Инерция здесь не работает по построению.
         .animation(.linear(duration: 0.18), value: frame)
         .onChange(of: level) { _, new in
-            let height = range.push(new)
+            let height = range.push(new, at: Date().timeIntervalSince(started))
             trace(level: new, height: height)
             frame.push(height)
         }
@@ -642,6 +644,7 @@ private struct EqualizerView: View {
             frame = Frame()
             range = MeterRange()
             traced = 0
+            started = Date()
             guard !reduceMotion else {
                 risen = true
                 return
