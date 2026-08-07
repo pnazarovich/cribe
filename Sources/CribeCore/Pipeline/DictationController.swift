@@ -124,6 +124,25 @@ actor EngineGate {
         return try await task.value
     }
 
+    /// Второе мнение о соседнем языке: тот же порядок, что и у проходов, — оно тоже
+    /// занимает модель, и лезть в неё поперёк идущего распознавания нельзя.
+    func reconsideringNeighbour(
+        _ text: String,
+        samples: [Float],
+        language: Language,
+        prompt: String
+    ) async -> NeighbourPass {
+        let previous = inFlight
+        let task = Task { [self] in
+            await previous?.value
+            return await engine.reconsideringNeighbour(
+                text, samples: samples, language: language, prompt: prompt
+            )
+        }
+        inFlight = Task { _ = try? await task.value }
+        return (try? await task.value) ?? NeighbourPass(text: text, replaced: 0)
+    }
+
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
         let previous = inFlight
         let task = Task { [self] in
@@ -987,17 +1006,36 @@ public final class DictationController: ObservableObject {
             // Решение о переводе принято на стопе — здесь его только исполняем.
             let wantsTranslation = session.translatesToEnglish
             let raw: String
+            // Звук, которому соответствует текст: потоковый путь собирает его по всей
+            // записи, обычный — по обрезанной. Второму мнению нужен именно он, иначе
+            // таймкоды фраз указывали бы не туда.
+            let heard: [Float]
             if let streamed = await streamedTranscript(session, samples: leveled) {
                 raw = streamed
+                heard = leveled
             } else {
                 let vad = try await ensureVad()
                 guard let speech = try await vad.trimmed(leveled) else {
                     throw DictationError.noSpeech
                 }
                 raw = try await gate.transcribe(speech, language: language, prompt: session.prompt)
+                heard = speech
             }
-            var text = ReplacementEngine.apply(raw, entries: entries)
+            // Единственное место, где текст диктовки уже собран целиком, — здесь. Проверка
+            // соседнего языка обязана стоять именно тут: внутри распознавания она видела бы
+            // только хвост длинной диктовки (см. `WhisperEngine.reconsideringNeighbour`).
+            let checked = await gate.reconsideringNeighbour(
+                raw, samples: heard, language: language, prompt: session.prompt
+            )
+            var text = ReplacementEngine.apply(checked.text, entries: entries)
             var degradations: [String] = []
+            // О замене говорим вслух. Гладкая чужая фраза опаснее явного мусора: мусор
+            // человек видит и переговаривает, а складную — принимает на веру, даже если
+            // распознавание потеряло в ней отрицание.
+            if checked.replaced > 0 {
+                let word = checked.replaced == 1 ? "фраза перечитана" : "фразы перечитаны"
+                degradations.append("\(checked.replaced) \(word) на украинском — сверьте")
+            }
             var translation: String?
             let skipsGPT = ShortDictation.skipsGPT(
                 text: text,

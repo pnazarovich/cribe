@@ -38,6 +38,7 @@ public final class AppSettings: ObservableObject {
         static let dictationHotkeyMode = "dictationHotkeyMode"
         static let skipGPTForShort = "skipGPTForShort"
         static let restoreUkrainianInserts = "restoreUkrainianInserts"
+        static let catchesNeighbourLanguage = "catchesNeighbourLanguage"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
@@ -106,6 +107,14 @@ public final class AppSettings: ObservableObject {
     /// только на русских сессиях и только на чистке — на переводе текст уедет в английский.
     @Published public var restoreUkrainianInserts: Bool {
         didSet { defaults.set(restoreUkrainianInserts, forKey: Key.restoreUkrainianInserts) }
+    }
+
+    /// Перечитывать ли фразы, которые звучат не на языке сессии. Русская диктовка
+    /// с украинской фразой внутри выходит фонетическим мусором, и спасти её может только
+    /// повторное чтение этой фразы украинской моделью (см. `SecondOpinion`). Стоит времени,
+    /// поэтому спрашиваем, а не включаем всем.
+    @Published public var catchesNeighbourLanguage: Bool {
+        didSet { defaults.set(catchesNeighbourLanguage, forKey: Key.catchesNeighbourLanguage) }
     }
 
     /// Граница «короткой» диктовки в словах.
@@ -179,6 +188,7 @@ public final class AppSettings: ObservableObject {
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
         skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
         restoreUkrainianInserts = defaults.object(forKey: Key.restoreUkrainianInserts) as? Bool ?? true
+        catchesNeighbourLanguage = defaults.object(forKey: Key.catchesNeighbourLanguage) as? Bool ?? false
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3

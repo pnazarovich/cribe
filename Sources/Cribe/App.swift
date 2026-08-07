@@ -80,6 +80,7 @@ final class AppCore: ObservableObject {
     private var rightOptionTap: ModifierKeyTap?
     private var escTap: KeyDownTap?
     private var hotkeyModeSubscription: AnyCancellable?
+    private var neighbourWatch: AnyCancellable?
     private var escTapSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
     private var loggedEscFailure = false
@@ -108,15 +109,30 @@ final class AppCore: ObservableObject {
     private func warmUpModel() {
         let engine = self.engine
         let language = settings.language
+        let neighbour = settings.catchesNeighbourLanguage ? language.neighbour : nil
         Task.detached(priority: .utility) {
             guard engine.isInstalled(for: language) else { return }
             try? await engine.prepare(language: language) { _ in }
+            // Модель соседа греем следом и заранее: второе мнение спрашивают посреди
+            // диктовки, и ждать там компиляции под ANE нельзя — это минуты молчания.
+            guard let neighbour, engine.isInstalled(for: neighbour) else { return }
+            try? await engine.prepare(variant: neighbour.whisperModel, language: neighbour) { _ in }
+        }
+    }
+
+    /// Ловля фраз на соседнем языке живёт в движке, а спрашивают о ней в настройках —
+    /// связываем один раз и следим за переключателем.
+    private func followNeighbourSetting() {
+        engine.checksNeighbourLanguage = settings.catchesNeighbourLanguage
+        neighbourWatch = settings.$catchesNeighbourLanguage.sink { [engine] on in
+            engine.checksNeighbourLanguage = on
         }
     }
 
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
     func start() {
         guard panel == nil else { return }
+        followNeighbourSetting()
         // Расписание проверок обновлений заводится здесь же: до старта NSApplication
         // показывать найденное обновление было бы нечем.
         UpdateController.shared.start()

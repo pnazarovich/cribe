@@ -3,12 +3,14 @@ import CribeCore
 import WhisperKit
 
 private let usage = """
-usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate]
+usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate] [--neighbour]
 
   --lang ru|uk|en  язык диктовки (обязателен)
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (переводит сама модель, слой 1)
+  --neighbour    перечитывать фразы, звучащие на соседнем языке (в приложении — настройка;
+                 своим ключом, потому что у CLI собственный домен UserDefaults)
 
 Стадии печатаются в stderr, финальный текст — в stdout.
 """
@@ -50,9 +52,17 @@ struct CLI {
         }
 
         let engine = WhisperEngine()
+        // Ловля соседнего языка: в приложении это настройка, здесь — флаг.
+        engine.checksNeighbourLanguage = options.neighbour
         let progress = ModelProgress()
         log("модель \(options.language.whisperModel) — подготовка…")
         try await engine.prepare(language: options.language) { progress.report($0) }
+        // Второе мнение спрашивают у прогретой модели соседа: в приложении её греют заранее,
+        // здесь — прямо сейчас, иначе первый же прогон отложил бы проверку.
+        if options.neighbour, let neighbour = options.language.neighbour {
+            log("модель соседа \(neighbour.whisperModel) — подготовка…")
+            try await engine.prepare(variant: neighbour.whisperModel, language: neighbour) { _ in }
+        }
 
         let entries = UserDictionary(url: UserDictionary.defaultURL).entries
         log("словарь: \(entries.count) терминов")
@@ -63,9 +73,14 @@ struct CLI {
             prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language),
             translating: options.translate
         )
-        log("слой 1: \(raw)")
+        let prompt = PromptBuilder.initialPrompt(entries: entries, language: options.language)
+        let checked = await engine.reconsideringNeighbour(
+            raw, samples: speech, language: options.language, prompt: prompt
+        )
+        if checked.replaced > 0 { log("перечитано фраз на соседнем языке: \(checked.replaced)") }
+        log("слой 1: \(checked.text)")
 
-        let text = ReplacementEngine.apply(raw, entries: entries)
+        let text = ReplacementEngine.apply(checked.text, entries: entries)
         log("слой 2: \(text)")
         guard options.useGPT else { return text }
 
@@ -98,6 +113,7 @@ private struct Options {
     let useGPT: Bool
     let useVAD: Bool
     let translate: Bool
+    let neighbour: Bool
 
     init(arguments: [String]) throws {
         var path: String?
@@ -105,6 +121,7 @@ private struct Options {
         var useGPT = true
         var useVAD = true
         var translate = false
+        var neighbour = false
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
@@ -117,6 +134,7 @@ private struct Options {
             case "--no-gpt": useGPT = false
             case "--no-vad": useVAD = false
             case "--translate": translate = true
+            case "--neighbour": neighbour = true
             case "-h", "--help": throw CLIError(usage)
             default:
                 guard !argument.hasPrefix("-"), path == nil else {
@@ -134,6 +152,7 @@ private struct Options {
         self.useGPT = useGPT
         self.useVAD = useVAD
         self.translate = translate
+        self.neighbour = neighbour
     }
 }
 

@@ -78,6 +78,17 @@ public protocol TranscriptionEngine: AnyObject {
     /// То же распознавание, что и `transcribe`, но на явно названном варианте модели.
     func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String
 
+    /// Перечитывает в готовом тексте фразы, звучащие на соседнем языке (см. `SecondOpinion`).
+    /// Зовётся один раз на диктовку, когда текст собран целиком, — и только там: середина
+    /// длинной диктовки приезжает фоновыми проходами, и проверка внутри распознавания
+    /// её не увидела бы.
+    func reconsideringNeighbour(
+        _ text: String,
+        samples: [Float],
+        language: Language,
+        prompt: String
+    ) async -> NeighbourPass
+
     /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
     func preparePreview() async throws
 
@@ -120,6 +131,16 @@ public extension TranscriptionEngine {
         prompt: String
     ) async throws -> String {
         try await transcribe(samples, language: language, prompt: prompt)
+    }
+
+    /// Движок без второго мнения — законное состояние: текст остаётся как распознан.
+    func reconsideringNeighbour(
+        _ text: String,
+        samples: [Float],
+        language: Language,
+        prompt: String
+    ) async -> NeighbourPass {
+        NeighbourPass(text: text, replaced: 0)
     }
 
     func preparePreview() async throws {}

@@ -174,10 +174,32 @@ private struct GeneralPane: View {
                 }
 
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
+                // Второе мнение спрашивают у модели соседнего языка: нет её на диске —
+                // переключателю нечем работать, и обещать он не должен.
+                let neighbour = settings.language.neighbour
+                let ready = neighbour.map { ModelStore.shared.isInstalled(variant: $0.whisperModel) }
+                if let neighbour, let ready {
+                    Toggle(
+                        "Ловить фразы на языке «\(neighbour.displayName)»",
+                        isOn: $settings.catchesNeighbourLanguage
+                    )
+                    .disabled(!ready)
+                    if !ready {
+                        caption("Нужна модель «\(neighbour.displayName)» — скачайте её ниже.")
+                    }
+                }
             } header: {
                 Text("Распознавание")
             } footer: {
-                caption("Язык диктовки форсируется: распознавание его не угадывает.")
+                VStack(alignment: .leading, spacing: 4) {
+                    caption("Язык диктовки форсируется: распознавание его не угадывает.")
+                    caption(
+                        "Украинская фраза внутри русской диктовки выходит фонетическим мусором: "
+                            + "распознавание слушает всю запись одним языком. С ловлей приложение "
+                            + "перечитывает такие фразы украинской моделью и говорит, что "
+                            + "перечитало, — но каждая диктовка становится на секунду-две дольше."
+                    )
+                }
             }
 
             Section {
