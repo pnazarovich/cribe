@@ -27,12 +27,20 @@ public final class NoticePanel {
     /// Плашка живёт, пока доигрывает уход.
     private static let exitDuration: Duration = .milliseconds(300)
 
-    private let panel: NSPanel
+    /// Не `let`: оболочка окна меняется на каждом показе (см. `HUDWindow.renew`).
+    private var panel: NSPanel
     private let presentation = NoticePresentation()
     private var hideTask: Task<Void, Never>?
 
     public init() {
-        panel = NonKeyPanel(
+        panel = Self.makeShell()
+        panel.contentView = NSHostingView(rootView: NoticeView(presentation: presentation))
+    }
+
+    /// Оболочка окна записки — без содержимого: его строит `init` один раз и дальше оно
+    /// переезжает из оболочки в оболочку.
+    private static func makeShell() -> NSPanel {
+        let panel = NonKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
             styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
             backing: .buffered,
@@ -49,7 +57,7 @@ public final class NoticePanel {
         panel.animationBehavior = .utilityWindow
         // Записка ничего не предлагает нажать — клики обязаны доходить до окна под ней.
         panel.ignoresMouseEvents = true
-        panel.contentView = NSHostingView(rootView: NoticeView(presentation: presentation))
+        return panel
     }
 
     /// Показывает строку. Вторая записка подряд заменяет первую и продлевает показ:
@@ -58,6 +66,10 @@ public final class NoticePanel {
         guard !text.isEmpty else { return }
         hideTask?.cancel()
         presentation.text = text
+        // Свежая оболочка на каждый показ — по той же причине, что и у пилюли: прописка
+        // во всех пространствах у прожившего часами окна протухает (см. `HUDWindow`).
+        // Видимое окно не трогаем: вторая записка подряд заменяет первую на месте.
+        if !panel.isVisible { panel = HUDWindow.renew(panel) { Self.makeShell() } }
         moveToCursorScreen()
         HUDWindow.orderFront(panel, extra: .stationary)
         withAnimation(Self.appearAnimation) { presentation.isVisible = true }

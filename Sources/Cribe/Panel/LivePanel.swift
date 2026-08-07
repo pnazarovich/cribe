@@ -69,7 +69,8 @@ public final class LivePanel {
         }
     }
 
-    private let panel: NSPanel
+    /// Не `let`: оболочка окна меняется на каждом показе (см. `HUDWindow.renew`).
+    private var panel: NSPanel
     private let presentation = PanelPresentation()
     private var cancellable: AnyCancellable?
     private var hideTask: Task<Void, Never>?
@@ -78,26 +79,7 @@ public final class LivePanel {
     private var handedOffToCard = false
 
     public init(controller: DictationController, settings: AppSettings) {
-        panel = NonActivatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
-            styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isFloatingPanel = true
-        // Ярус и поведение — общий рецепт HUD (см. `HUDWindow`): панель обязана появляться
-        // поверх чужого полноэкранного пространства. `.stationary` — чтобы пилюля
-        // не разъезжалась вместе с окнами на Mission Control.
-        panel.level = HUDWindow.level
-        panel.collectionBehavior = HUDWindow.spaceBehavior.union(.stationary)
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        // Тень рисовалась бы по прямоугольнику окна, а не по капсуле: тени рисует SwiftUI.
-        panel.hasShadow = false
-        panel.animationBehavior = .utilityWindow
-        // Панель чисто информационная: клики должны доходить до окна под ней.
-        panel.ignoresMouseEvents = true
+        panel = Self.makeShell()
         panel.contentView = NSHostingView(
             rootView: PanelView(presentation: presentation, controller: controller, settings: settings)
         )
@@ -112,9 +94,12 @@ public final class LivePanel {
     public func show() {
         hideTask?.cancel()
         hideTask = nil
+        // Оболочку окна берём свежую: у прожившей часами прописка во всех пространствах
+        // протухает, и пилюля перестаёт появляться вовсе (см. `HUDWindow`). Видимое окно
+        // не трогаем — это показ поверх ещё не доигравшего ухода, и капсула обязана
+        // вернуться тем же движением назад, а не мигнуть новым окном.
+        if !panel.isVisible { panel = HUDWindow.renew(panel) { Self.makeShell() } }
         moveToCursorScreen()
-        // Заявку на «все пространства» подтверждаем каждым показом: у панели, живущей
-        // часами, она протухает — из-за этого пилюля пропадала над полным экраном.
         HUDWindow.orderFront(panel, extra: .stationary)
         // Анимируем содержимое, а не окно: окно просто есть, капсула в нём всплывает.
         withAnimation(Self.appearAnimation) { presentation.isVisible = true }
@@ -211,6 +196,32 @@ public final class LivePanel {
             panel.orderOut(nil)
             hideTask = nil
         }
+    }
+
+    /// Оболочка окна пилюли — без содержимого: его строит `init` один раз и дальше оно
+    /// переезжает из оболочки в оболочку.
+    private static func makeShell() -> NSPanel {
+        let panel = NonActivatingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
+            styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        // Ярус и поведение — общий рецепт HUD (см. `HUDWindow`): панель обязана появляться
+        // поверх чужого полноэкранного пространства. `.stationary` — чтобы пилюля
+        // не разъезжалась вместе с окнами на Mission Control.
+        panel.level = HUDWindow.level
+        panel.collectionBehavior = HUDWindow.spaceBehavior.union(.stationary)
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        // Тень рисовалась бы по прямоугольнику окна, а не по капсуле: тени рисует SwiftUI.
+        panel.hasShadow = false
+        panel.animationBehavior = .utilityWindow
+        // Панель чисто информационная: клики должны доходить до окна под ней.
+        panel.ignoresMouseEvents = true
+        return panel
     }
 
     /// Низ по центру экрана, на котором сейчас курсор (там же, где и целевое окно).
