@@ -47,7 +47,10 @@ final class WavEncoderTests: XCTestCase {
             let dataSize = Int(le32(data, 40))
             XCTAssertEqual(dataSize, data.count - 44, name)
             let duration = Double(dataSize) / 2 / 44_100
-            XCTAssertGreaterThan(duration, 0.25, "чайм \(name) слишком короткий: \(duration) с")
+            // Границы широкие намеренно: точная длина — дело вкуса и менялась вместе с
+            // выбранным звуком. Проверяем только то, что и правда важно: чайм успевает
+            // прозвучать и не превращается в мелодию поверх начатой речи.
+            XCTAssertGreaterThan(duration, 0.15, "чайм \(name) слишком короткий: \(duration) с")
             XCTAssertLessThan(duration, 0.40, "чайм \(name) слишком длинный: \(duration) с")
         }
     }

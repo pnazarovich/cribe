@@ -138,6 +138,35 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         try await transcribe(samples, language: language, variant: language.whisperModel, prompt: prompt)
     }
 
+    /// Модель, умеющая переводить. Turbo — не умеет: задачу перевода в неё не обучали.
+    /// Проверено на живой записи: на turbo `.translate` возвращает русский текст как ни в
+    /// чём не бывало, на полной large-v3 — английский.
+    public static let translationVariant = "openai_whisper-large-v3"
+
+    public func transcribe(
+        _ samples: [Float],
+        language: Language,
+        prompt: String,
+        translating: Bool
+    ) async throws -> String {
+        guard translating else {
+            return try await transcribe(samples, language: language, prompt: prompt)
+        }
+        // Качать три гигабайта ради страховки нельзя — если модели нет, перевода не будет,
+        // и приложение скажет об этом прямо.
+        guard store.isInstalled(variant: Self.translationVariant) else {
+            throw TranscriptionEngineError.notPrepared(language)
+        }
+        try await prepare(variant: Self.translationVariant, language: language) { _ in }
+        return Self.text(of: try await run(
+            samples,
+            language: language,
+            variant: Self.translationVariant,
+            prompt: prompt,
+            translating: true
+        ))
+    }
+
     public func transcribe(
         _ samples: [Float],
         language: Language,
@@ -214,21 +243,27 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         _ samples: [Float],
         language: Language,
         variant: String? = nil,
-        prompt: String
+        prompt: String,
+        translating: Bool = false
     ) async throws -> [TranscriptionResult] {
         let cached = queue.sync { pipelines[variant ?? language.whisperModel] }
         guard let pipe = cached else {
             throw TranscriptionEngineError.notPrepared(language)
         }
 
+        // `.translate` — вторая задача того же декодера: модель слушает русский и пишет
+        // английский за один проход. Языком остаётся исходный: он говорит модели, что она
+        // слышит, а не что должна написать.
         let options = DecodingOptions(
-            task: .transcribe,
+            task: translating ? .translate : .transcribe,
             language: language.rawValue,
             temperature: 0.0,
             usePrefillPrompt: true,
             detectLanguage: false,
             skipSpecialTokens: true,
-            promptTokens: promptTokens(prompt, pipe: pipe),
+            // Промпт при переводе не отправляем: словарная подсказка на русском перебивает
+            // задачу декодера, и модель возвращает русский текст. Замерено на живой записи.
+            promptTokens: translating ? nil : promptTokens(prompt, pipe: pipe),
             chunkingStrategy: .vad
         )
 

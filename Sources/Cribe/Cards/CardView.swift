@@ -17,6 +17,9 @@ enum CardMetrics {
     /// Сторона круглой кнопки в шапке.
     static let control: CGFloat = 22
     static let controlGap: CGFloat = 6
+    /// Насколько подпись в шапке ниже верха строки: строка ростом с кнопку (22), подпись —
+    /// с собственный кегль (10 pt, строка ≈ 12), и разница делится поровну сверху и снизу.
+    static let headerSlack: CGFloat = 5
     /// Дальше текст не растёт: полный лежит в самой карточке и уезжает при перетаскивании.
     static let lineLimit = 4
     /// Сдвиг влево на входе и уходе: карточка выезжает из-за левого края экрана.
@@ -38,7 +41,9 @@ enum CardMetrics {
         }
         return CGRect(
             x: width - padding - (self.control + controlGap) * column - self.control,
-            y: padding,
+            // Та же поправка, что и у шапки: кнопки уехали вверх вместе с ней, и зона
+            // клика обязана уехать ровно настолько же.
+            y: padding - headerSlack,
             width: self.control,
             height: self.control
         )
@@ -185,6 +190,10 @@ struct CardView: View {
             }
         }
         .padding(CardMetrics.padding)
+        // Сверху отступ меньше на просвет, который шапка добавляет сама: подпись ростом
+        // с текст, а строка держит высоту круглой кнопки и центрирует подпись в ней.
+        // Без поправки воздуха над подписью заметно больше, чем под текстом.
+        .padding(.top, -CardMetrics.headerSlack)
         // Толчок вбок — жалоба на неудавшийся перевод.
         .offset(x: model.shake)
         .animation(.easeOut(duration: 0.2), value: model.failure)
@@ -245,11 +254,21 @@ struct CardView: View {
     private var label: String {
         if model.didCopy { return "Скопировано" }
         if model.isTranslating { return "Перевожу…" }
-        // Единственная кнопка, о которой по значку не догадаться: она уводит с карточки
-        // в другое окно. Подсказок (`help`) у карточки нет — контролы ведёт AppKit, — и
-        // сказать, что она делает, можно только здесь.
-        if model.hoveredControl == .expand { return "Посмотреть целиком" }
-        return model.isHovered ? "Перетащите в поле ввода" : "Диктовка"
+        // Подсказка к кнопке под курсором. Обычных всплывающих подсказок (`help`) у карточки
+        // нет и быть не может: контролы ведёт AppKit, панель никогда не становится key, —
+        // поэтому подпись в шапке и есть единственное место, где можно сказать, что делает
+        // кнопка. Раньше так объяснялась одна «развернуть», а остальные три молчали.
+        if let control = model.hoveredControl { return hint(for: control) }
+        return model.isHovered ? "Перетащите в поле ввода" : "Cribe"
+    }
+
+    private func hint(for control: CardControl) -> String {
+        switch control {
+        case .expand: return "Посмотреть целиком"
+        case .translate: return model.showsTranslation ? "Вернуть оригинал" : "Перевести на английский"
+        case .copy: return "Скопировать"
+        case .close: return "Убрать карточку"
+        }
     }
 
     private var controls: some View {

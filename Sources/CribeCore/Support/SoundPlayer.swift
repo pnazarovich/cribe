@@ -10,23 +10,25 @@ public final class SoundPlayer {
     /// Синтез в 44.1 кГц: чайм идёт в динамики, а не через 16-кГц тракт записи.
     static let sampleRate = 44_100
 
-    /// Тембр маримбы: основной тон и два обертона. Каждый следующий тише и гаснет
-    /// быстрее — от этого нота звучит деревянной, а не голой синусоидой.
+    /// Тембр почти чистого тона: основной и один тихий обертон. Выбран владельцем из
+    /// пяти вариантов — самый сдержанный. Богатый обертонами звук в наушниках лезет
+    /// вперёд и отвлекает, а этот ближе к щелчку, чем к мелодии: его слышно и тут же
+    /// забываешь, чего от служебного чайма и хочется.
     private static let partials: [(ratio: Double, gain: Double, damping: Double)] = [
         (ratio: 1, gain: 1, damping: 1),        // основной тон
-        (ratio: 2, gain: 0.126, damping: 1.8),  // −18 дБ
-        (ratio: 3, gain: 0.050, damping: 2.6),  // −26 дБ
+        (ratio: 2, gain: 0.050, damping: 2.5),  // −26 дБ, гаснет вдвое быстрее
     ]
 
-    /// Атака приподнятым косинусом: мягко, но коротко — удар молоточка, а не «пуф».
-    private static let attack = 0.008
+    /// Атака приподнятым косинусом. Здесь она заметно мягче удара молоточка: на низкой
+    /// ноте резкий фронт слышен как щелчок динамика.
+    private static let attack = 0.012
     /// Постоянная времени спада в долях длины ноты: меньше — суше звук.
-    private static let damping = 0.45
+    private static let damping = 0.35
     /// Ноты накладываются: вторая входит, пока первая ещё звенит, и стыка не слышно.
     private static let overlap = 0.4
-    private static let noteLength = 0.14
+    private static let noteLength = 0.10
     /// Последняя нота догорает дольше — после неё ничего не следует.
-    private static let tailLength = 0.22
+    private static let tailLength = 0.16
     /// Тишина по краям файла: устройство получает нули до и после чайма.
     private static let padding = 0.006
     /// Общий фейд в конце — страховка поверх огибающих нот.
@@ -35,13 +37,15 @@ public final class SoundPlayer {
     private static let peak: Float = 0.5
     private static let volume: Float = 0.3
 
-    private static let g4 = 392.0
-    private static let d5 = 587.33
+    /// Низкий регистр намеренно: чайм не должен перекрикивать речь, ради которой его и
+    /// слышат. Кварта та же, что и была, но на октаву ниже.
+    private static let g3 = 196.0
+    private static let c4 = 261.63
 
     /// Восходящая кварта: запись пошла.
-    static let startWav = wav(frequencies: [g4, d5])
+    static let startWav = wav(frequencies: [g3, c4])
     /// Та же пара наоборот — спокойный ответ на остановку.
-    static let stopWav = wav(frequencies: [d5, g4])
+    static let stopWav = wav(frequencies: [c4, g3])
 
     private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "SoundPlayer")
 

@@ -51,6 +51,16 @@ public protocol TranscriptionEngine: AnyObject {
     /// Требует успешного `prepare` для этого языка, иначе бросает `TranscriptionEngineError.notPrepared`.
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String
 
+    /// Тот же проход, но модель сразу отдаёт английский: у Whisper это отдельная задача
+    /// декодера, а не второй вызов. Ради неё перевод и не зависит больше ни от сети,
+    /// ни от входа в ChatGPT.
+    func transcribe(
+        _ samples: [Float],
+        language: Language,
+        prompt: String,
+        translating: Bool
+    ) async throws -> String
+
     /// То же распознавание, что и `transcribe`, с теми же опциями, но результат — сегменты
     /// с таймкодами. Нужен потоковой финализации: по таймкоду последнего устоявшегося
     /// сегмента считается, сколько записи уже распознано.
@@ -81,6 +91,16 @@ public protocol TranscriptionEngine: AnyObject {
 /// потоковая финализация просто не включится. И с выбором варианта: движку с одной моделью
 /// выбирать не из чего — он делает обычный проход.
 public extension TranscriptionEngine {
+    /// Двойники в тестах перевод не изображают — им хватает обычного прохода.
+    func transcribe(
+        _ samples: [Float],
+        language: Language,
+        prompt: String,
+        translating: Bool
+    ) async throws -> String {
+        try await transcribe(samples, language: language, prompt: prompt)
+    }
+
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
         throw TranscriptionEngineError.segmentsUnsupported
     }

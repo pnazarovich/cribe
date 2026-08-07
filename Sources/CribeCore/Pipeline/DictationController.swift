@@ -85,6 +85,25 @@ actor EngineGate {
         try await engine.prepare(variant: variant, language: language, onState: onState)
     }
 
+    /// Проход с переводом: модель сразу отдаёт английский. Ходит той же цепочкой, что и
+    /// обычный, — инстанс WhisperKit один на всех.
+    func transcribe(
+        _ samples: [Float],
+        language: Language,
+        prompt: String,
+        translating: Bool
+    ) async throws -> String {
+        let previous = inFlight
+        let task = Task { [self] in
+            _ = await previous?.value
+            return try await engine.transcribe(
+                samples, language: language, prompt: prompt, translating: translating
+            )
+        }
+        inFlight = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
     func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String {
         let previous = inFlight
         let task = Task { [self] in
@@ -965,6 +984,8 @@ public final class DictationController: ObservableObject {
         publish()
         do {
             let entries = dictionary.entries
+            // Решение о переводе принято на стопе — здесь его только исполняем.
+            let wantsTranslation = session.translatesToEnglish
             let raw: String
             if let streamed = await streamedTranscript(session, samples: leveled) {
                 raw = streamed
@@ -977,8 +998,6 @@ public final class DictationController: ObservableObject {
             }
             var text = ReplacementEngine.apply(raw, entries: entries)
             var degradations: [String] = []
-            // Решение о переводе принято на стопе — здесь его только исполняем.
-            let wantsTranslation = session.translatesToEnglish
             var translation: String?
             let skipsGPT = ShortDictation.skipsGPT(
                 text: text,
@@ -991,8 +1010,9 @@ public final class DictationController: ObservableObject {
                 processingState = .cleaning
                 publish()
                 do {
-                    // Перевод делает тот же вызов: GPT чистит текст и сразу отдаёт английский.
-                    // Поэтому и модель берём переводческую — вызов целиком принадлежит переводу.
+                    // Английский к этому моменту уже есть — от GPT нужна только чистка.
+                    // Модель всё равно берём переводческую: вызов принадлежит переводу,
+                    // и правила у него свои.
                     let processed = try await PostProcessor.cleanup(
                         text: text,
                         entries: entries,
@@ -1009,15 +1029,25 @@ public final class DictationController: ObservableObject {
                 } catch {
                     // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
                     // При переводе тем же вызовом теряется и чистка — говорим об обоих.
-                    degradations.append(
-                        wantsTranslation
-                            ? "без перевода и AI-чистки: \(error.localizedDescription)"
-                            : "без AI-чистки: \(error.localizedDescription)"
-                    )
+                    // Перевод к этому моменту уже сделан моделью — теряется только чистка.
+                    degradations.append("без AI-чистки: \(error.localizedDescription)")
                     logger.error("GPT-слой не отработал: \(error.localizedDescription, privacy: .public)")
                 }
             } else if wantsTranslation {
                 degradations.append("без перевода")
+            }
+
+            // GPT перевод не сделал — переводит сама модель. Качество у GPT выше, поэтому
+            // он и остаётся первым; но перевод просили клавишей, и молча отдать русский
+            // текст вместо английского нельзя. Стоит это одного лишнего прохода по записи
+            // и только в том случае, когда GPT недоступен.
+            if wantsTranslation, translation == nil {
+                if let local = await localTranslation(of: leveled, session: session, language: language) {
+                    translation = local
+                    degradations.append("перевод без ChatGPT — качество ниже")
+                } else {
+                    degradations.append("перевод не удался")
+                }
             }
 
             // Пустой ответ модели `cleanup` отсекает сам, но вставлять пустоту нельзя ни при
@@ -1276,6 +1306,31 @@ public final class DictationController: ObservableObject {
         dictionary.replace(entries: entries)
         for entry in learned {
             logger.notice("словарь пополнен правкой: \(entry.canonical, privacy: .public)")
+        }
+    }
+
+    /// Перевод силами самой модели: у Whisper это вторая задача декодера, не второй вызов
+    /// сети. Нужен ровно тогда, когда GPT недоступен, — и тем и ценен, что работает без
+    /// сети и без входа в ChatGPT.
+    private func localTranslation(
+        of leveled: [Float],
+        session: DictationSession,
+        language: Language
+    ) async -> String? {
+        do {
+            let vad = try await ensureVad()
+            guard let speech = try await vad.trimmed(leveled) else { return nil }
+            let english = try await gate.transcribe(
+                speech,
+                language: language,
+                prompt: session.prompt,
+                translating: true
+            )
+            let trimmed = english.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            logger.error("перевод моделью не удался: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 

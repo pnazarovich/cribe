@@ -8,7 +8,7 @@ usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate
   --lang ru|uk|en  язык диктовки (обязателен)
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
-  --translate    вернуть английский перевод (слой 3, несовместим с --no-gpt)
+  --translate    вернуть английский перевод (переводит сама модель, слой 1)
 
 Стадии печатаются в stderr, финальный текст — в stdout.
 """
@@ -60,7 +60,8 @@ struct CLI {
         let raw = try await engine.transcribe(
             speech,
             language: options.language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language)
+            prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language),
+            translating: options.translate
         )
         log("слой 1: \(raw)")
 
@@ -127,7 +128,6 @@ private struct Options {
 
         guard let path else { throw CLIError("не указан аудиофайл\n\n\(usage)") }
         guard let language else { throw CLIError("не указан --lang\n\n\(usage)") }
-        guard useGPT || !translate else { throw CLIError("--translate несовместим с --no-gpt") }
 
         self.path = path
         self.language = language
