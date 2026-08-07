@@ -75,6 +75,26 @@
                  type="application/octet-stream"
                  sparkle:edSignature="9y3+laIknDAa1hfKruv98wM7NTPPzw2ReshaJKdHC/QqnnAhxPi0V7ykuyJJObDD6mxJSqa+UkdT2+4b+r5WCQ==" length="7597232" />
     </item>
+    <item>
+      <title>0.1.3</title>
+      <pubDate>Fri, 07 Aug 2026 13:40:37 +0400</pubDate>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Индикатор громкости</h3>
+<ul>
+<li>Столбики больше не встают на максимум при включении. Первые сто тридцать миллисекунд микрофон ещё просыпается и отдаёт не звук, а падение в цифровую тишину; шкала калибровалась по нему и уезжала так, что настоящая речь оказывалась у верхнего края. Теперь начало записи в расчёт не идёт.</li>
+</ul>
+<h3>Модель</h3>
+<ul>
+<li>«Готовлю модель…» больше не встречает первую диктовку: модель поднимается в память сразу при запуске приложения. Если она ещё не скачана, прогрев молчит.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.3/Cribe-0.1.3.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="WFPi6PZY6o7U0UeJvujCFZYu6xv/sYkXeu1veSGnXMeJWtBQ6KcT3P/UtRdlP3QM9Afwug0q5h5cP70xIcACBw==" length="7602873" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
