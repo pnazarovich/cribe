@@ -396,7 +396,8 @@ public final class DictationController: ObservableObject {
     private let settings: AppSettings
     private let history: HistoryStore
     private let recordings: RecordingStore
-    private let suggester: TermSuggester
+    private let learner: EditLearner
+    private let watcher: EditWatcher
     private let recorder: AudioCapturing
     private let delivery: TextDelivery
     private let makeVad: @Sendable () async throws -> SpeechGating
@@ -464,7 +465,8 @@ public final class DictationController: ObservableObject {
         self.settings = settings
         self.history = .shared
         self.recordings = recordings
-        self.suggester = .shared
+        self.learner = .shared
+        self.watcher = .shared
         self.recorder = recorder
         self.delivery = delivery
         self.makeVad = makeVad
@@ -1039,11 +1041,13 @@ public final class DictationController: ObservableObject {
             let destination = await deliver(output)
             let saved = await backup.value
             history.add(output, language: language, audio: saved?.name, seconds: saved?.seconds)
-            // Кандидаты в словарь считаем по тексту диктовки, а не по тому, что уехало
-            // в поле ввода: у перевода кандидатом оказалось бы каждое английское слово.
-            // Текст уже прошёл словарь — всё, что тот умел заменить, стоит канонической
-            // формой и в подсказки не полезет.
-            suggester.observe(text, entries: entries, language: language)
+            // Словарь учится на правках человека, а не на догадках по виду слова. Если текст
+            // действительно уехал в поле, берём это поле под наблюдение: что человек в нём
+            // поправит, то и есть настоящая ошибка распознавания. В карточке и в буфере
+            // обмена наблюдать нечего — там никто ничего не правит.
+            if case .pasteboard(.pasted) = destination {
+                watchEdits(of: output)
+            }
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
                 degradations.append(Self.clipboardMessage(reason))
@@ -1245,6 +1249,34 @@ public final class DictationController: ObservableObject {
             впереди=\(app, privacy: .public) → \(path, privacy: .public)
             """
         )
+    }
+
+    /// Взять поле под наблюдение и, если человек что-то поправит, доучить словарь.
+    ///
+    /// Молча в словарь попадает только повторённая правка — решает это `EditLearner`.
+    /// Здесь остаётся одно: положить готовую статью на место, не заведя дубля.
+    private func watchEdits(of text: String) {
+        watcher.watch(inserted: text) { [weak self] corrections in
+            Task { @MainActor in self?.learn(corrections) }
+        }
+    }
+
+    private func learn(_ corrections: [Correction]) {
+        let learned = learner.observe(corrections, entries: dictionary.entries)
+        guard !learned.isEmpty else { return }
+        var entries = dictionary.entries
+        for entry in learned {
+            // Статья могла быть существующей — тогда у неё просто прибавился вариант.
+            if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+                entries[index] = entry
+            } else {
+                entries.append(entry)
+            }
+        }
+        dictionary.replace(entries: entries)
+        for entry in learned {
+            logger.notice("словарь пополнен правкой: \(entry.canonical, privacy: .public)")
+        }
     }
 
     /// `TextInserter.insert` синхронно спит 20 мс — уводим с главного потока.

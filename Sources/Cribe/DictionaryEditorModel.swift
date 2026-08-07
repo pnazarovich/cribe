@@ -44,7 +44,6 @@ final class DictionaryEditorModel: ObservableObject {
         var canonical: String
         var variants: [String]
         /// Слово-подсказка, которое надо погасить в списке подсказок при создании.
-        var suggestion: String?
     }
 
     struct Removed: Equatable {
@@ -75,7 +74,7 @@ final class DictionaryEditorModel: ObservableObject {
 
     let dictionary: UserDictionary
     let settings: AppSettings
-    let suggester: TermSuggester
+    let learner: EditLearner
 
     private let debounce = Debounce(delay: DictionaryEditorModel.saveDelay)
     private var undoTask: Task<Void, Never>?
@@ -85,10 +84,10 @@ final class DictionaryEditorModel: ObservableObject {
     /// Что мы сами записали последним — чтобы не перечитать собственную запись.
     private var lastWritten: [DictionaryEntry] = []
 
-    init(dictionary: UserDictionary, settings: AppSettings, suggester: TermSuggester) {
+    init(dictionary: UserDictionary, settings: AppSettings, learner: EditLearner) {
         self.dictionary = dictionary
         self.settings = settings
-        self.suggester = suggester
+        self.learner = learner
         reload()
     }
 
@@ -128,7 +127,6 @@ final class DictionaryEditorModel: ObservableObject {
         lastWritten = entries
         // Замены в памяти применяются в любом случае — молчать о несохранённом файле нельзя.
         saveState = dictionary.lastSaveError.map { .failed($0.localizedDescription) } ?? .saved
-        suggester.refresh(entries: entries)
     }
 
     // MARK: - Термины
@@ -230,35 +228,28 @@ final class DictionaryEditorModel: ObservableObject {
         edited(id)
     }
 
-    // MARK: - Подсказки
+    // MARK: - Правки
 
-    func acceptSuggestion(_ candidate: TermCandidate) {
-        // Латинское слово уже похоже на канонический термин — предлагаем его как есть;
-        // кириллическое, наоборот, годится только вариантом.
-        let isLatin = candidate.token.allSatisfy(\.isASCII)
-        draft = Draft(
-            canonical: isLatin ? candidate.token : "",
-            variants: isLatin ? [] : [candidate.token],
-            suggestion: candidate.token
-        )
+    /// Правку принимают целиком: в отличие от прежних подсказок, здесь известны обе
+    /// стороны — что услышалось и что имелось в виду, — и заготовку заполнять нечем.
+    func acceptCorrection(_ learned: LearnedCorrection) {
+        _ = learner.accept(learned.correction, entries: terms.map(\.entry))
+        _ = add(canonical: learned.correction.meant, variants: [learned.correction.heard.lowercased()])
     }
 
-    func ignoreSuggestion(_ candidate: TermCandidate) {
-        suggester.ignore(candidate.token, entries: terms.map(\.entry))
+    func ignoreCorrection(_ learned: LearnedCorrection) {
+        learner.ignore(learned.correction)
     }
 
     /// Слово из последней диктовки: оно и есть готовый вариант, осталась каноническая форма.
     func draftFromDictation(word: String) {
-        draft = Draft(canonical: "", variants: [word.lowercased()], suggestion: nil)
+        draft = Draft(canonical: "", variants: [word.lowercased()])
     }
 
     /// Заготовка стала термином: карточка (или слияние) плюс генерация недостающего.
     func commitDraft() {
         guard let draft else { return }
         let created = add(canonical: draft.canonical, variants: draft.variants)
-        if let suggestion = draft.suggestion {
-            suggester.accept(suggestion, entries: terms.map(\.entry))
-        }
         // Генерируем только новой карточке: у существующей варианты уже собраны.
         if let created { generate(for: created) }
         self.draft = nil

@@ -28,7 +28,7 @@ final class AppCore: ObservableObject {
 
     let settings = AppSettings.shared
     let history = HistoryStore.shared
-    let suggester = TermSuggester.shared
+    let learner = EditLearner.shared
     let engine = WhisperEngine()
     let dictionary = UserDictionary(url: UserDictionary.defaultURL)
     let controller: DictationController
@@ -93,16 +93,6 @@ final class AppCore: ObservableObject {
         needsOnboarding = !UserDefaults.standard.bool(forKey: Self.onboardingKey)
         // Чаймы синтезируются заранее: на первом хоткее звук иначе опаздывал.
         SoundPlayer.preload()
-        suggester.refresh(entries: dictionary.entries)
-        // Словарь меняется и мимо редактора (правка файла снаружи) — подсказки обязаны
-        // это учесть, иначе они предлагают то, что уже добавлено. Уведомление приходит
-        // с очереди наблюдателя, а `@Published` живёт на главной.
-        dictionary.onChange = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.suggester.refresh(entries: self.dictionary.entries)
-            }
-        }
     }
 
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
@@ -340,7 +330,7 @@ private struct DictionaryWindow: View {
         DictionaryEditorView(
             dictionary: core.dictionary,
             settings: core.settings,
-            suggester: core.suggester,
+            learner: core.learner,
             // Последняя диктовка живёт в конвейере, но после перезапуска её там нет —
             // тогда берём свежайшую из истории. Окно истории приводит сюда СВОЮ строку,
             // и она сильнее: разбирают ту диктовку, которую открыли, а не свежайшую.
@@ -365,7 +355,7 @@ private struct MenuBarScene: Scene {
                 controller: controller,
                 settings: core.settings,
                 history: core.history,
-                suggester: core.suggester,
+                learner: core.learner,
                 updates: UpdateController.shared
             )
         } label: {

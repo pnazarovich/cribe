@@ -9,7 +9,7 @@ struct MenuBarView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var settings: AppSettings
     @ObservedObject var history: HistoryStore
-    @ObservedObject var suggester: TermSuggester
+    @ObservedObject var learner: EditLearner
     @ObservedObject var updates: UpdateController
 
     @Environment(\.openWindow) private var openWindow
@@ -85,10 +85,10 @@ struct MenuBarView: View {
         Button("Добавить из последней диктовки") { openDictionary(.lastDictation) }
             .disabled(controller.lastOriginal == nil && history.items.isEmpty)
 
-        // Пункт появляется, только когда есть что предложить: во время диктовки подсказки
-        // не всплывают ничем и никогда — это тихая строка в меню, а не окно поверх работы.
-        if !suggester.suggestions.isEmpty {
-            Button("Предложения (\(suggester.suggestions.count))") { openDictionary(.suggestions) }
+        // Пункт появляется, только когда есть что показать: замеченные правки не всплывают
+        // ничем и никогда — это тихая строка в меню, а не окно поверх работы.
+        if !learner.pending.isEmpty {
+            Button("Замеченные правки (\(learner.pending.count))") { openDictionary(.corrections) }
         }
 
         // Не `SettingsLink`: он открывает окно, но приложение не активирует, и настройки

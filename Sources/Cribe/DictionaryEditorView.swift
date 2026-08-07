@@ -4,7 +4,7 @@ import CribeCore
 /// Что показать в редакторе сразу после открытия из меню.
 enum DictionaryFocus: Equatable {
     case lastDictation
-    case suggestions
+    case corrections
 }
 
 /// Редактор словаря: карточка на термин, варианты — снимаемыми чипсами.
@@ -13,7 +13,7 @@ enum DictionaryFocus: Equatable {
 /// главное отличие от прежней таблицы — добавить термин теперь значит написать его
 /// латиницей и подождать, пока варианты сгенерируются, а не выдумывать их руками.
 struct DictionaryEditorView: View {
-    @ObservedObject var suggester: TermSuggester
+    @ObservedObject var learner: EditLearner
 
     /// Текст последней диктовки для панели «добавить из диктовки»; nil — диктовок не было.
     let lastDictation: String?
@@ -30,8 +30,8 @@ struct DictionaryEditorView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Якорь прокрутки к подсказкам: из меню в редактор приходят именно за ними.
-    private static let suggestionsAnchor = "suggestions"
+    /// Якорь прокрутки к правкам: из меню в редактор приходят именно за ними.
+    private static let correctionsAnchor = "corrections"
 
     /// Примеры для пустого словаря: те же программистские термины, что лежат в словаре
     /// по умолчанию. Варианты заданы руками — модель для них дёргать незачем.
@@ -45,18 +45,18 @@ struct DictionaryEditorView: View {
     init(
         dictionary: UserDictionary,
         settings: AppSettings,
-        suggester: TermSuggester,
+        learner: EditLearner,
         lastDictation: String?,
         focus: Binding<DictionaryFocus?>
     ) {
-        self.suggester = suggester
+        self.learner = learner
         self.lastDictation = lastDictation
         _focus = focus
         _model = StateObject(
             wrappedValue: DictionaryEditorModel(
                 dictionary: dictionary,
                 settings: settings,
-                suggester: suggester
+                learner: learner
             )
         )
     }
@@ -94,8 +94,8 @@ struct DictionaryEditorView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if showsAddRow { addRow }
-                    if !suggester.suggestions.isEmpty {
-                        suggestionsCard.id(Self.suggestionsAnchor)
+                    if !learner.pending.isEmpty {
+                        correctionsCard.id(Self.correctionsAnchor)
                     }
                     if model.showsDictation { dictationCard }
                     if model.draft != nil { draftCard }
@@ -295,22 +295,22 @@ struct DictionaryEditorView: View {
         .padding(.vertical, 24)
     }
 
-    // MARK: - Подсказки
+    // MARK: - Правки
 
-    private var suggestionsCard: some View {
+    private var correctionsCard: some View {
         DictionaryCard {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Предложения (\(suggester.suggestions.count))", systemImage: "lightbulb")
+                Label("Замеченные правки (\(learner.pending.count))", systemImage: "pencil.and.outline")
                     .font(.headline)
-                Text("Эти слова повторяются в диктовках, но словарь их не знает.")
+                Text("Вы поправили это в поле ввода. Повторится второй раз — уедет в словарь само.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 FlowLayout(spacing: 6, lineSpacing: 6) {
-                    ForEach(suggester.suggestions) { candidate in
-                        SuggestionChip(
-                            candidate: candidate,
-                            onAccept: { model.acceptSuggestion(candidate) },
-                            onIgnore: { model.ignoreSuggestion(candidate) }
+                    ForEach(learner.pending) { learned in
+                        CorrectionChip(
+                            learned: learned,
+                            onAccept: { model.acceptCorrection(learned) },
+                            onIgnore: { model.ignoreCorrection(learned) }
                         )
                     }
                 }
@@ -358,7 +358,7 @@ struct DictionaryEditorView: View {
     }
 
     private func words(in text: String) -> [String] {
-        DictionaryEditorModel.words(in: text, known: TermSuggester.knownTokens(model.terms.map(\.entry)))
+        DictionaryEditorModel.words(in: text, known: DictionaryTokens.known(model.terms.map(\.entry)))
     }
 
     // MARK: - Заготовка термина
@@ -419,8 +419,8 @@ struct DictionaryEditorView: View {
         switch requested {
         case .lastDictation:
             model.showsDictation = true
-        case .suggestions:
-            withAnimation { proxy.scrollTo(Self.suggestionsAnchor, anchor: .top) }
+        case .corrections:
+            withAnimation { proxy.scrollTo(Self.correctionsAnchor, anchor: .top) }
         }
         focus = nil
     }
@@ -609,17 +609,20 @@ private struct AddVariantChip: View {
 }
 
 /// Подсказка: слово, число диктовок с ним и два решения — взять или больше не предлагать.
-private struct SuggestionChip: View {
-    let candidate: TermCandidate
+private struct CorrectionChip: View {
+    let learned: LearnedCorrection
     let onAccept: () -> Void
     let onIgnore: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(candidate.token).font(.subheadline)
-            Text("\(candidate.count)")
+            // Обе стороны правки: без «услышал» непонятно, за что чипс отвечает, —
+            // в словаре это и есть вариант, а не каноническая форма.
+            Text(learned.correction.heard)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .strikethrough()
+            Text(learned.correction.meant).font(.subheadline)
             Button(action: onAccept) {
                 Image(systemName: "plus.circle.fill").font(.subheadline)
             }
@@ -630,7 +633,7 @@ private struct SuggestionChip: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Больше не предлагать")
+            .help("Не запоминать эту правку")
         }
         .chip()
     }
