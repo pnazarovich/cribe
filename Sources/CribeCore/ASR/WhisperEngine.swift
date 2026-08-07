@@ -55,6 +55,13 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         try await prepare(variant: language.whisperModel, language: language, onState: onState)
     }
 
+    /// Скачана ли модель этого языка. Нужно прогреву при запуске: греть нечего, пока
+    /// файлов нет, а `prepare` в этом случае полез бы их качать — полтора гигабайта
+    /// в фоне, о которых никто не просил.
+    public func isInstalled(for language: Language) -> Bool {
+        store.isInstalled(variant: language.whisperModel)
+    }
+
     /// Вариант модели названа явно: язык её больше не выбирает. Нужно повторному разбору
     /// записи — там русскую диктовку можно попросить разобрать на large-v3.
     public func prepare(

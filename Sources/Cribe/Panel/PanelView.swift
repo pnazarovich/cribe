@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 import CribeCore
 
@@ -561,6 +562,8 @@ private struct EqualizerView: View {
     /// Столбики встают волной, каждый следующий на 20 мс позже — эквалайзер «оживает»,
     /// а не возникает целиком.
     @State private var risen = false
+    /// Сколько кадров этой записи уже ушло в журнал.
+    @State private var traced = 0
 
     /// Стартовый кадр берём из первого же уровня, а не из нуля: иначе первая отрисовка
     /// (и статичная проба рендера) показывала бы штрихи тишины при живом звуке.
@@ -624,12 +627,21 @@ private struct EqualizerView: View {
         // в своей фазе, и ряд заметно дрожит. Инерция здесь не работает по построению.
         .animation(.linear(duration: 0.18), value: frame)
         .onChange(of: level) { _, new in
-            frame.push(range.push(new))
+            let height = range.push(new)
+            trace(level: new, height: height)
+            frame.push(height)
         }
         // Волна разворачивается не в тот же миг, что и капсула: сначала на экран приезжает
         // стекло, и только потом внутри него раскрывается ряд. Без этой паузы нажатие ⌘
         // и появление волны сливаются в один кадр, и разглядеть движение невозможно.
         .onAppear {
+            // Каждая запись начинается с чистого листа. Полагаться на то, что SwiftUI
+            // создаст вью заново, нельзя: он вправе переиспользовать состояние вью в той же
+            // позиции дерева, и тогда новая запись открывалась бы хвостом прошлой — то есть
+            // громкой речью во весь рост. Шкала тоже своя: комната и микрофон могли смениться.
+            frame = Frame()
+            range = MeterRange()
+            traced = 0
             guard !reduceMotion else {
                 risen = true
                 return
@@ -637,6 +649,27 @@ private struct EqualizerView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { risen = true }
         }
     }
+
+    /// Первые кадры записи — в журнал, уровнем `notice`: `debug` система
+    /// в журнале не сохраняет, и прочитать его постфактум нельзя. Заведено после трёх заходов на жалобу «при включении всё на максимуме»:
+    /// расчёт на сохранённых записях каждый раз показывал нормальную картину, а вживую
+    /// человек видел другое, и свести одно с другим было нечем. Теперь есть чем:
+    ///     log show --predicate 'subsystem == "online.nazarovych.cribe"' --last 5m
+    private func trace(level: Float, height: CGFloat) {
+        guard traced < Self.tracedFrames else { return }
+        traced += 1
+        Self.logger.notice(
+            """
+            кадр \(traced, privacy: .public): уровень \(level, format: .fixed(precision: 5), privacy: .public) \
+            (\(20 * log10(max(level, .leastNormalMagnitude)), format: .fixed(precision: 1), privacy: .public) dBFS) \
+            → высота \(height, format: .fixed(precision: 2), privacy: .public)
+            """
+        )
+    }
+
+    /// Сколько первых кадров записываем: полторы секунды с запасом.
+    private static let tracedFrames = 20
+    private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Meter")
 
     /// Расстояние столбика от середины ряда, 0…1. Из него растут обе задержки — и появления,
     /// и отклика на звук, — поэтому движение всегда симметрично.
