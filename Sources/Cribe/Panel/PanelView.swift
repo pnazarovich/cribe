@@ -252,7 +252,7 @@ struct PanelPill: View {
                     .progressViewStyle(.circular)
                     .controlSize(.small)
                 TimelineView(.periodic(from: since, by: 1)) { context in
-                    Text("Готовлю модель · \(Self.elapsed(from: since, to: context.date))")
+                    Text(Self.preparingText(since: since, now: context.date))
                 }
             }
             .transition(ticker)
@@ -347,6 +347,24 @@ struct PanelPill: View {
 
     /// Время прогрева в виде «0:07». Минуты появляются сами, когда до них доходит:
     /// первая компиляция большой модели под нейродвижок и правда идёт минуты.
+    /// Что написать, пока модель поднимается.
+    ///
+    /// Обычно это две секунды, и хватает секундомера. Но первая загрузка ПОСЛЕ ОБНОВЛЕНИЯ
+    /// приложения занимает минуты: CoreML заново компилирует модель под Neural Engine, и
+    /// всё это время процесс стоит внутри системного загрузчика с нулевым процессором.
+    /// Замерено на живом запуске: 121,9 с против 2,4 с на прогретом кэше. Без объяснения
+    /// это выглядит как зависание — и именно так о нём и сообщали.
+    static func preparingText(since: Date, now: Date) -> String {
+        let base = "Готовлю модель · \(elapsed(from: since, to: now))"
+        guard now.timeIntervalSince(since) >= longPreparation else { return base }
+        return base + " · разовая подготовка после обновления"
+    }
+
+    /// С какой секунды пора объяснять. Обычная загрузка укладывается в несколько секунд,
+    /// так что раньше объяснять нечего — и не нужно пугать словом «компиляция» там,
+    /// где всё и так вот-вот закончится.
+    static let longPreparation: TimeInterval = 15
+
     static func elapsed(from start: Date, to now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(start)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
