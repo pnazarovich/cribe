@@ -166,6 +166,22 @@
                  type="application/octet-stream"
                  sparkle:edSignature="FBITsZAXhUw3gj4H+jqclOBAxCIJWc0erJIPvA0VQqwYB14POkef+GyKTu+NWk6bswUNbfcRZFqb4epmGx6YDg==" length="7610737" />
     </item>
+    <item>
+      <title>0.1.8</title>
+      <pubDate>Sat, 08 Aug 2026 02:47:08 +0400</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Украинские фразы в русской диктовке</h3>
+<ul>
+<li>Украинская фраза, зачитанная посреди русской диктовки, выходила фонетическим мусором: распознавание слушает всю запись одним языком. Новый переключатель «Ловить фразы на языке «Українська»» в разделе «Распознавание» перечитывает такие фразы украинской моделью и прямо говорит, что перечитал. Выключен по умолчанию: каждая диктовка становится на секунду-две дольше.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.8/Cribe-0.1.8.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="PpmPHyYNZgqilGT9Iean3ntPKSUyb1wT72Yb78X2zALjac1kUSg1Ayx1YGDctxa2h55Ru6Xp/eoccIlJ5k8CBA==" length="7635182" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
