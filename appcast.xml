@@ -14,6 +14,26 @@
     <link>https://raw.githubusercontent.com/pnazarovich/cribe/main/appcast.xml</link>
     <description>Обновления Cribe</description>
     <language>ru</language>
+    <item>
+      <title>0.1.0</title>
+      <pubDate>Fri, 07 Aug 2026 12:28:22 +0400</pubDate>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Первый публичный выпуск</h3>
+<ul>
+<li>Локальная диктовка на русском и украинском: правый ⌘ — говорите, текст появляется в поле ввода.</li>
+<li>Правый ⌥ — диктовка с переводом на английский, Esc — отмена.</li>
+<li>Распознавание целиком на Mac (Whisper через WhisperKit, Apple Neural Engine); звук никуда не уходит.</li>
+<li>Словарь терминов, история диктовок, карточки для случаев, когда поля ввода нет.</li>
+<li>Необязательная чистка пунктуации через GPT — только если вы её включили.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.0/Cribe-0.1.0.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="41Rrud55NEHBTq7DX+BnKuwCd7kgkt/B+f3t4zP2sr6cdSCYZsbVxvyoRZ5LAK857H1YacaId59R32x/mCJwCw==" length="7576577" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
