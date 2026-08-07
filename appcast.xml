@@ -134,6 +134,22 @@
                  type="application/octet-stream"
                  sparkle:edSignature="0ft0xZ8cBak0ncvg0cJa2xTPj672TPvY2qQXSItWW0yuXUoKJ5Bss6aYCd2hvZhsGLdBPXK028v7CTd3mpjbCw==" length="7611135" />
     </item>
+    <item>
+      <title>0.1.6</title>
+      <pubDate>Fri, 07 Aug 2026 18:51:21 +0400</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Понятнее ожидание после обновления</h3>
+<ul>
+<li>Первая подготовка модели после обновления приложения занимает минуты: macOS заново компилирует её под Neural Engine. Раньше панель просто считала секунды и выглядела зависшей — теперь объясняет, что происходит и что это разово.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.6/Cribe-0.1.6.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="Xexzw/oMSM6n3xqRz+OD3qywlvunnL9NzD1x1rvp37XgA8g95I+y80K+YmVwGRX5jPM6cn69RfN/cqjotpeiCg==" length="7611334" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
