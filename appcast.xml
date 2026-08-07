@@ -52,6 +52,29 @@
                  type="application/octet-stream"
                  sparkle:edSignature="XZvPyWPxUioYrsaFVzqlWSuKAm0bz8CqFFj3RUHeaOSf8QyeEHqdSh1MyXVAJYp7G2Z9vMyYhq3lO3/Awej4AA==" length="7579831" />
     </item>
+    <item>
+      <title>0.1.2</title>
+      <pubDate>Fri, 07 Aug 2026 13:03:04 +0400</pubDate>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Словарь учится сам</h3>
+<ul>
+<li>Приложение замечает, что вы поправили в уже вставленном тексте, и делает из этого словарь. Одна и та же правка во второй раз добавляется автоматически; разовые видны в редакторе словаря — их можно принять или отклонить.</li>
+<li>Прежние «Предложения», угадывавшие термины по виду слова, убраны: они предлагали случайное и не видели нужного.</li>
+</ul>
+<p>Приём работает там, где поле ввода отдаёт своё содержимое Универсальному доступу (нативные приложения и большинство редакторов). Разрешение — то же самое, что нужно для вставки текста.</p>
+<h3>Индикатор громкости</h3>
+<ul>
+<li>Обычная речь больше не упирается в верх шкалы. Размах шкалы был вдвое уже настоящего размаха голоса, и почти всё показывалось максимумом.</li>
+<li>На длинной диктовке столбики больше не проседают к концу: нижняя граница шкалы уходила за собственной речью почти на четыре децибела в секунду.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.2/Cribe-0.1.2.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="9y3+laIknDAa1hfKruv98wM7NTPPzw2ReshaJKdHC/QqnnAhxPi0V7ykuyJJObDD6mxJSqa+UkdT2+4b+r5WCQ==" length="7597232" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
