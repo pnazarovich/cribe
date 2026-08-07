@@ -102,8 +102,14 @@ final class CardModel: ObservableObject {
     /// Сдвиг под пальцами при смахивании: карточка идёт за жестом, а не прыгает по нему.
     @Published var swipeOffset: CGFloat = 0
 
-    init(text: String) {
+    /// Программа, в которой человек диктовал. Стоит в шапке вместо общего слова: карточки
+    /// копятся стопкой и приезжают из разных мест, и «откуда этот текст» — единственное,
+    /// что их различает. Неизвестна (система не ответила) — остаётся имя приложения.
+    let source: String?
+
+    init(text: String, source: String? = nil) {
         self.text = text
+        self.source = source
     }
 
     // MARK: - Перевод
@@ -259,7 +265,7 @@ struct CardView: View {
         // поэтому подпись в шапке и есть единственное место, где можно сказать, что делает
         // кнопка. Раньше так объяснялась одна «развернуть», а остальные три молчали.
         if let control = model.hoveredControl { return hint(for: control) }
-        return model.isHovered ? "Перетащите в поле ввода" : "Cribe"
+        return model.isHovered ? "Перетащите в поле ввода" : (model.source ?? "Cribe")
     }
 
     private func hint(for control: CardControl) -> String {

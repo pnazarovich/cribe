@@ -67,7 +67,10 @@ final class CardPanel {
         self.text = text
         self.translator = translator
         self.onExpand = onExpand
-        model = CardModel(text: text)
+        // Имя программы снимаем здесь и сейчас: карточка появляется сразу после доставки,
+        // и впереди ещё то самое приложение, в которое диктовали. Позже спрашивать поздно —
+        // человек уже мог переключиться.
+        model = CardModel(text: text, source: NSWorkspace.shared.frontmostApplication?.localizedName)
         model.canTranslate = translator.isAvailable()
 
         let host = PassthroughHostingView(rootView: CardView(model: model))
