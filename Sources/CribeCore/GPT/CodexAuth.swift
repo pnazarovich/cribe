@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 // MARK: - Модели
 
@@ -140,6 +141,7 @@ public actor CodexAuth {
     public static let shared = CodexAuth()
 
     private let account = SecretStore.codexTokensAccount
+    private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Codex")
     /// Идущее обновление токена. Актор реентерабелен: на `await` внутри `refresh` он
     /// освобождается, и второй вызов `validAccessToken` (прогрев соединения рядом с чисткой —
     /// ровно этот случай) ушёл бы на сервер с ТЕМ ЖЕ refresh_token. Второй обмен сервер
@@ -304,9 +306,22 @@ public actor CodexAuth {
         throw CodexAuthError.server("Не удалось обновить токен (HTTP \(lastStatus)).")
     }
 
+    /// Токены из связки. Оба провала логируются и различимы: «в связке пусто» и «данные
+    /// есть, но не разбираются» снаружи выглядят одинаково — человека просят войти заново, —
+    /// а причины у них разные, и без строки в журнале выбрать между ними нечем.
     private func loadTokens() -> CodexTokens? {
-        guard let data = SecretStore.get(account) else { return nil }
-        return try? JSONDecoder().decode(CodexTokens.self, from: data)
+        guard let data = SecretStore.get(account) else {
+            Self.logger.notice("токенов ChatGPT в связке нет — нужен вход")
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(CodexTokens.self, from: data)
+        } catch {
+            Self.logger.error(
+                "токены ChatGPT в связке есть, но не разобрались: \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
     }
 
     private func save(_ tokens: CodexTokens) {
