@@ -150,6 +150,22 @@
                  type="application/octet-stream"
                  sparkle:edSignature="Xexzw/oMSM6n3xqRz+OD3qywlvunnL9NzD1x1rvp37XgA8g95I+y80K+YmVwGRX5jPM6cn69RfN/cqjotpeiCg==" length="7611334" />
     </item>
+    <item>
+      <title>0.1.7</title>
+      <pubDate>Sat, 08 Aug 2026 01:27:45 +0400</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Индикатор больше не пропадает</h3>
+<ul>
+<li>После нескольких часов работы приложения индикатор записи переставал появляться: окно теряло прописку на рабочих столах, и показ уходил в никуда. Теперь окно строится заново на каждый показ — как это давно делают карточки, на которые жалоб не было.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.7/Cribe-0.1.7.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="FBITsZAXhUw3gj4H+jqclOBAxCIJWc0erJIPvA0VQqwYB14POkef+GyKTu+NWk6bswUNbfcRZFqb4epmGx6YDg==" length="7610737" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
