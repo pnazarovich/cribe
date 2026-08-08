@@ -2,9 +2,9 @@ import XCTest
 
 @testable import CribeCore
 
-/// Правило второго мнения. Все числа здесь — из замеров на настоящих записях владельца
-/// (2026-08-08, три записи), а не придуманы: синтетическая речь для этой задачи негодна —
-/// на ней фича дважды «чинилась» ложно (см. коммит 441156a).
+/// Правило второго мнения. Все числа — из замера на двенадцати надиктованных владельцем
+/// записях (2026-08-08, восемнадцать кусков речи). Синтетическая речь для этой задачи
+/// негодна: на ней фича дважды «чинилась» ложно (см. коммит 441156a).
 final class SecondOpinionTests: XCTestCase {
 
     // MARK: - Кого спрашивать
@@ -27,76 +27,83 @@ final class SecondOpinionTests: XCTestCase {
     // MARK: - Кого проверять
 
     func testConfidentlyOwnPiecesAreNotDoubted() {
-        // Замеренные уверенности на настоящих русских фразах боевого пути.
-        for confidence in [Float(-0.000), -0.001, -0.001] {
+        // Все чисто русские куски замера: определитель называет их русскими безоговорочно.
+        for confidence in [Float(-0.000), -0.001, -0.002, -0.003] {
             XCTAssertFalse(
-                SecondOpinion.isSuspicious(confidence: confidence, duration: 6.52),
+                SecondOpinion.isSuspicious(
+                    detected: "ru", confidence: confidence, own: .ru, duration: 5.5
+                ),
                 "уверенность \(confidence) — это чистый свой язык, второе мнение стоит времени"
             )
         }
     }
 
-    func testPieceWithForeignInsertIsDoubted() {
-        // Фраза, где русское начало переходит в украинскую вставку: модель ответила
-        // «русский», но лишь на −0.183.
-        XCTAssertTrue(SecondOpinion.isSuspicious(confidence: -0.183, duration: 4.94))
+    func testForeignVerdictIsEnoughEvenWhenConfident() {
+        // Главная поправка после замера. Определитель вовсе не обязан сомневаться на чужой
+        // речи: на трёх записях он уверенно и ПРАВИЛЬНО называл украинский. Прежнее правило
+        // «спрашиваем, только когда он не уверен» эти куски молча пропускало.
+        for confidence in [Float(-0.006), -0.007, -0.010] {
+            XCTAssertTrue(
+                SecondOpinion.isSuspicious(
+                    detected: "uk", confidence: confidence, own: .ru, duration: 5.5
+                ),
+                "определитель прямо назвал соседа — этого достаточно"
+            )
+        }
+    }
+
+    func testUnsureOwnVerdictIsAlsoEnough() {
+        // Русское начало переходит в украинскую вставку: определитель отвечает «русский»,
+        // но плохо. Три таких куска в замере.
+        for confidence in [Float(-0.183), -0.556, -1.346] {
+            XCTAssertTrue(SecondOpinion.isSuspicious(
+                detected: "ru", confidence: confidence, own: .ru, duration: 4.9
+            ))
+        }
     }
 
     func testShortPiecesAreLeftAlone() {
         // «Пока.» длиной в секунду: определение соврало (en, −0.300) — то есть дало ложное
         // подозрение, — а стоит проверка столько же, сколько на длинной фразе.
-        XCTAssertFalse(SecondOpinion.isSuspicious(confidence: -0.300, duration: 1.0))
+        XCTAssertFalse(SecondOpinion.isSuspicious(
+            detected: "en", confidence: -0.300, own: .ru, duration: 1.0
+        ))
     }
 
     func testMeasuredRangesLieOnOppositeSidesOfTheThreshold() {
-        XCTAssertGreaterThan(Float(-0.001), SecondOpinion.suspicion, "чистый русский")
-        XCTAssertLessThan(Float(-0.183), SecondOpinion.suspicion, "русский с украинской вставкой")
+        XCTAssertGreaterThan(Float(-0.003), SecondOpinion.certainty, "худший чистый русский")
+        XCTAssertLessThan(Float(-0.183), SecondOpinion.certainty, "лучший подозрительный")
     }
 
-    // MARK: - Кому отдавать кусок
+    // MARK: - Право вето у сильной модели
 
-    func testNeighbourTakesThePieceWhenTheStrongModelNamesIt() {
-        // Замер: большая модель на этом куске сказала uk с уверенностью −0.107.
-        XCTAssertTrue(SecondOpinion.belongsToNeighbour(
-            verdict: "uk",
-            confidence: -0.107,
-            neighbour: .uk,
-            reading: "Якщо вони натискали кнопку входу, не підтверджуйте."
-        ))
+    func testStrongModelKeepsThePieceOnlyWhenSureItIsOurs() {
+        // На чистых кусках она говорит «русский» с −0.002…−0.007.
+        for confidence in [Float(-0.002), -0.004, -0.007] {
+            XCTAssertTrue(SecondOpinion.keepsOwn(verdict: "ru", confidence: confidence, own: .ru))
+        }
     }
 
-    func testOwnLanguageKeepsThePieceWhenTheStrongModelSaysSo() {
-        XCTAssertFalse(SecondOpinion.belongsToNeighbour(
-            verdict: "ru",
-            confidence: -0.010,
-            neighbour: .uk,
-            reading: "Вот этот текст, если вы нажали кнопку входа, не подтверждайте."
-        ))
+    func testUnsureOwnVerdictDoesNotVeto() {
+        // Тот самый случай, на котором проваливается голосование: сильная модель называет
+        // «русский» (−0.399), хотя по-украински читает кусок почти дословно верно.
+        // Сомнение в её ответе — не довод оставить кусок как есть.
+        XCTAssertFalse(SecondOpinion.keepsOwn(verdict: "ru", confidence: -0.399, own: .ru))
     }
 
-    func testUnsureVerdictDecidesNothing() {
-        // Голый argmax уравнял бы «uk, −0.107» и «uk, −2.0». Второе — не ответ, а догадка
-        // модели, которая речь толком не разобрала.
-        XCTAssertFalse(SecondOpinion.belongsToNeighbour(
-            verdict: "uk", confidence: -2.0, neighbour: .uk, reading: "Щось незрозуміле."
-        ))
+    func testForeignVerdictNeverVetoes() {
+        for confidence in [Float(-0.067), -0.107, -0.253] {
+            XCTAssertFalse(SecondOpinion.keepsOwn(verdict: "uk", confidence: confidence, own: .ru))
+        }
     }
 
-    func testThirdLanguageVerdictChangesNothing() {
-        // Определение языка иногда называет английский — это не повод отдавать кусок соседу.
-        XCTAssertFalse(SecondOpinion.belongsToNeighbour(
-            verdict: "en", confidence: -0.010, neighbour: .uk, reading: "Thanks."
-        ))
-    }
+    // MARK: - Чем заменять
 
-    func testEmptyReadingNeverReplacesAnything() {
-        // Ловушка: большая модель на коротком отрезке молча возвращает пустоту, и вердикт
-        // при этом остаётся уверенным. Менять живую речь на ничто нельзя.
-        XCTAssertFalse(SecondOpinion.belongsToNeighbour(
-            verdict: "uk", confidence: -0.010, neighbour: .uk, reading: ""
-        ))
-        XCTAssertFalse(SecondOpinion.belongsToNeighbour(
-            verdict: "uk", confidence: -0.010, neighbour: .uk, reading: "   \n"
-        ))
+    func testEmptyReadingIsNotAnAnswer() {
+        // Большая модель на коротком отрезке молча отдаёт пустоту. Менять на неё живую
+        // речь нельзя ни при каком вердикте.
+        XCTAssertFalse(SecondOpinion.usable(""))
+        XCTAssertFalse(SecondOpinion.usable("   \n"))
+        XCTAssertTrue(SecondOpinion.usable("Якщо ви не натискали кнопку входу, не підтверджуйте."))
     }
 }

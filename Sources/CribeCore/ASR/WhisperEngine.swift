@@ -312,9 +312,9 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             return NeighbourPass(text: plain, replaced: 0)
         }
         let pieces = marked.flatMap(\.segments).sorted { $0.start < $1.start }
-        // Один кусок — сравнивать не с чем: язык мы определяем по фразе, а фраза здесь одна
-        // на всю запись, и её язык уже назван самой сессией.
-        guard pieces.count > 1 else { return NeighbourPass(text: plain, replaced: 0) }
+        // Одного куска достаточно: замерены записи, где вся фраза целиком украинская,
+        // а кусок при этом один. Прежний порог «больше одного» их молча пропускал.
+        guard !pieces.isEmpty else { return NeighbourPass(text: plain, replaced: 0) }
 
         // Шаг первый, дешёвый: спрашиваем модель сессии, на каком языке звучит каждый кусок.
         // Ответ нужен не сам по себе — важна уверенность: на украинской фразе модель ответила
@@ -326,13 +326,17 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             guard end - start >= SecondOpinion.minimumDuration,
                   let audio = Self.slice(samples, from: start, to: end),
                   let detected = try? await own.detectLangauge(audioArray: audio),
-                  let confidence = detected.langProbs[detected.language]
-            else { continue }
-            guard SecondOpinion.isSuspicious(confidence: confidence, duration: end - start)
+                  let confidence = detected.langProbs[detected.language],
+                  SecondOpinion.isSuspicious(
+                      detected: detected.language,
+                      confidence: confidence,
+                      own: language,
+                      duration: end - start
+                  )
             else { continue }
             suspicious.append(index)
             Self.logger.notice(
-                "Кусок \(start, format: .fixed(precision: 2))–\(end, format: .fixed(precision: 2)) с звучит неуверенно: \(detected.language, privacy: .public) \(confidence, format: .fixed(precision: 3))"
+                "Кусок \(start, format: .fixed(precision: 2))–\(end, format: .fixed(precision: 2)) с звучит не по-своему: \(detected.language, privacy: .public) \(confidence, format: .fixed(precision: 3))"
             )
         }
         guard !suspicious.isEmpty else { return NeighbourPass(text: plain, replaced: 0) }
@@ -359,13 +363,13 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
             // Спрашиваем сильную модель, на каком языке кусок звучит, — и только если она
             // называет соседа, читаем кусок на нём.
             guard let verdict = try? await other.detectLangauge(audioArray: audio),
-                  let theirs = await Self.reading(of: audio, language: neighbour, pipe: other),
-                  SecondOpinion.belongsToNeighbour(
+                  !SecondOpinion.keepsOwn(
                       verdict: verdict.language,
                       confidence: verdict.langProbs[verdict.language] ?? -.infinity,
-                      neighbour: neighbour,
-                      reading: theirs
-                  )
+                      own: language
+                  ),
+                  let theirs = await Self.reading(of: audio, language: neighbour, pipe: other),
+                  SecondOpinion.usable(theirs)
             else { continue }
             texts[index] = theirs.trimmingCharacters(in: .whitespacesAndNewlines)
             replaced += 1
