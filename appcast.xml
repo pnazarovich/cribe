@@ -198,6 +198,23 @@
                  type="application/octet-stream"
                  sparkle:edSignature="BTLfgkufOSUFSmViKXf2OEtK+60CY0fuA2So+xqs0A8q1zo+I3TpB7Esl0rTmoEupuAPqslVMW6gMbV1LMfIBA==" length="7636011" />
     </item>
+    <item>
+      <title>0.1.10</title>
+      <pubDate>Sun, 09 Aug 2026 01:51:42 +0400</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.1.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Русские фразы в украинской диктовке больше не ломаются</h3>
+<ul>
+<li>Проверка соседнего языка работала в одну сторону: русская сессия ловила украинские фразы, украинская русские — нет. Держалось это на предположении, что судья для украинской сессии выйдет слабым. Замер на двух надиктованных фразах его опроверг: «Он говорит: я не смогу приехать раньше среды» приезжало как «Він говорить, що не зможе приїхати раніше зі зору», а с проверкой — дословно. Направление включено.</li>
+<li>«Вебхук» в новом словаре по умолчанию распознаётся как `webhook`.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.10/Cribe-0.1.10.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="3RvmLacrHaG6YW5AoZ+NgZ/EIlERTvPFAoRql6PUzU37aFp0/wwG/s9CVvAbqu5TB9kyJfI3ANdYqYxgN++OBQ==" length="7636286" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
