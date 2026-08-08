@@ -182,6 +182,22 @@
                  type="application/octet-stream"
                  sparkle:edSignature="PpmPHyYNZgqilGT9Iean3ntPKSUyb1wT72Yb78X2zALjac1kUSg1Ayx1YGDctxa2h55Ru6Xp/eoccIlJ5k8CBA==" length="7635182" />
     </item>
+    <item>
+      <title>0.1.9</title>
+      <pubDate>Sat, 08 Aug 2026 23:20:28 +0400</pubDate>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Украинские фразы ловятся вдвое чаще</h3>
+<ul>
+<li>Проверка соседнего языка срабатывала только когда распознавание сомневалось в языке фразы. На наборе из двенадцати надиктованных фраз выяснилось, что чаще оно уверенно и правильно называет украинский — и такие фразы проверка пропускала. Теперь ловятся оба случая: «Якщо ви не натискали кнопку входу, не підтверджуйте» приезжает дословно, вместе с отрицанием. Ложных срабатываний на чисто русской речи по-прежнему нет.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.1.9/Cribe-0.1.9.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="BTLfgkufOSUFSmViKXf2OEtK+60CY0fuA2So+xqs0A8q1zo+I3TpB7Esl0rTmoEupuAPqslVMW6gMbV1LMfIBA==" length="7636011" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
