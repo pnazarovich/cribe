@@ -17,11 +17,13 @@ final class SecondOpinionTests: XCTestCase {
         XCTAssertNil(Language.en.neighbour, "с английским такой беды не наблюдалось")
     }
 
-    func testUkrainianSessionHasNoNeighbourUntilMeasured() {
-        // Обратное направление не включено намеренно: судьёй там оказалась бы turbo —
-        // модель СЛАБЕЕ украинской large-v3, да ещё и склонная тянуть украинское
-        // в русское написание. Замеров нет, а без них на этой задаче уже ошибались.
-        XCTAssertNil(Language.uk.neighbour)
+    func testUkrainianAsksRussian() {
+        // Обратное направление держали выключенным из общего соображения «turbo слабее
+        // large-v3, значит судья из неё плохой». Замер на двух украинских диктовках
+        // владельца с русской вставкой (2026-08-09) это опроверг: обе без второго мнения
+        // ломались («зі зору» вместо «среды», «спосіб» вместо «спасибо»), обе со вторым
+        // мнением вернулись дословно верными.
+        XCTAssertEqual(Language.uk.neighbour, .ru)
     }
 
     // MARK: - Кого проверять
@@ -75,7 +77,7 @@ final class SecondOpinionTests: XCTestCase {
         XCTAssertLessThan(Float(-0.183), SecondOpinion.certainty, "лучший подозрительный")
     }
 
-    // MARK: - Право вето у сильной модели
+    // MARK: - Право вето у модели соседа
 
     func testStrongModelKeepsThePieceOnlyWhenSureItIsOurs() {
         // На чистых кусках она говорит «русский» с −0.002…−0.007.

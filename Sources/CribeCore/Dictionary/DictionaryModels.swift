@@ -21,6 +21,7 @@ public let defaultEntries: [DictionaryEntry] = [
     DictionaryEntry(canonical: "Tailscale", variants: ["тейлскейл", "тэйлскейл"]),
     DictionaryEntry(canonical: "backend", variants: ["бэкенд", "бекенд", "бэкэнд"]),
     DictionaryEntry(canonical: "frontend", variants: ["фронтенд", "фронтэнд"]),
+    DictionaryEntry(canonical: "webhook", variants: ["вебхук", "вэбхук", "веб хук", "вебхуків"]),
     DictionaryEntry(canonical: "API", variants: ["апи", "апі"], stem: false),
     DictionaryEntry(canonical: "Docker", variants: ["докер"]),
     DictionaryEntry(canonical: "nginx", variants: ["нжинкс", "энджинкс", "енджинкс"]),
