@@ -237,6 +237,23 @@
                  type="application/octet-stream"
                  sparkle:edSignature="E2cEkEpEnV7kq6yfrPw6HXh4wDhVllvAIZycr6qj/yUBgg2JSy0l/cli3+Eu1BIhmWi8jvdsjohXaL198TRNAA==" length="7737332" />
     </item>
+    <item>
+      <title>0.2.1</title>
+      <pubDate>Sun, 09 Aug 2026 21:35:23 +0400</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Вопрос о словаре приходит сразу после отправки</h3>
+<ul>
+<li>Cribe смотрел на поле все пятнадцать секунд в любом случае — даже когда сообщение уже отправлено и править в нём нечего. Теперь опустевшее поле закрывает наблюдение тем же тактом, и вопрос о новом слове приезжает сразу.</li>
+<li>Заодно печать следующего сообщения в то же поле больше не попадает в наблюдение. Раньше она шла шумом и мешала отличить исправление нашего текста от начала собственной работы.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.2.1/Cribe-0.2.1.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="Pu7vAyYdVA8KxWE+38HMQqpAJ0dLtsEzKjGzJ+tQOca3otJucvBXgVEl+1k/lhq+WF25mi/t3chRff1KLazODQ==" length="7738210" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
