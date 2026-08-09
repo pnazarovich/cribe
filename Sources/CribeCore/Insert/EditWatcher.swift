@@ -42,12 +42,25 @@ public final class EditWatcher: @unchecked Sendable {
     /// Полсекунды хватает нативным приложениям с большим запасом.
     static let settleDelay: TimeInterval = 0.5
 
-    /// Через сколько снимать второй слепок. Правят обычно сразу — перечитал, поправил
-    /// слово, пошёл дальше. Слишком долго ждать нельзя: человек уйдёт в другое поле,
-    /// и элемент протухнет.
-    static let readbackDelay: TimeInterval = 20
+    /// Как часто заглядывать в поле и сколько всего смотреть.
+    ///
+    /// Раньше снимок был ОДИН и поздний — через двадцать секунд. Из этого росла главная
+    /// беда приёма: всё, что человек напечатал за эти двадцать секунд, попадало в «правку»,
+    /// потому что отличить исправление нашего текста от начала собственной работы поздний
+    /// снимок не может. Ровно так родилась единственная запись, которую механизм за всё
+    /// время сделал: «добавлять → gjrть» («пок» в английской раскладке), то есть поле
+    /// сняли посреди печати. Повториться такая пара не может никогда, а в словарь пара
+    /// едет только со второго раза — приём работал вхолостую.
+    ///
+    /// Теперь заглядываем часто и рано: правят сразу, а работать поверх начинают потом.
+    public static let defaultPollInterval: TimeInterval = 2
+    public static let defaultPollWindow: TimeInterval = 15
 
     private let access: FieldAccess
+    /// Такт и окно наблюдения. Не константы, а свойства — ради прогона: ждать штатные
+    /// секунды в тестах незачем, а сам цикл проверять надо.
+    private let pollInterval: TimeInterval
+    private let pollWindow: TimeInterval
     private let queue = DispatchQueue(label: "online.nazarovych.cribe.edits")
     private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Edits")
 
@@ -56,8 +69,14 @@ public final class EditWatcher: @unchecked Sendable {
     private var baseline: String?
     private var inserted: String?
 
-    public init(access: FieldAccess = .system) {
+    public init(
+        access: FieldAccess = .system,
+        pollInterval: TimeInterval = EditWatcher.defaultPollInterval,
+        pollWindow: TimeInterval = EditWatcher.defaultPollWindow
+    ) {
         self.access = access
+        self.pollInterval = pollInterval
+        self.pollWindow = pollWindow
     }
 
     /// Взять поле под наблюдение сразу после удачной вставки.
@@ -95,10 +114,48 @@ public final class EditWatcher: @unchecked Sendable {
             element = field
             baseline = point
             inserted = text
-            queue.asyncAfter(deadline: .now() + Self.readbackDelay) { [self] in
-                collect(handle)
-            }
+            poll(elapsed: 0, settling: false, handle: handle)
         }
+    }
+
+    /// Заглядывает в поле раз в `pollInterval`, пока не увидит изменение или не выйдет
+    /// время. Увидев — ждёт ещё один такт и только потом снимает итог: правят обычно
+    /// очередью в два-три слова, и снимок ровно по первому изменению разрезал бы её
+    /// посередине. А дальше наблюдение закрывается: всё, что человек пишет после правок,
+    /// это уже его работа, а не исправление нашего текста.
+    private func poll(elapsed: TimeInterval, settling: Bool, handle: @escaping @Sendable ([Correction]) -> Void) {
+        queue.asyncAfter(deadline: .now() + pollInterval) { [self] in
+            // Наблюдение закрыли (следующая диктовка) — этот такт уже ничей.
+            guard let field = element, let before = baseline else { return }
+            if settling {
+                collect(handle)
+                return
+            }
+            guard let now = access.text(field) else {
+                Self.logger.notice("Правки: поле перестало отдавать содержимое — наблюдение снято")
+                clear()
+                return
+            }
+            if now != before {
+                poll(elapsed: elapsed + pollInterval, settling: true, handle: handle)
+                return
+            }
+            guard elapsed + pollInterval < pollWindow else {
+                Self.logger.notice(
+                    "Правки: за \(self.pollWindow, format: .fixed(precision: 0)) с поле не изменилось — править было нечего"
+                )
+                clear()
+                return
+            }
+            poll(elapsed: elapsed + pollInterval, settling: false, handle: handle)
+        }
+    }
+
+    /// Снять наблюдение, ничего не отдавая. Только на `queue`.
+    private func clear() {
+        element = nil
+        baseline = nil
+        inserted = nil
     }
 
     /// Снять второй слепок и отдать правки. Наблюдение после этого закрывается.

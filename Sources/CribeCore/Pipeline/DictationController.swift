@@ -1366,17 +1366,55 @@ public final class DictationController: ObservableObject {
     }
 
     /// Взять поле под наблюдение и, если человек что-то поправит, доучить словарь.
-    ///
-    /// Молча в словарь попадает только повторённая правка — решает это `EditLearner`.
-    /// Здесь остаётся одно: положить готовую статью на место, не заведя дубля.
     private func watchEdits(of text: String) {
         watcher.watch(inserted: text) { [weak self] corrections in
-            Task { @MainActor in self?.learn(corrections) }
+            Task { @MainActor in await self?.learn(corrections, sentence: text) }
         }
     }
 
-    private func learn(_ corrections: [Correction]) {
-        let learned = learner.observe(corrections, entries: dictionary.entries)
+    /// Решает судьба каждой правки: спрашиваем GPT, ошибка ли это распознавания.
+    ///
+    /// Прежде эту работу делало повторение — пара уезжала в словарь только со второго раза.
+    /// На живой работе это не сработало ни разу: за всё время механизм заметил одну правку,
+    /// и ту мусорную. Повторение стояло вместо ума, а отличить ошибку распознавания от
+    /// «человек передумал» правилом и нельзя.
+    ///
+    /// Судья не всесилен и не обязателен: GPT выключен или не ответил — возвращаемся к
+    /// прежнему правилу с повторением. Молча класть в словарь непроверенное нельзя: лишняя
+    /// пара портит ВСЕ будущие диктовки, а пропущенную человек добавит руками.
+    private func learn(_ corrections: [Correction], sentence: String) async {
+        var approved: [Correction] = []
+        var unjudged: [Correction] = []
+        for correction in corrections {
+            guard settings.gptEnabled else {
+                unjudged.append(correction)
+                continue
+            }
+            let verdict = await DictionaryJudge.verdict(
+                heard: correction.heard,
+                meant: correction.meant,
+                sentence: sentence,
+                language: settings.language,
+                config: settings.gptConfig
+            )
+            switch verdict {
+            case .some(let verdict) where verdict.learn:
+                approved.append(correction)
+                logger.notice(
+                    "Правку берём в словарь: \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public) (\(verdict.reason, privacy: .public))"
+                )
+            case .some(let verdict):
+                logger.notice(
+                    "Правку не берём: \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public) (\(verdict.reason, privacy: .public))"
+                )
+            case nil:
+                logger.notice("Судья не ответил — правка идёт прежним путём, через повторение")
+                unjudged.append(correction)
+            }
+        }
+
+        var learned = approved.map { learner.accept($0, entries: dictionary.entries) }
+        learned += learner.observe(unjudged, entries: dictionary.entries)
         guard !learned.isEmpty else { return }
         var entries = dictionary.entries
         for entry in learned {
