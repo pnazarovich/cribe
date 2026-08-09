@@ -38,7 +38,9 @@ final class EditWatcherTests: XCTestCase {
 
         let noticed = expectation(description: "правка замечена")
         var got: FieldObservation?
-        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+        // Услышанное намеренно другое: причёсывание меняет слова, а словарю нужны именно
+        // те, что выдало распознавание, — они обязаны доехать до судьи как есть.
+        watcher.watch(inserted: "поправим хероблок сегодня", recognized: "поправим херо блок сегодня") { observation in
             got = observation
             noticed.fulfill()
         }
@@ -54,6 +56,7 @@ final class EditWatcherTests: XCTestCase {
         )
         XCTAssertEqual(got?.baseline, "поправим хероблок сегодня", "точка отсчёта — поле после вставки")
         XCTAssertEqual(got?.final, "поправим heroblock сегодня", "и поле в конце наблюдения")
+        XCTAssertEqual(got?.recognized, "поправим херо блок сегодня", "услышанное доезжает нетронутым")
     }
 
     /// Судье нужен не только вывод разбора, но и сам ход событий: что менялось и когда.
@@ -70,7 +73,7 @@ final class EditWatcherTests: XCTestCase {
 
         let noticed = expectation(description: "изменения замечены")
         var got: FieldObservation?
-        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+        watcher.watch(inserted: "поправим хероблок сегодня", recognized: "поправим хероблок сегодня") { observation in
             got = observation
             noticed.fulfill()
         }
@@ -118,7 +121,7 @@ final class EditWatcherTests: XCTestCase {
 
         let noticed = expectation(description: "правка замечена")
         var got: FieldObservation?
-        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+        watcher.watch(inserted: "поправим хероблок сегодня", recognized: "поправим хероблок сегодня") { observation in
             got = observation
             noticed.fulfill()
         }
@@ -152,7 +155,7 @@ final class EditWatcherTests: XCTestCase {
 
         let silent = expectation(description: "обработчик не позван")
         silent.isInverted = true
-        watcher.watch(inserted: "поправим хероблок сегодня") { _ in silent.fulfill() }
+        watcher.watch(inserted: "поправим хероблок сегодня", recognized: "поправим хероблок сегодня") { _ in silent.fulfill() }
         wait(for: [silent], timeout: 1.5)
     }
 }

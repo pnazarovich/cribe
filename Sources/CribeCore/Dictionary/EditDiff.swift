@@ -72,6 +72,15 @@ public struct FieldChange: Hashable, Sendable {
 public struct FieldObservation: Hashable, Sendable {
     /// Текст, который вставило приложение.
     public let dictated: String
+    /// Что услышало распознавание — до того, как текст причесал GPT.
+    ///
+    /// Ради этой строки всё и затевается. Словарь применяется к тексту распознавания,
+    /// а не к тому, что вставлено: пара «то, что услышалось» → «как правильно» срабатывает
+    /// ДО GPT. Учить же по вставленному тексту значит учить слову GPT — а его в
+    /// распознанном тексте не будет никогда. Живой случай: Whisper услышал «клайв», GPT
+    /// причесал это в «scribe», человек исправил на «Cribe». Пара «scribe → Cribe» не
+    /// сработает ни разу; работает «клайв → Cribe».
+    public let recognized: String
     /// Всё содержимое поля сразу после вставки.
     public let baseline: String
     /// Всё содержимое поля в конце наблюдения.
@@ -84,12 +93,14 @@ public struct FieldObservation: Hashable, Sendable {
 
     public init(
         dictated: String,
+        recognized: String,
         baseline: String,
         final: String,
         changes: [FieldChange],
         corrections: [ObservedCorrection]
     ) {
         self.dictated = dictated
+        self.recognized = recognized
         self.baseline = baseline
         self.final = final
         self.changes = changes

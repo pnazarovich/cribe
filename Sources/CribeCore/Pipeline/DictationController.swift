@@ -1165,8 +1165,12 @@ public final class DictationController: ObservableObject {
             // действительно уехал в поле, берём это поле под наблюдение: что человек в нём
             // поправит, то и есть настоящая ошибка распознавания. В карточке и в буфере
             // обмена наблюдать нечего — там никто ничего не правит.
+            // `text` здесь — то, что услышало распознавание (со словарём, но до GPT):
+            // словарь применяется именно к нему, и учить надо его словами. При переводе
+            // `output` — вовсе английский, и без этой строки пара получалась бы из чужого
+            // языка.
             if case .pasteboard(.pasted) = destination, settings.learnsFromEdits {
-                watchEdits(of: output)
+                watchEdits(of: output, recognized: text)
             }
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
@@ -1374,8 +1378,8 @@ public final class DictationController: ObservableObject {
     }
 
     /// Взять поле под наблюдение и, если человек что-то поправит, доучить словарь.
-    private func watchEdits(of text: String) {
-        watcher.watch(inserted: text) { [weak self] observation in
+    private func watchEdits(of text: String, recognized: String) {
+        watcher.watch(inserted: text, recognized: recognized) { [weak self] observation in
             Task { @MainActor in await self?.learn(observation) }
         }
     }

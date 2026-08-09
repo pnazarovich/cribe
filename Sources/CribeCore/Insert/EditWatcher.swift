@@ -68,6 +68,8 @@ public final class EditWatcher: @unchecked Sendable {
     private var element: AnyObject?
     private var baseline: String?
     private var inserted: String?
+    /// Что услышало распознавание до GPT: наблюдению не нужно, словарю необходимо.
+    private var recognizedText: String?
     /// Однословные замены, замеченные за окно наблюдения, в порядке появления.
     private var seen: [ObservedCorrection] = []
     /// Состояние поля на прошлом такте: с ним сравниваем, чтобы знать, что случилось
@@ -90,8 +92,13 @@ public final class EditWatcher: @unchecked Sendable {
     ///
     /// Предыдущее наблюдение при этом закрывается: если человек надиктовал второй раз,
     /// первый текст он уже либо поправил, либо нет, и ждать дольше нечего.
+    /// - Parameters:
+    ///   - text: что вставлено в поле — по нему и сравниваем.
+    ///   - recognized: что услышало распознавание до причёсывания GPT. Само наблюдение
+    ///     этой строкой не пользуется, но словарь учится именно ей (см. `FieldObservation`).
     public func watch(
         inserted text: String,
+        recognized: String,
         then handle: @escaping @Sendable (FieldObservation) -> Void
     ) {
         collect(handle)
@@ -125,6 +132,7 @@ public final class EditWatcher: @unchecked Sendable {
             baseline = point
             previous = point
             inserted = text
+            recognizedText = recognized
             poll(elapsed: 0, handle: handle)
         }
     }
@@ -176,6 +184,7 @@ public final class EditWatcher: @unchecked Sendable {
         guard let point = baseline, let text = inserted else { return }
         let observation = FieldObservation(
             dictated: text,
+            recognized: recognizedText ?? text,
             baseline: point,
             final: previous ?? point,
             changes: changes,
@@ -204,6 +213,7 @@ public final class EditWatcher: @unchecked Sendable {
         baseline = nil
         previous = nil
         inserted = nil
+        recognizedText = nil
         seen = []
         changes = []
     }

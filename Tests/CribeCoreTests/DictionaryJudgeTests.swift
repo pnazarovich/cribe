@@ -8,6 +8,7 @@ final class DictionaryJudgeTests: XCTestCase {
 
     private func observation(
         dictated: String = "поправим хероблок сегодня",
+        recognized: String? = nil,
         baseline: String? = nil,
         final: String = "поправим heroblock сегодня",
         changes: [FieldChange] = [],
@@ -15,6 +16,7 @@ final class DictionaryJudgeTests: XCTestCase {
     ) -> FieldObservation {
         FieldObservation(
             dictated: dictated,
+            recognized: recognized ?? dictated,
             baseline: baseline ?? dictated,
             final: final,
             changes: changes,
@@ -78,6 +80,49 @@ final class DictionaryJudgeTests: XCTestCase {
         let invented = DictionaryJudge.Proposal(heard: "гиперблок", meant: "heroblock", reason: "")
         let unwritten = DictionaryJudge.Proposal(heard: "хероблок", meant: "HeroBlocks", reason: "")
         XCTAssertEqual(DictionaryJudge.confirmed([invented, unwritten], in: seen), [])
+    }
+
+    /// Живой случай, ради которого судья вообще видит два текста. Распознавание услышало
+    /// «клайв», причёсывание превратило это в «scribe», человек исправил на «Cribe».
+    /// Словарь применяется ДО причёсывания — значит, годится только слово распознавания;
+    /// пара «scribe → Cribe» не сработала бы ни разу.
+    func testPairFromTheRecognizedTextIsAccepted() {
+        let seen = observation(
+            dictated: "открой scribe сегодня",
+            recognized: "открой клайв сегодня",
+            final: "открой Cribe сегодня"
+        )
+        let right = DictionaryJudge.Proposal(heard: "клайв", meant: "Cribe", reason: "услышано на слух")
+        XCTAssertEqual(
+            DictionaryJudge.confirmed([right], in: seen),
+            [Correction(heard: "клайв", meant: "Cribe")]
+        )
+    }
+
+    /// Оба текста наши, и оба годятся источником: когда причёсывание слова не тронуло,
+    /// они совпадают, и отсечь причёсанное значило бы отсечь заодно верную пару.
+    func testPairFromTheInsertedTextIsStillAllowed() {
+        let seen = observation(
+            dictated: "открой scribe сегодня",
+            recognized: "открой клайв сегодня",
+            final: "открой Cribe сегодня"
+        )
+        let tidied = DictionaryJudge.Proposal(heard: "scribe", meant: "Cribe", reason: "")
+        XCTAssertEqual(DictionaryJudge.confirmed([tidied], in: seen).count, 1)
+    }
+
+    func testJudgeSeesBothTextsApart() {
+        let input = DictionaryJudge.input(
+            observation(dictated: "открой scribe", recognized: "открой клайв"),
+            language: .ru
+        )
+        XCTAssertTrue(input.contains("Распознавание услышало:\nоткрой клайв"))
+        XCTAssertTrue(input.contains("После причёсывания в поле вставлено:\nоткрой scribe"))
+    }
+
+    func testPromptNamesWhichHalfOfThePairIsWhich() {
+        // Без этого правила модель возьмёт слово из вставленного текста — оно ближе к правке.
+        XCTAssertTrue(DictionaryJudge.systemPrompt.contains("ИЗ УСЛЫШАННОГО"))
     }
 
     func testImplausiblePairIsDropped() {
