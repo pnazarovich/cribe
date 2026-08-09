@@ -43,9 +43,16 @@ public final class AskPanel {
         install()
     }
 
+    /// Сколько вопросов сейчас на руках: показанный плюс ждущие своей очереди.
+    var waiting: Int { queue.count + (current == nil ? 0 : 1) }
+
     /// Спросить про одну правку. Ответ уходит в `reply` ровно один раз — либо `true`, либо
     /// `false`. Если человек не ответил, `reply` не зовётся вовсе: молчание не решение.
+    ///
+    /// Вопросы идут по одному. Про одну и ту же пару дважды не спрашиваем: диктовка могла
+    /// повториться, пока прошлый вопрос ещё висит.
     public func ask(_ correction: Correction, reply: @escaping (Bool) -> Void) {
+        guard current?.0 != correction, !queue.contains(where: { $0.0 == correction }) else { return }
         queue.append((correction, reply))
         showNext()
     }
@@ -96,12 +103,24 @@ public final class AskPanel {
     }
 
     /// `nil` — вопрос истёк сам. Ответ уходит только на нажатие.
-    private func answer(_ accepted: Bool?) {
+    ///
+    /// Неотвеченный вопрос уносит с собой и всю очередь. Молчание значит, что человек
+    /// на экран не смотрит, — и показывать ему следом ещё четыре плашки бессмысленно:
+    /// это уже не вопрос, а навязчивость. Ничего при этом не теряется: пары не отвергнуты,
+    /// а ошибка распознавания, которая их породила, повторится и спросит снова.
+    func answer(_ accepted: Bool?) {
         guard let item = current else { return }
         current = nil
         hideTask?.cancel()
         hideTask = nil
-        if let accepted { item.1(accepted) }
+        if let accepted {
+            item.1(accepted)
+        } else if !queue.isEmpty {
+            Self.logger.notice(
+                "Вопрос о правке остался без ответа — снимаем и остальные \(self.queue.count, privacy: .public)"
+            )
+            queue.removeAll()
+        }
 
         withAnimation(Self.disappearAnimation) { presentation.isVisible = false }
         Task { [weak self] in
