@@ -68,8 +68,13 @@ public final class EditWatcher: @unchecked Sendable {
     private var element: AnyObject?
     private var baseline: String?
     private var inserted: String?
-    /// Всё, что успели заметить за окно наблюдения, в порядке появления.
+    /// Однословные замены, замеченные за окно наблюдения, в порядке появления.
     private var seen: [ObservedCorrection] = []
+    /// Состояние поля на прошлом такте: с ним сравниваем, чтобы знать, что случилось
+    /// именно за эти две секунды.
+    private var previous: String?
+    /// Что менялось в поле и на каких секундах.
+    private var changes: [FieldChange] = []
 
     public init(
         access: FieldAccess = .system,
@@ -87,7 +92,7 @@ public final class EditWatcher: @unchecked Sendable {
     /// первый текст он уже либо поправил, либо нет, и ждать дольше нечего.
     public func watch(
         inserted text: String,
-        then handle: @escaping @Sendable ([ObservedCorrection]) -> Void
+        then handle: @escaping @Sendable (FieldObservation) -> Void
     ) {
         collect(handle)
         queue.asyncAfter(deadline: .now() + Self.settleDelay) { [self] in
@@ -118,23 +123,25 @@ public final class EditWatcher: @unchecked Sendable {
             )
             element = field
             baseline = point
+            previous = point
             inserted = text
             poll(elapsed: 0, handle: handle)
         }
     }
 
-    /// Заглядывает в поле раз в `pollInterval` всё окно наблюдения и копит найденные пары.
+    /// Заглядывает в поле раз в `pollInterval` всё окно наблюдения и копит происходящее.
     ///
     /// Раньше здесь стоял один поздний снимок, и приложение само решало, какое изменение
     /// считать правкой. Решать это ему нечем: отличить исправление нашего текста от начала
-    /// собственной работы человека можно только по смыслу. Поэтому копим ВСЁ, что нашлось
-    /// за пятнадцать секунд, вместе со временем появления, — и отдаём одним списком тому,
-    /// кто умеет судить (см. `DictionaryJudge`).
+    /// собственной работы человека можно только по смыслу. Поэтому копим ВСЁ, что случилось
+    /// за пятнадцать секунд, вместе со временем, — и отдаём одной картиной тому, кто умеет
+    /// судить (см. `DictionaryJudge`).
     ///
-    /// Копятся не снимки поля, а пары слов: «что вставили мы» → «чем человек это заменил».
-    /// Снимок — это весь его текст, включая написанное после нашего; выносить такое наружу
-    /// ради двух слов нельзя.
-    private func poll(elapsed: TimeInterval, handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
+    /// Копится двумя мерками сразу. Однословные замены считаются от точки отсчёта: правка,
+    /// сделанная на четвёртой секунде, обязана дожить до конца окна, даже если человек
+    /// печатал рядом. Изменения такта считаются от прошлого снимка: только так видно,
+    /// что произошло именно в эти две секунды, — а это и есть довод о времени.
+    private func poll(elapsed: TimeInterval, handle: @escaping @Sendable (FieldObservation) -> Void) {
         queue.asyncAfter(deadline: .now() + pollInterval) { [self] in
             // Наблюдение закрыли (следующая диктовка) — этот такт уже ничей.
             guard let field = element, let before = baseline, let text = inserted else { return }
@@ -151,6 +158,11 @@ public final class EditWatcher: @unchecked Sendable {
                     seen.append(ObservedCorrection(correction: correction, after: moment))
                 }
             }
+            if let last = previous, now != last {
+                let blocks = EditDiff.changes(before: last, after: now)
+                if !blocks.isEmpty { changes.append(FieldChange(after: moment, blocks: blocks)) }
+                previous = now
+            }
             guard moment + pollInterval <= pollWindow else {
                 finish(handle)
                 return
@@ -159,33 +171,48 @@ public final class EditWatcher: @unchecked Sendable {
         }
     }
 
-    /// Окно закрылось: отдаём всё найденное и снимаем наблюдение. Только на `queue`.
-    private func finish(_ handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
-        let found = seen
+    /// Окно закрылось: отдаём всю картину и снимаем наблюдение. Только на `queue`.
+    private func finish(_ handle: @escaping @Sendable (FieldObservation) -> Void) {
+        guard let point = baseline, let text = inserted else { return }
+        let observation = FieldObservation(
+            dictated: text,
+            baseline: point,
+            final: previous ?? point,
+            changes: changes,
+            corrections: seen
+        )
         clear()
-        guard !found.isEmpty else {
+        // Поле не тронули вовсе — рассказывать не о чем и спрашивать не о чем.
+        guard !observation.changes.isEmpty else {
             Self.logger.notice(
-                "Правки: за \(self.pollWindow, format: .fixed(precision: 0)) с ничего не нашлось"
+                "Правки: за \(self.pollWindow, format: .fixed(precision: 0)) с поле не менялось"
             )
             return
         }
-        Self.logger.notice("Правки: замечено \(found.count, privacy: .public) за окно наблюдения")
-        handle(found)
+        Self.logger.notice(
+            """
+            Правки: за окно наблюдения \(observation.changes.count, privacy: .public) изменений, \
+            однословных замен \(observation.corrections.count, privacy: .public)
+            """
+        )
+        handle(observation)
     }
 
     /// Снять наблюдение, ничего не отдавая. Только на `queue`.
     private func clear() {
         element = nil
         baseline = nil
+        previous = nil
         inserted = nil
         seen = []
+        changes = []
     }
 
     /// Закрыть идущее наблюдение досрочно и отдать всё, что нашлось.
     ///
     /// Зовётся, когда человек надиктовал снова: прошлый текст он к этому времени либо
     /// поправил, либо нет, и ждать дольше нечего.
-    public func collect(_ handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
+    public func collect(_ handle: @escaping @Sendable (FieldObservation) -> Void) {
         queue.async { [self] in
             guard element != nil else { return }
             finish(handle)

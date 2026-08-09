@@ -40,6 +40,7 @@ public final class AppSettings: ObservableObject {
         static let restoreUkrainianInserts = "restoreUkrainianInserts"
         static let catchesNeighbourLanguage = "catchesNeighbourLanguage"
         static let shortDictationWordLimit = "shortDictationWordLimit"
+        static let learnsFromEdits = "learnsFromEdits"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
         static let dictationsStarted = "dictationsStarted"
@@ -117,6 +118,18 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(catchesNeighbourLanguage, forKey: Key.catchesNeighbourLanguage) }
     }
 
+    /// Учиться ли на правках: следить пятнадцать секунд за вставленным текстом и, найдя
+    /// исправление ошибки распознавания, предлагать запомнить пару.
+    ///
+    /// Спрашиваем, а не включаем молча, по двум причинам сразу. Приложение читает поле
+    /// ввода через Accessibility — то есть видит и то, что человек пишет после нашего
+    /// текста; и разбирается в увиденном GPT, значит поле уезжает наружу. Такое не делают
+    /// без ведома владельца, даже когда добавление в словарь всё равно подтверждается им
+    /// вручную.
+    @Published public var learnsFromEdits: Bool {
+        didSet { defaults.set(learnsFromEdits, forKey: Key.learnsFromEdits) }
+    }
+
     /// Граница «короткой» диктовки в словах.
     @Published public var shortDictationWordLimit: Int {
         didSet { defaults.set(shortDictationWordLimit, forKey: Key.shortDictationWordLimit) }
@@ -190,6 +203,7 @@ public final class AppSettings: ObservableObject {
         restoreUkrainianInserts = defaults.object(forKey: Key.restoreUkrainianInserts) as? Bool ?? true
         catchesNeighbourLanguage = defaults.object(forKey: Key.catchesNeighbourLanguage) as? Bool ?? false
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
+        learnsFromEdits = defaults.object(forKey: Key.learnsFromEdits) as? Bool ?? true
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)

@@ -109,7 +109,7 @@ struct SettingsView: View {
         switch pane {
         case .general: GeneralPane(settings: settings)
         case .ai: AIPane(settings: settings, models: models, codex: codex)
-        case .dictionary: DictionaryPane(url: dictionaryURL)
+        case .dictionary: DictionaryPane(url: dictionaryURL, settings: settings)
         case .about: AboutPane()
         }
     }
@@ -640,11 +640,31 @@ private struct AIPane: View {
 
 private struct DictionaryPane: View {
     let url: URL
+    @ObservedObject var settings: AppSettings
 
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Учиться на моих правках", isOn: $settings.learnsFromEdits)
+            } header: {
+                Text("Автопополнение")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    caption(
+                        "После вставки Cribe пятнадцать секунд смотрит, что вы делаете с текстом. "
+                            + "Заметив исправление, спрашивает — добавить ли пару в словарь. "
+                            + "Сам он не добавляет ничего."
+                    )
+                    caption(
+                        "Разбирается в увиденном GPT, поэтому наружу уходит содержимое поля "
+                            + "за эти пятнадцать секунд — включая то, что вы написали после "
+                            + "нашего текста. Не нужно — выключите здесь."
+                    )
+                }
+            }
+
             Section {
                 Button("Открыть редактор словаря…") {
                     WindowPresenter.shared.present { openWindow(id: WindowID.dictionary) }

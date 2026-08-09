@@ -1,6 +1,6 @@
 import Foundation
 
-/// Стоит ли класть замеченную правку в словарь.
+/// Чему словарю стоит научиться из того, что человек сделал с нашим текстом.
 ///
 /// **Зачем судья.** Раньше эту работу делало повторение: пара уезжала в словарь, только
 /// когда человек делал ту же правку дважды. Приём честный, но на живой работе почти
@@ -8,110 +8,155 @@ import Foundation
 /// («добавлять → gjrть») повторить нельзя даже нарочно. Повторение стояло вместо ума:
 /// отличить ошибку распознавания от «человек передумал» правилом нельзя, а моделью — можно.
 ///
-/// **Чего судья НЕ решает.** Он не выбирает каноническую форму и не придумывает вариантов:
-/// и то и другое уже есть в самой правке. Его вопрос ровно один — запоминать или нет.
+/// **Что судья видит.** Всю картину: вставленный текст, поле сразу после вставки, каждое
+/// изменение с его секундой и поле в конце. Сначала ему показывали только пары слов,
+/// найденные разбором, — и этого не хватало дважды. Разбор считает лишь замены «слово на
+/// слово», а две соседние правки сливаются у него в один блок и не дают ничего; и даже
+/// когда пара находится, по ней одной не понять, исправление это или человек начал писать
+/// своё. И то и другое видно только в тексте вокруг.
+///
+/// **Чего судья НЕ решает.** Он не кладёт в словарь: последнее слово за человеком, ему
+/// показывают каждую пару отдельно (см. `DictationController.ask`).
 public enum DictionaryJudge {
 
-    /// Ответ судьи. `nil` вместо ответа означает «спросить не удалось» — и тогда работает
-    /// прежнее правило с повторением, а не догадка.
-    public struct Verdict: Equatable, Sendable {
-        public let learn: Bool
-        /// Короткая причина — для журнала. Человеку её не показываем: он видит результат.
+    /// Пара, которую судья предлагает запомнить.
+    public struct Proposal: Equatable, Sendable {
+        public let heard: String
+        public let meant: String
+        /// Короткая причина — для журнала.
         public let reason: String
 
-        public init(learn: Bool, reason: String) {
-            self.learn = learn
+        public init(heard: String, meant: String, reason: String) {
+            self.heard = heard
+            self.meant = meant
             self.reason = reason
         }
     }
 
-    /// Ждём ответа недолго: правку разбираем в фоне, и застрявший запрос не должен
+    /// Ждём ответа недолго: правки разбираем в фоне, и застрявший запрос не должен
     /// висеть на приложении дольше самой диктовки.
-    public static let timeout: TimeInterval = 8
+    public static let timeout: TimeInterval = 12
 
-    public static func systemPrompt(language: Language) -> String {
-        """
-        Ты решаешь, стоит ли добавить пару в личный словарь замен программы для диктовки.
+    public static let systemPrompt = """
+        Ты решаешь, чему программе для диктовки стоит научиться из правок человека.
 
-        Программа распознала речь, человек исправил ОДНО слово руками. Твоя задача — понять,
-        это ошибка распознавания, которая повторится, или разовая правка.
+        Программа распознала речь и вставила текст в поле ввода. Дальше она пятнадцать
+        секунд смотрела, что человек с этим текстом делает, и записывала каждое изменение
+        с его секундой. Ты видишь всё: вставленный текст, поле сразу после вставки, ход
+        изменений и поле в конце.
 
-        Отвечай ДА, когда исправленное слово — термин, название, имя собственное, продукт,
-        бренд, аббревиатура или иностранное слово, записанное кириллицей на слух. Такие
-        ошибки повторяются на каждой диктовке, и словарь для них и заведён.
+        Найди среди изменений исправления ОШИБОК РАСПОЗНАВАНИЯ — места, где человек заменил
+        неверно услышанное слово тем, что он на самом деле сказал. Такие пары уедут в личный
+        словарь замен и будут применяться ко ВСЕМ будущим диктовкам.
 
-        Отвечай НЕТ во всех остальных случаях, а именно:
+        Предлагай пару, когда сходится всё сразу:
+        - заменено одно слово одним словом;
+        - заменённое слово есть во вставленном нами тексте;
+        - правильное слово — термин, название, имя собственное, продукт, бренд, аббревиатура
+          или иностранное слово, записанное на слух: именно на них распознавание спотыкается
+          каждый раз, и словарь заведён ради них.
+
+        Не предлагай пару, когда:
         - человек изменил смысл, стиль или формулировку;
-        - правка меняет только грамматическую форму того же слова;
-        - исправленное слово — обычное слово языка без особого написания;
-        - «исправление» выглядит бессмыслицей, обрывком или набором букв (человек просто
-          печатал дальше поверх нашего текста, и это попало в сравнение).
+        - правка меняет только грамматическую форму или регистр того же слова;
+        - заменённое слово — обычное слово языка без особого написания;
+        - человек просто писал дальше поверх нашего текста: дописанные фразы, обрывки,
+          набор букв, случайно попавшая в сравнение раскладка.
 
-        Сомневаешься — отвечай НЕТ. Лишняя пара в словаре молча портит все будущие диктовки,
-        а пропущенную человек добавит сам.
+        Время — довод. Исправление нашего текста человек делает сразу, перечитав вставленное;
+        то, что всплыло под конец наблюдения, чаще всего его собственная работа.
 
-        Правки пронумерованы и даны со временем появления. Время — довод: исправление
-        нашего текста человек делает сразу, перечитав вставленное, а то, что всплыло
-        под конец наблюдения, чаще всего обрывок его собственной работы поверх текста.
+        Сомневаешься — не предлагай. Лишняя пара в словаре молча портит все будущие
+        диктовки, а пропущенную человек добавит сам.
 
-        Ответь по строке на каждую правку, в том же порядке и с тем же номером:
-        НОМЕР|ДА|краткая причина или НОМЕР|НЕТ|краткая причина.
-        Никакого другого текста.
+        Ответ — по строке на каждую пару, без всякого другого текста:
+        ДА|услышанное|правильное|краткая причина
+        Если предлагать нечего — одна строка: НЕТ|краткая причина.
         """
-    }
 
-    /// Что показываем судье: продиктованная фраза и все пары, найденные за окно
-    /// наблюдения, с временем появления. Пары нумерованы — по номерам и приходит ответ.
-    public static func input(_ found: [ObservedCorrection], sentence: String) -> String {
-        let list = found.enumerated().map { index, item in
-            "\(index + 1). «\(item.correction.heard)» → «\(item.correction.meant)» "
-                + "(через \(Int(item.after)) с)"
-        }.joined(separator: "\n")
-        return """
-        Продиктованный текст: \(sentence)
-
-        Замеченные правки:
-        \(list)
-        """
-    }
-
-    /// Разбор ответа: по вердикту на каждую правку, в том же порядке.
-    ///
-    /// Всё, что не разобралось, — отказ. Сбой формата не имеет права пополнять словарь:
-    /// лишняя пара молча портит ВСЕ будущие диктовки, а пропущенную человек добавит сам.
-    /// Поэтому длина ответа заранее известна — по числу правок, — и недостающие строки
-    /// становятся отказами, а лишние отбрасываются.
-    public static func parse(_ answer: String, count: Int) -> [Verdict] {
-        var verdicts = Array(
-            repeating: Verdict(learn: false, reason: "ответ не разобран"),
-            count: count
-        )
-        for line in answer.split(separator: "\n") {
-            let parts = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count >= 2, let number = Int(parts[0]), (1...count).contains(number) else {
-                continue
-            }
-            let reason = parts.count > 2 ? parts[2] : ""
-            verdicts[number - 1] = Verdict(learn: parts[1].uppercased().hasPrefix("ДА"), reason: reason)
+    /// Что показываем судье: всё, что приложение видело в поле.
+    public static func input(_ observation: FieldObservation, language: Language) -> String {
+        var parts = [
+            "Язык диктовки: \(language.displayName)",
+            "Приложение вставило в поле такой текст:\n\(observation.dictated)",
+            "Поле сразу после вставки:\n\(observation.baseline)",
+            "Что менялось дальше:\n\(timeline(observation.changes))",
+            "Поле в конце наблюдения:\n\(observation.final)",
+        ]
+        if !observation.corrections.isEmpty {
+            let list = observation.corrections.map {
+                "- «\($0.correction.heard)» → «\($0.correction.meant)» (через \(Int($0.after)) с)"
+            }.joined(separator: "\n")
+            // Подсказка, а не потолок: разбор видит только замены «слово на слово» и
+            // молчит там, где правки идут подряд. Судья вправе предложить и то, чего в
+            // этом списке нет.
+            parts.append("Разбор нашёл однословные замены (могут быть не все и не все верны):\n\(list)")
         }
-        return verdicts
+        return parts.joined(separator: "\n\n")
     }
 
-    /// Спросить модель обо всей пачке разом. `nil` — спросить не вышло: сети нет, ключа
+    /// Ход изменений строками «через N с: что произошло».
+    static func timeline(_ changes: [FieldChange]) -> String {
+        changes.flatMap { change in
+            change.blocks.map { block in
+                let moment = "через \(Int(change.after)) с: "
+                switch (block.removed.isEmpty, block.added.isEmpty) {
+                case (false, false):
+                    return moment + "«\(block.removed.joined(separator: " "))» → «\(block.added.joined(separator: " "))»"
+                case (true, false):
+                    return moment + "добавлено «\(block.added.joined(separator: " "))»"
+                default:
+                    return moment + "удалено «\(block.removed.joined(separator: " "))»"
+                }
+            }
+        }.joined(separator: "\n")
+    }
+
+    /// Разбор ответа. Всё, что не разобралось, — молчание: сбой формата не имеет права
+    /// ничего предлагать.
+    public static func parse(_ answer: String) -> [Proposal] {
+        answer.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count >= 3, parts[0].uppercased().hasPrefix("ДА") else { return nil }
+            guard !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
+            return Proposal(heard: parts[1], meant: parts[2], reason: parts.count > 3 ? parts[3] : "")
+        }
+    }
+
+    /// Оставляет только то, что подтверждается самим текстом.
+    ///
+    /// Модель вольна в словах, а словарь — нет: придуманная пара молча портила бы каждую
+    /// будущую диктовку. Поэтому услышанное обязано быть словом, которое мы и правда
+    /// вставили, а правильное — словом, которое человек и правда написал.
+    public static func confirmed(_ proposals: [Proposal], in observation: FieldObservation) -> [Correction] {
+        let ours = Set(EditDiff.words(in: observation.dictated).map { $0.lowercased() })
+        let theirs = Set(EditDiff.words(in: observation.final).map { $0.lowercased() })
+        var taken: Set<String> = []
+        return proposals.compactMap { proposal in
+            let correction = Correction(heard: proposal.heard, meant: proposal.meant)
+            guard ours.contains(proposal.heard.lowercased()),
+                  theirs.contains(proposal.meant.lowercased()),
+                  EditDiff.isPlausible(correction),
+                  taken.insert(proposal.heard.lowercased()).inserted
+            else { return nil }
+            return correction
+        }
+    }
+
+    /// Спросить модель обо всей картине разом. `nil` — спросить не вышло: сети нет, ключа
     /// нет, ответ не пришёл. Тогда работает прежнее правило с повторением, а не догадка.
-    public static func verdicts(
-        on found: [ObservedCorrection],
-        sentence: String,
+    public static func pairs(
+        in observation: FieldObservation,
         language: Language,
         config: GPTConfig
-    ) async -> [Verdict]? {
-        guard !found.isEmpty else { return [] }
+    ) async -> [Correction]? {
+        guard !observation.changes.isEmpty else { return [] }
         let client = GPTClient(config: config)
         let answer: String? = await withTaskGroup(of: String?.self) { group in
             group.addTask {
                 try? await client.respond(
-                    instructions: systemPrompt(language: language),
-                    input: input(found, sentence: sentence)
+                    instructions: systemPrompt,
+                    input: input(observation, language: language)
                 )
             }
             group.addTask {
@@ -125,6 +170,6 @@ public enum DictionaryJudge {
         guard let answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        return parse(answer, count: found.count)
+        return confirmed(parse(answer), in: observation)
     }
 }

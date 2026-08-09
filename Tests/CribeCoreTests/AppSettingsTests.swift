@@ -27,6 +27,19 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(AppSettings(defaults: defaults).autoStopEnabled)
     }
 
+    /// Учёба на правках включена по умолчанию: без неё словарь пополняется только руками,
+    /// а выключить её человек может и в онбординге, и в настройках.
+    func testLearningFromEditsIsOnByDefault() {
+        XCTAssertTrue(AppSettings(defaults: defaults).learnsFromEdits)
+    }
+
+    /// Отказ обязан пережить перезапуск: дефолт здесь `true`, и `bool(forKey:)` не отличил
+    /// бы «выключено» от «не задано».
+    func testLearningFromEditsPersists() {
+        AppSettings(defaults: defaults).learnsFromEdits = false
+        XCTAssertFalse(AppSettings(defaults: defaults).learnsFromEdits)
+    }
+
     /// Пропуск GPT на коротких диктовках включён по умолчанию, граница — 8 слов.
     func testShortDictationDefaults() {
         let settings = AppSettings(defaults: defaults)

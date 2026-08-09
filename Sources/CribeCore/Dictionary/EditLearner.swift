@@ -52,14 +52,15 @@ public final class EditLearner: ObservableObject {
 
     // MARK: - Наблюдение
 
-    /// Принять правки одной диктовки и сказать, что из них пора класть в словарь.
+    /// Принять правки одной диктовки и сказать, какие из них дозрели до словаря.
     ///
-    /// Возвращает готовые статьи, а не пишет в словарь сам: у словаря один хозяин, и
-    /// счётчику правок им быть незачем.
+    /// Возвращает правки, а не статьи и тем более не пишет в словарь сам: у словаря один
+    /// хозяин, а последнее слово всё равно за человеком — созревшую правку ему ещё покажут
+    /// (см. `DictationController.ask`). Статью из правки делает `entry(for:entries:)`.
     @discardableResult
-    public func observe(_ corrections: [Correction], entries: [DictionaryEntry]) -> [DictionaryEntry] {
+    public func observe(_ corrections: [Correction], entries: [DictionaryEntry]) -> [Correction] {
         let known = DictionaryTokens.known(entries)
-        var learned: [DictionaryEntry] = []
+        var learned: [Correction] = []
 
         for correction in corrections {
             let key = Self.key(correction)
@@ -72,7 +73,7 @@ public final class EditLearner: ObservableObject {
             guard counts[key] ?? 0 >= Self.threshold else { continue }
 
             counts[key] = nil
-            learned.append(Self.entry(for: correction, entries: entries))
+            learned.append(correction)
         }
 
         prune()
@@ -88,6 +89,12 @@ public final class EditLearner: ObservableObject {
         ignored.insert(key)
         save()
         pending = Self.pending(counts: counts)
+    }
+
+    /// Эту правку человек уже отверг. Второй раз о ней не спрашиваем: вопрос, на который
+    /// однажды ответили «нет», второй раз — это уже назойливость.
+    public func isRefused(_ correction: Correction) -> Bool {
+        ignored.contains(Self.key(correction))
     }
 
     /// Правку приняли досрочно, не дожидаясь повтора.

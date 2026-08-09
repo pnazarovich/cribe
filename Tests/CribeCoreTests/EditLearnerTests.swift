@@ -24,14 +24,17 @@ final class EditLearnerTests: XCTestCase {
     }
 
     /// Та же правка во второй раз — уже про то, как человек говорит.
-    func testRepeatedCorrectionBecomesAnEntry() {
+    func testRepeatedCorrectionRipens() {
         let subject = learner()
         _ = subject.observe([fix], entries: [])
-        let learned = subject.observe([fix], entries: [])
+        XCTAssertEqual(subject.observe([fix], entries: []), [fix])
+    }
 
-        XCTAssertEqual(learned.count, 1)
-        XCTAssertEqual(learned.first?.canonical, "heroblock")
-        XCTAssertEqual(learned.first?.variants, ["хероблок"])
+    /// Статью из дозревшей правки делает `entry(for:)` — накопитель считает, а не пишет.
+    func testEntryIsBuiltFromCorrection() {
+        let entry = EditLearner.entry(for: fix, entries: [])
+        XCTAssertEqual(entry.canonical, "heroblock")
+        XCTAssertEqual(entry.variants, ["хероблок"])
     }
 
     /// Счётчики переживают перезапуск: иначе порог не набрался бы никогда — человек
@@ -43,12 +46,12 @@ final class EditLearnerTests: XCTestCase {
         XCTAssertEqual(learned.count, 1)
     }
 
-    /// Порог набран — счётчик обнуляется, и та же правка не приносит статью снова.
-    func testEntryIsNotLearnedTwice() {
+    /// Порог набран — счётчик обнуляется, и та же правка не дозревает снова.
+    func testCorrectionDoesNotRipenTwice() {
         let subject = learner()
         _ = subject.observe([fix], entries: [])
-        let entries = subject.observe([fix], entries: [])
-        XCTAssertEqual(subject.observe([fix], entries: entries), [])
+        XCTAssertEqual(subject.observe([fix], entries: []), [fix])
+        XCTAssertEqual(subject.observe([fix], entries: []), [])
     }
 
     /// Слово уже есть в словаре вариантом: замена и так произойдёт сама, а правка была
@@ -64,14 +67,10 @@ final class EditLearnerTests: XCTestCase {
     /// в существующую статью, а не заводит вторую про то же слово.
     func testVariantJoinsAnExistingEntry() {
         let existing = DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])
-        let subject = learner()
-        let correction = Correction(heard: "гит хаб", meant: "GitHub")
-        _ = subject.observe([correction], entries: [existing])
-        let learned = subject.observe([correction], entries: [existing])
+        let entry = EditLearner.entry(for: Correction(heard: "гит хаб", meant: "GitHub"), entries: [existing])
 
-        XCTAssertEqual(learned.count, 1)
-        XCTAssertEqual(learned.first?.id, existing.id, "статья должна быть той же, а не новой")
-        XCTAssertEqual(learned.first?.variants, ["гитхаб", "гит хаб"])
+        XCTAssertEqual(entry.id, existing.id, "статья должна быть той же, а не новой")
+        XCTAssertEqual(entry.variants, ["гитхаб", "гит хаб"])
     }
 
     /// Отклонённая правка не считается больше никогда.
@@ -81,6 +80,16 @@ final class EditLearnerTests: XCTestCase {
         _ = subject.observe([fix], entries: [])
         XCTAssertEqual(subject.observe([fix], entries: []), [])
         XCTAssertTrue(subject.pending.isEmpty)
+    }
+
+    /// Отказ помнится и снаружи: вопрос, на который однажды ответили «нет», второй раз
+    /// человеку не показывают.
+    func testRefusalIsRemembered() {
+        let subject = learner()
+        XCTAssertFalse(subject.isRefused(fix))
+        subject.ignore(fix)
+        XCTAssertTrue(subject.isRefused(fix))
+        XCTAssertTrue(learner().isRefused(fix), "отказ переживает перезапуск")
     }
 
     /// Правку можно принять сразу, не дожидаясь повтора.

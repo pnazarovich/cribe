@@ -114,4 +114,46 @@ final class EditDiffTests: XCTestCase {
         let huge = Array(repeating: "слово", count: EditDiff.maximumWords + 1).joined(separator: " ")
         XCTAssertEqual(EditDiff.corrections(before: huge, after: huge, inserted: "слово"), [])
     }
+
+    // MARK: - Изменения как они есть
+
+    /// То самое место, где правило слепо, а судья — нет. Две соседние правки сливаются
+    /// в один блок «два слова на два», и разбор замен не даёт НИЧЕГО. Судье этот же случай
+    /// показывается как есть — и по тексту вокруг он способен разобраться.
+    func testAdjacentEditsCollapseForRulesButStayVisibleAsAChange() {
+        let before = "поправим хероблок сегодня"
+        let after = "поправим heroblock завтра"
+        XCTAssertEqual(
+            EditDiff.corrections(before: before, after: after, inserted: before), [],
+            "правило замен здесь молчит"
+        )
+        XCTAssertEqual(
+            EditDiff.changes(before: before, after: after),
+            [EditBlock(removed: ["хероблок", "сегодня"], added: ["heroblock", "завтра"])]
+        )
+    }
+
+    /// Дописанное и удалённое — тоже изменения: судья по ним и понимает, что человек
+    /// перешёл к собственной работе.
+    func testAdditionsAndDeletionsAreChangesToo() {
+        XCTAssertEqual(
+            EditDiff.changes(before: "поправим сегодня", after: "поправим сегодня и завтра"),
+            [EditBlock(removed: [], added: ["и", "завтра"])]
+        )
+        XCTAssertEqual(
+            EditDiff.changes(before: "поправим лишнее сегодня", after: "поправим сегодня"),
+            [EditBlock(removed: ["лишнее"], added: [])]
+        )
+    }
+
+    func testUntouchedTextHasNoChanges() {
+        let text = "поправим хероблок сегодня"
+        XCTAssertEqual(EditDiff.changes(before: text, after: text), [])
+    }
+
+    /// Потолок общий: он защищает от квадратичного сравнения, а не от конкретного вызова.
+    func testHugeTextHasNoChangesEither() {
+        let huge = Array(repeating: "слово", count: EditDiff.maximumWords + 1).joined(separator: " ")
+        XCTAssertEqual(EditDiff.changes(before: huge, after: huge + " ещё"), [])
+    }
 }

@@ -447,6 +447,14 @@ public final class DictationController: ObservableObject {
     /// не показываются (так живёт CLI), и на работу конвейера это никак не влияет.
     public var onNotice: ((DictationNotice) -> Void)?
 
+    /// Спросить человека, класть ли замеченную правку в словарь. Ответ приходит в замыкание:
+    /// `true` — добавить, `false` — отказ навсегда. Не позвать ответ вовсе значит «человек
+    /// не увидел вопроса»: тогда не происходит ничего и в следующий раз спросят снова.
+    ///
+    /// Не назначен — словарь не пополняется правками (так живёт CLI): спрашивать некого,
+    /// а класть без спроса нельзя.
+    public var onLearnRequest: ((Correction, @escaping (Bool) -> Void) -> Void)?
+
     private let gate: EngineGate
     private let dictionary: UserDictionary
     private let settings: AppSettings
@@ -1157,7 +1165,7 @@ public final class DictationController: ObservableObject {
             // действительно уехал в поле, берём это поле под наблюдение: что человек в нём
             // поправит, то и есть настоящая ошибка распознавания. В карточке и в буфере
             // обмена наблюдать нечего — там никто ничего не правит.
-            if case .pasteboard(.pasted) = destination {
+            if case .pasteboard(.pasted) = destination, settings.learnsFromEdits {
                 watchEdits(of: output)
             }
 
@@ -1367,52 +1375,74 @@ public final class DictationController: ObservableObject {
 
     /// Взять поле под наблюдение и, если человек что-то поправит, доучить словарь.
     private func watchEdits(of text: String) {
-        watcher.watch(inserted: text) { [weak self] corrections in
-            Task { @MainActor in await self?.learn(corrections, sentence: text) }
+        watcher.watch(inserted: text) { [weak self] observation in
+            Task { @MainActor in await self?.learn(observation) }
         }
     }
 
-    /// Судьба замеченных правок: спрашиваем GPT, что из этого ошибка распознавания.
+    /// Судьба того, что человек сделал с нашим текстом: спрашиваем GPT, есть ли там
+    /// исправление ошибки распознавания.
     ///
     /// Приложение само решить не может. Отличить исправление нашего текста от начала
-    /// собственной работы человека можно только по смыслу, поэтому наблюдение копит ВСЁ,
-    /// что нашлось за окно, а решает один запрос на всю пачку — с временем появления
-    /// каждой пары.
-    ///
-    /// Наружу уходят пары слов, а не снимки поля: снимок — это весь текст человека,
-    /// включая написанное после нашего, и выносить такое ради двух слов нельзя.
+    /// собственной работы можно только по смыслу, поэтому наблюдение копит ВСЮ картину
+    /// за окно — с временем каждого изменения, — а разбирается в ней один запрос.
     ///
     /// Судья не обязателен: GPT выключен или не ответил — возвращаемся к прежнему правилу
     /// с повторением. Молча класть в словарь непроверенное нельзя: лишняя пара портит ВСЕ
     /// будущие диктовки, а пропущенную человек добавит руками.
-    private func learn(_ found: [ObservedCorrection], sentence: String) async {
-        let corrections = found.map(\.correction)
-        guard settings.gptEnabled,
-              let verdicts = await DictionaryJudge.verdicts(
-                  on: found,
-                  sentence: sentence,
-                  language: settings.language,
-                  config: settings.gptConfig
-              ),
-              verdicts.count == corrections.count
-        else {
+    private func learn(_ observation: FieldObservation) async {
+        let candidates: [Correction]
+        if settings.gptEnabled,
+           let pairs = await DictionaryJudge.pairs(
+               in: observation,
+               language: settings.language,
+               config: settings.gptConfig
+           ) {
+            candidates = pairs
+        } else {
             logger.notice("Правки: судьи нет — идут прежним путём, через повторение")
-            let learned = learner.observe(corrections, entries: dictionary.entries)
-            apply(learned)
-            return
+            candidates = learner.observe(
+                observation.corrections.map(\.correction),
+                entries: dictionary.entries
+            )
         }
 
-        var approved: [Correction] = []
-        for (correction, verdict) in zip(corrections, verdicts) {
-            logger.notice(
-                """
-                Правка \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public): \
-                \(verdict.learn ? "берём" : "не берём", privacy: .public) (\(verdict.reason, privacy: .public))
-                """
-            )
-            if verdict.learn { approved.append(correction) }
+        let known = DictionaryTokens.known(dictionary.entries)
+        for correction in candidates {
+            // Слово уже в словаре — замена и так произойдёт сама. Однажды отвергнутое
+            // не переспрашиваем.
+            guard !known.contains(correction.heard.lowercased()),
+                  !learner.isRefused(correction) else { continue }
+            ask(correction)
         }
-        apply(approved.map { learner.accept($0, entries: dictionary.entries) })
+    }
+
+    /// Показать человеку пару и спросить, класть ли её в словарь.
+    ///
+    /// Словарь не пополняется молча. Пара применяется ко ВСЕМ будущим диктовкам, и её цена
+    /// несимметрична: пропущенную человек добавит руками, а лишняя тихо портит каждую
+    /// следующую фразу. Ни судья, ни тем более правило такой ответственности не тянут —
+    /// последнее слово за человеком.
+    ///
+    /// Молчание — это «нет, но спросим ещё»: вопрос мог просто остаться незамеченным.
+    /// Отказ — «нет навсегда»: он и запоминается.
+    private func ask(_ correction: Correction) {
+        logger.notice(
+            """
+            Правка \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public): \
+            спрашиваем человека
+            """
+        )
+        guard let onLearnRequest else { return }
+        onLearnRequest(correction) { [weak self] accepted in
+            guard let self else { return }
+            guard accepted else {
+                learner.ignore(correction)
+                logger.notice("Правка отклонена человеком — больше не предлагаем")
+                return
+            }
+            apply([learner.accept(correction, entries: dictionary.entries)])
+        }
     }
 
     /// Положить готовые статьи в словарь, не заведя дубля.

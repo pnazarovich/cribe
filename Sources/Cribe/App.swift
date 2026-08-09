@@ -75,6 +75,7 @@ final class AppCore: ObservableObject {
 
     private var panel: LivePanel?
     private var notices: NoticePanel?
+    private var asks: AskPanel?
     private var cards: CardStackController?
     private var rightCommandTap: ModifierKeyTap?
     private var rightOptionTap: ModifierKeyTap?
@@ -146,6 +147,11 @@ final class AppCore: ObservableObject {
         controller.onNotice = { [settings] notice in
             notices.show(NoticeText.line(for: notice, hotkey: settings.dictationHotkeyMode))
         }
+        // Словарь не пополняется молча: замеченную правку показывают человеку, и добавляет
+        // её он сам. Ядро только называет пару — спрашивает уже приложение.
+        let asks = AskPanel()
+        self.asks = asks
+        controller.onLearnRequest = { correction, reply in asks.ask(correction, reply: reply) }
         // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
         // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
         // здесь есть и настройки GPT, и словарь.

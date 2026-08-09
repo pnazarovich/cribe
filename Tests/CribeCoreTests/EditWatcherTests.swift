@@ -37,9 +37,9 @@ final class EditWatcherTests: XCTestCase {
         )
 
         let noticed = expectation(description: "правка замечена")
-        var got: [ObservedCorrection] = []
-        watcher.watch(inserted: "поправим хероблок сегодня") { corrections in
-            got = corrections
+        var got: FieldObservation?
+        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+            got = observation
             noticed.fulfill()
         }
 
@@ -48,7 +48,56 @@ final class EditWatcherTests: XCTestCase {
         }
 
         wait(for: [noticed], timeout: 3)
-        XCTAssertEqual(got.map(\.correction), [Correction(heard: "хероблок", meant: "heroblock")])
+        XCTAssertEqual(
+            got?.corrections.map(\.correction),
+            [Correction(heard: "хероблок", meant: "heroblock")]
+        )
+        XCTAssertEqual(got?.baseline, "поправим хероблок сегодня", "точка отсчёта — поле после вставки")
+        XCTAssertEqual(got?.final, "поправим heroblock сегодня", "и поле в конце наблюдения")
+    }
+
+    /// Судье нужен не только вывод разбора, но и сам ход событий: что менялось и когда.
+    /// Здесь человек сперва поправил слово, а потом дописал фразу — оба такта обязаны
+    /// доехать, и порознь.
+    func testEveryTickIsRecordedWithItsMoment() {
+        let field = NSObject()
+        let text = LockedText(value: "поправим хероблок сегодня")
+        let watcher = EditWatcher(
+            access: FieldAccess(focused: { field }, text: { _ in text.value }),
+            pollInterval: 0.05,
+            pollWindow: 0.6
+        )
+
+        let noticed = expectation(description: "изменения замечены")
+        var got: FieldObservation?
+        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+            got = observation
+            noticed.fulfill()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.1) {
+            text.value = "поправим heroblock сегодня"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.35) {
+            text.value = "поправим heroblock сегодня и завтра"
+        }
+
+        wait(for: [noticed], timeout: 3)
+        XCTAssertEqual(got?.changes.count, 2, "два такта — два изменения")
+        XCTAssertEqual(
+            got?.changes.first?.blocks,
+            [EditBlock(removed: ["хероблок"], added: ["heroblock"])]
+        )
+        XCTAssertEqual(
+            got?.changes.last?.blocks,
+            [EditBlock(removed: [], added: ["и", "завтра"])],
+            "дописанное считается от прошлого такта, а не от точки отсчёта"
+        )
+        XCTAssertLessThan(
+            got?.changes.first?.after ?? .infinity,
+            got?.changes.last?.after ?? 0,
+            "секунды идут по возрастанию"
+        )
     }
 
     /// Главная поломка приёма — и то, ради чего наблюдение стало накопительным.
@@ -68,9 +117,9 @@ final class EditWatcherTests: XCTestCase {
         )
 
         let noticed = expectation(description: "правка замечена")
-        var got: [ObservedCorrection] = []
-        watcher.watch(inserted: "поправим хероблок сегодня") { corrections in
-            got = corrections
+        var got: FieldObservation?
+        watcher.watch(inserted: "поправим хероблок сегодня") { observation in
+            got = observation
             noticed.fulfill()
         }
 
@@ -82,8 +131,13 @@ final class EditWatcherTests: XCTestCase {
         }
 
         wait(for: [noticed], timeout: 3)
-        XCTAssertEqual(got.map(\.correction), [Correction(heard: "хероблок", meant: "heroblock")])
-        XCTAssertLessThan(got.first?.after ?? .infinity, 0.35, "правка найдена на раннем такте")
+        XCTAssertEqual(
+            got?.corrections.map(\.correction),
+            [Correction(heard: "хероблок", meant: "heroblock")]
+        )
+        XCTAssertLessThan(
+            got?.corrections.first?.after ?? .infinity, 0.35, "правка найдена на раннем такте"
+        )
     }
 
     /// Поле не тронули — обработчик не зовётся вовсе. Это самый частый исход, и он обязан

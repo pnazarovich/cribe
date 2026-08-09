@@ -30,6 +30,73 @@ public struct ObservedCorrection: Hashable, Sendable {
     }
 }
 
+/// Один участок расхождения между двумя состояниями поля: что исчезло и что появилось.
+///
+/// В отличие от `Correction`, блок не ограничен заменой «слово на слово»: он описывает
+/// ровно то, что видно в тексте, включая дописанные фразы и удалённые куски. Судья
+/// (`DictionaryJudge`) разбирается в этом лучше любого правила — ему блоки и показываем.
+public struct EditBlock: Hashable, Sendable {
+    /// Слова, которых в новом состоянии больше нет. Пусто — человек просто дописал.
+    public let removed: [String]
+    /// Слова, появившиеся на их месте. Пусто — человек удалил.
+    public let added: [String]
+
+    public init(removed: [String], added: [String]) {
+        self.removed = removed
+        self.added = added
+    }
+}
+
+/// Что произошло в поле за один такт наблюдения.
+public struct FieldChange: Hashable, Sendable {
+    /// Секунда от вставки, на которой такт случился.
+    public let after: TimeInterval
+    public let blocks: [EditBlock]
+
+    public init(after: TimeInterval, blocks: [EditBlock]) {
+        self.after = after
+        self.blocks = blocks
+    }
+}
+
+/// Всё, что приложение увидело в поле за окно наблюдения.
+///
+/// Раньше наружу уходили только пары слов, найденные разбором. Этого мало по двум причинам
+/// сразу. Первая: разбор считает лишь замены «слово на слово», а две соседние правки
+/// сливаются у него в один блок из двух слов и не дают НИЧЕГО — настоящее исправление
+/// при этом теряется. Вторая: по голой паре нельзя понять, исправление это или человек
+/// начал писать своё, — для этого нужен текст вокруг.
+///
+/// Поэтому наружу уходит вся картина: что мы вставили, каким поле было сразу после вставки,
+/// что менялось и на каких секундах, каким поле стало в конце.
+public struct FieldObservation: Hashable, Sendable {
+    /// Текст, который вставило приложение.
+    public let dictated: String
+    /// Всё содержимое поля сразу после вставки.
+    public let baseline: String
+    /// Всё содержимое поля в конце наблюдения.
+    public let final: String
+    /// Изменения по тактам, в порядке появления.
+    public let changes: [FieldChange]
+    /// Однословные замены, которые нашёл разбор. Не потолок для судьи, а подсказка ему —
+    /// и запасной путь на случай, когда судьи нет.
+    public let corrections: [ObservedCorrection]
+
+    public init(
+        dictated: String,
+        baseline: String,
+        final: String,
+        changes: [FieldChange],
+        corrections: [ObservedCorrection]
+    ) {
+        self.dictated = dictated
+        self.baseline = baseline
+        self.final = final
+        self.changes = changes
+        self.corrections = corrections
+    }
+}
+
 /// Что человек поправил в уже вставленном тексте.
 ///
 /// Приём тот же, что у Whispr Flow: приложение помнит, что вставило, а потом смотрит, во
@@ -70,6 +137,17 @@ public enum EditDiff {
             .filter { isPlausible($0) }
     }
 
+    /// Все участки, где текст разошёлся, — без требования «слово на слово».
+    ///
+    /// Это то, что видит судья: правило отсекает слишком много, а показать изменение
+    /// как есть ничего не стоит.
+    public static func changes(before: String, after: String) -> [EditBlock] {
+        let source = words(in: before)
+        let target = words(in: after)
+        guard source.count <= maximumWords, target.count <= maximumWords else { return [] }
+        return blocks(from: source, to: target)
+    }
+
     /// Похожа ли пара на исправление распознавания, а не на смену слова по смыслу.
     ///
     /// Проверок немного намеренно. Главная защита здесь не фильтр, а повторение: пара
@@ -77,7 +155,7 @@ public enum EditDiff {
     /// фильтр отсёк бы ровно то, ради чего всё затевалось: «хероблок» → «heroblock» — это
     /// разные алфавиты и никакой похожести, и по любой мере расстояния такая пара выглядит
     /// как замена слова, а не как исправление.
-    private static func isPlausible(_ correction: Correction) -> Bool {
+    static func isPlausible(_ correction: Correction) -> Bool {
         // Смена регистра — это не термин: «привет» → «Привет» приложение вставило верно.
         guard correction.heard.lowercased() != correction.meant.lowercased() else { return false }
         // Однобуквенные — опечатки и инициалы, а не словарные термины.
@@ -94,20 +172,27 @@ public enum EditDiff {
     }
 
     /// Замены «одно слово → одно слово» между двумя последовательностями.
+    private static func substitutions(from source: [String], to target: [String]) -> [Correction] {
+        blocks(from: source, to: target).compactMap { block in
+            guard block.removed.count == 1, block.added.count == 1 else { return nil }
+            return Correction(heard: block.removed[0], meant: block.added[0])
+        }
+    }
+
+    /// Участки расхождения между двумя последовательностями слов.
     ///
     /// Сначала находим наибольшую общую подпоследовательность — то, что человек не трогал.
-    /// Всё между соседними общими словами — это участок правки; засчитываем его, только
-    /// если с обеих сторон там ровно по одному слову.
-    private static func substitutions(from source: [String], to target: [String]) -> [Correction] {
-        var result: [Correction] = []
+    /// Всё между соседними общими словами и есть участок правки.
+    private static func blocks(from source: [String], to target: [String]) -> [EditBlock] {
+        var result: [EditBlock] = []
         var sourceIndex = 0
         var targetIndex = 0
 
         for anchor in commonAnchors(source, target) + [(source.count, target.count)] {
             let removed = Array(source[sourceIndex..<anchor.0])
             let added = Array(target[targetIndex..<anchor.1])
-            if removed.count == 1, added.count == 1 {
-                result.append(Correction(heard: removed[0], meant: added[0]))
+            if !removed.isEmpty || !added.isEmpty {
+                result.append(EditBlock(removed: removed, added: added))
             }
             sourceIndex = anchor.0 + 1
             targetIndex = anchor.1 + 1
