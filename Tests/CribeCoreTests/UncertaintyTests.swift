@@ -81,29 +81,57 @@ final class UncertaintyTests: XCTestCase {
         XCTAssertEqual(runs.first?.text, "\"Ваш платежный пришёл в проверте данной картке\".")
     }
 
-    func testThreeShakyWordsAreEnough() {
-        // Самая короткая настоящая поломка замера: «Оплата прошла успешно, спасибо за заказ»
-        // приехало с украинским «пройшла» и «спосіб» вместо «спасибо».
+    func testThreeShakyWordsAreNoLongerEnough() {
+        // «Оплата пройшла успешно» — настоящая поломка, но длиной ровно в три слова, и её
+        // пришлось отдать: обе ложные тревоги живой диктовки были той же длины.
         let heard = words([
             ("таким:", 0.832), ("оплата", 0.685), ("пройшла", 0.655), ("успешно,", 0.480),
             ("спасибо", 0.964),
         ])
-        XCTAssertEqual(Uncertainty.runs(in: heard).first?.words.count, 3)
+        XCTAssertEqual(Uncertainty.runs(in: heard), [])
     }
 
-    func testTwoBrokenPlacesInOneDictationAreBothNamed() {
-        // Украинская сессия с русской вставкой: сломаны и середина, и хвост.
+    // MARK: - Ложные тревоги живой диктовки (2026-08-09)
+
+    func testShortDictationThatDippedEntirelyIsNotABreakage() {
+        // «Да, уведомление видел» — три слова, все ниже порога. Цепочка совпала со всей
+        // диктовкой: сравнивать не с чем, а значит и вывода нет.
+        let heard = words([("Да,", 0.579), ("уведомление", 0.664), ("видел.", 0.514)])
+        XCTAssertEqual(Uncertainty.runs(in: heard), [])
+    }
+
+    func testDoubtAboutPunctuationIsNotDoubtAboutWords() {
+        // Диктовка длинная, уверенных слов полно, текст верный — а модель просела на трёх
+        // словах подряд там, где решала, куда ставить кавычки и двоеточия. По самому числу
+        // такое сомнение от сомнения в услышанном не отличить, поэтому спасает только длина.
+        let heard = words([
+            ("Даже", 0.936), ("вот", 0.867), ("сейчас,", 0.956), ("когда", 0.990), ("я", 0.965),
+            ("написал:", 0.463), ("\"Да,", 0.580), ("уведомление", 0.830), ("видел\",", 0.353),
+            ("показал:", 0.486), ("\"Сверьте,", 0.608), ("да,", 0.903), ("уведомление", 0.960),
+            ("видел\".", 0.575), ("Хоть", 0.382), ("это", 0.989), ("и", 0.988),
+            ("странно,", 0.930), ("конечно.", 0.796),
+        ])
+        XCTAssertEqual(Uncertainty.runs(in: heard), [])
+    }
+
+    func testOnlyLongEnoughBreakagesAreNamed() {
+        // Украинская сессия с русской вставкой: сломаны и середина (пять слов), и хвост
+        // (три). После ужесточения хвост уходит в пропуск — цена той же правки, что убрала
+        // ложные тревоги.
         let heard = words([
             ("Давай", 0.810), ("перевіримо,", 0.739), ("як", 0.997), ("це", 0.993),
             ("працює.", 0.572), ("Він", 0.227), ("говорить,", 0.483), ("що", 0.646),
             ("не", 0.660), ("зможе", 0.596), ("приїхати", 0.827), ("раніше", 0.736),
             ("зі", 0.219), ("зору.", 0.121), ("Треба", 0.471), ("перенести", 0.938),
         ])
-        XCTAssertEqual(Uncertainty.runs(in: heard).count, 2)
+        XCTAssertEqual(Uncertainty.runs(in: heard).count, 1)
     }
 
     func testRunAtTheVeryEndIsNotLost() {
-        let heard = words([("Заголовок", 0.9), ("оплата", 0.4), ("пройшла", 0.4), ("успешно", 0.4)])
+        let heard = words([
+            ("Заголовок", 0.9), ("такой", 0.9),
+            ("оплата", 0.4), ("пройшла", 0.4), ("успешно", 0.4), ("спосіб", 0.4),
+        ])
         XCTAssertEqual(Uncertainty.runs(in: heard).count, 1)
     }
 
@@ -147,10 +175,9 @@ final class UncertaintyTests: XCTestCase {
     }
 
     func testMeasuredBoundaryLiesBetweenTheWorstCorrectAndTheBestBrokenRun() {
-        // Запас правила — ровно одно слово: на верном тексте цепочка доходила до 2,
-        // на сломанном начиналась с 3.
-        XCTAssertEqual(Uncertainty.minimumLength, 3)
-        XCTAssertGreaterThan(Float(0.685), Uncertainty.shaky - 0.04, "лучшее слово сломанной цепочки")
+        // Все настоящие поломки замера были длиной 4, 5 и 7 слов, обе ложные тревоги
+        // живой диктовки — ровно 3. Порог стоит между ними.
+        XCTAssertEqual(Uncertainty.minimumLength, 4)
         XCTAssertLessThan(Float(0.408), Uncertainty.shaky, "худшее слово верной пары")
     }
 }

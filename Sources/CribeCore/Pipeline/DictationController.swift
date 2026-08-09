@@ -653,6 +653,16 @@ public final class DictationController: ObservableObject {
             return
         }
         isStarting = true
+        // Чайм старта — здесь, а не перед самой записью, и это его смысл: он отвечает
+        // «нажатие принято», а не «микрофон уже слышит». Ухо к задержке чувствительнее
+        // глаза: путь от хоткея до живого микрофона занимает 19–70 мс (замерено), и капсула
+        // на этом фоне мгновенная, а чайм, стоявший в самом конце, всё равно опаздывал.
+        // Заодно его хвост больше не попадает в запись — раньше это подчищал VAD.
+        //
+        // Цена одна и редкая: на первой диктовке после запуска модель может быть холодной,
+        // и тогда чайм прозвучит раньше, чем начнётся запись. Капсула в этот момент прямо
+        // говорит «Готовлю модель…», так что обмана не выходит.
+        if settings.soundsEnabled { SoundPlayer.shared.playStart() }
         // Отмена прошлой записи новую не трогает — все её флаги снимаем на старте.
         pendingCancel = false
         pendingCancelFlashes = false
@@ -740,9 +750,6 @@ public final class DictationController: ObservableObject {
         // Состояние ставим до старта: чанки приходят сразу, а `append` фильтрует по нему.
         recordingState = .recording(live: "", level: 0)
         publish()
-        // Хвост чайма попадает в запись — VAD обрезает не-речь. Чайм у каждой записи свой:
-        // наложение в этом ничего не меняет, старт и конец слышно всегда.
-        if settings.soundsEnabled { SoundPlayer.shared.playStart() }
         do {
             try recorder.start { [weak self] chunk in
                 Task { @MainActor in self?.append(chunk) }
