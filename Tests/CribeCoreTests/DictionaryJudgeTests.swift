@@ -238,13 +238,29 @@ final class LearnRequestTests: XCTestCase {
         XCTAssertNil(DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen))
     }
 
-    /// Разбор промолчал (правки шли подряд и слились) — второго слова просто нет,
-    /// и плашка говорит то, что знает.
-    func testNoEditedWordWhenTheDiffFoundNothing() {
+    /// Ради этого случая слово и ищется сличением наших текстов, а не разбором поля.
+    /// Разбор здесь молчит: человек поправил слово и тут же печатал рядом, два изменения
+    /// слились в один блок. Показать всё равно обязаны то, что стояло на экране.
+    func testEditedWordIsFoundEvenWhenTheFieldDiffIsSilent() {
         let seen = observation(
             dictated: "открой scribe сегодня",
             recognized: "открой клайв сегодня",
             final: "открой Cribe завтра",
+            pairs: []
+        )
+        XCTAssertEqual(
+            DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen),
+            "scribe"
+        )
+    }
+
+    /// Причёсывание переписало полфразы: какое слово встало на место услышанного, сказать
+    /// нечем. Молчание здесь честнее догадки — плашка назовёт то, что знает.
+    func testWholesaleRewriteLeavesNothingToShow() {
+        let seen = observation(
+            dictated: "давай откроем scribe прямо сейчас",
+            recognized: "открой клайв сегодня",
+            final: "давай откроем Cribe прямо сейчас",
             pairs: []
         )
         XCTAssertNil(DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen))

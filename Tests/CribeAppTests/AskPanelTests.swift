@@ -57,26 +57,22 @@ final class AskPanelTests: XCTestCase {
         XCTAssertEqual(panel.waiting, 2)
     }
 
-    /// Обычный случай: причёсывание слова не трогало — говорить не о чем.
-    func testQuestionNamesOnePairWhenNothingWasTidied() {
-        XCTAssertEqual(
-            AskLayout.question(first),
-            "Услышал «клайв», вы исправили на «Cribe». В словарь?"
-        )
+    /// Причёсывание слова не трогало: человек видел и правил то же самое, что услышалось.
+    func testQuestionNamesTheWordAsItWasOnScreen() {
+        XCTAssertEqual(AskLayout.question(first), "Вы исправили «клайв» на «Cribe». В словарь?")
     }
 
-    /// Случай, ради которого вопрос вообще знает два слова. Человек правил «scribe» —
-    /// он его видел на экране; запомнится «клайв» — его услышало распознавание. Спросить
-    /// только про «клайв» значило бы спросить про слово, которого человек не видел.
-    func testQuestionNamesBothWordsWhenTidyingSwappedThem() {
+    /// Главное правило вопроса. В словарь уедет услышанное «клайв», но на экране у человека
+    /// стояло причёсанное «scribe» — его он и правил, о нём и спрашиваем. Внутренняя кухня
+    /// в вопрос не лезет: слово, которого человек в глаза не видел, превращает понятный
+    /// вопрос в загадку.
+    func testQuestionNamesTheEditedWordNotTheHeardOne() {
         let request = LearnRequest(
             correction: Correction(heard: "клайв", meant: "Cribe"),
             edited: "scribe"
         )
-        XCTAssertEqual(
-            AskLayout.question(request),
-            "Услышал «клайв» (в тексте — «scribe»), вы исправили на «Cribe». В словарь?"
-        )
+        XCTAssertEqual(AskLayout.question(request), "Вы исправили «scribe» на «Cribe». В словарь?")
+        XCTAssertFalse(AskLayout.question(request).contains("клайв"), "услышанного в вопросе нет")
     }
 
     /// Плашка кроится по длине пары: длинный термин обязан делать её шире.

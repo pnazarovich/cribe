@@ -1421,17 +1421,29 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Слово, которое человек правил своими руками, — если оно не то же самое, что услышало
-    /// распознавание. Ищется среди однословных замен: они считаются по вставленному тексту,
-    /// то есть по тому, что человек видел на экране.
+    /// Слово, которое человек видел на экране и правил своими руками, — если причёсывание
+    /// подменило его и оно не совпадает с услышанным.
+    ///
+    /// Ищется сличением НАШИХ ДВУХ текстов: услышанного и вставленного. Оба у нас на руках,
+    /// сопоставить их можно без модели и без разбора поля — и, что важнее, ответ есть всегда,
+    /// а не только когда правка легла в поле удобно. Первым заходом здесь стоял поиск среди
+    /// однословных замен поля, и он молчал ровно в том случае, ради которого всё затевалось:
+    /// правка вместе с соседней печатью сливается в один блок, разбор не даёт ничего — и
+    /// человеку показали бы одно лишь «клайв», которого он в глаза не видел.
+    ///
+    /// Требуем «одно слово на одно»: причёсывание, переписавшее полфразы, разбирать нечем,
+    /// и молчание здесь честнее догадки.
     static func edited(_ correction: Correction, in observation: FieldObservation) -> String? {
-        observation.corrections
-            .map(\.correction)
+        let tidied = EditDiff.changes(before: observation.recognized, after: observation.dictated)
             .first {
-                $0.meant.caseInsensitiveCompare(correction.meant) == .orderedSame
-                    && $0.heard.caseInsensitiveCompare(correction.heard) != .orderedSame
+                $0.removed.count == 1 && $0.added.count == 1
+                    && $0.removed[0].caseInsensitiveCompare(correction.heard) == .orderedSame
             }?
-            .heard
+            .added[0]
+        guard let tidied,
+              tidied.caseInsensitiveCompare(correction.heard) != .orderedSame
+        else { return nil }
+        return tidied
     }
 
     /// Показать человеку пару и спросить, класть ли её в словарь.

@@ -210,16 +210,13 @@ enum AskLayout {
 
     /// Что написано на плашке.
     ///
-    /// Когда причёсывание подменило слово, называем оба: человек правил «scribe», а
-    /// запомнится «клайв», и молчать об этом нельзя — вопрос про слово, которого он не
-    /// видел, поставил бы его в тупик.
+    /// Названо ровно то слово, которое человек видел на экране и правил своими руками.
+    /// Услышанное распознаванием в вопросе не участвует, хотя в словарь уедет именно оно:
+    /// человеку нет дела до внутренней кухни, а слово, которого он в глаза не видел,
+    /// превращает понятный вопрос в загадку.
     static func question(_ request: LearnRequest) -> String {
-        let heard = request.correction.heard
-        let meant = request.correction.meant
-        guard let edited = request.edited else {
-            return "Услышал «\(heard)», вы исправили на «\(meant)». В словарь?"
-        }
-        return "Услышал «\(heard)» (в тексте — «\(edited)»), вы исправили на «\(meant)». В словарь?"
+        let shown = request.edited ?? request.correction.heard
+        return "Вы исправили «\(shown)» на «\(request.correction.meant)». В словарь?"
     }
 
     static func width(_ text: String, font: NSFont) -> CGFloat {
