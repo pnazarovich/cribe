@@ -51,6 +51,28 @@ final class DictionaryEditorModel: ObservableObject {
         let index: Int
     }
 
+    /// Чем упорядочен список на экране.
+    ///
+    /// Порядок показа и порядок хранения — разные вещи, и это здесь главное. В файле
+    /// термины лежат в порядке новизны (см. `entries(from:touched:)`), и он же остаётся
+    /// единственным источником «что добавлено недавно». Сортировка по алфавиту меняет
+    /// только вид: запиши её в файл — и новизна пропала бы навсегда, вместе с
+    /// возможностью вернуться к первому порядку.
+    enum SortOrder: String, CaseIterable, Identifiable {
+        /// Как в файле: недавно добавленное и правленое сверху.
+        case recent
+        case alphabet
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .recent: return "Сначала новые"
+            case .alphabet: return "По алфавиту"
+            }
+        }
+    }
+
     enum SaveState: Equatable {
         case idle
         case editing
@@ -319,6 +341,27 @@ final class DictionaryEditorModel: ObservableObject {
         return terms.filter { term in
             term.canonical.lowercased().contains(query)
                 || term.variants.contains { $0.contains(query) }
+        }
+    }
+
+    /// Порядок показа. `.recent` — порядок файла как есть: он и означает новизну.
+    ///
+    /// По алфавиту сравниваем `localizedStandardCompare`: словарь смешанный, латиница
+    /// рядом с кириллицей, и простое сравнение строк развело бы их по кодам символов —
+    /// то есть «Docker» и «деплой» оказались бы в разных концах списка не по алфавиту,
+    /// а по таблице Юникода.
+    static func sorted(_ terms: [Term], by order: SortOrder) -> [Term] {
+        switch order {
+        case .recent:
+            return terms
+        case .alphabet:
+            return terms.sorted { left, right in
+                let comparison = left.canonical.localizedStandardCompare(right.canonical)
+                // Одинаковые имена ставим устойчиво, иначе карточки прыгают на каждой правке.
+                return comparison == .orderedSame
+                    ? left.id.uuidString < right.id.uuidString
+                    : comparison == .orderedAscending
+            }
         }
     }
 

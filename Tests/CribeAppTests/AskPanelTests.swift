@@ -8,8 +8,8 @@ import XCTest
 @MainActor
 final class AskPanelTests: XCTestCase {
 
-    private let first = Correction(heard: "клайв", meant: "Cribe")
-    private let second = Correction(heard: "впс", meant: "VPS")
+    private let first = LearnRequest(correction: Correction(heard: "клайв", meant: "Cribe"))
+    private let second = LearnRequest(correction: Correction(heard: "впс", meant: "VPS"))
 
     /// Вопросы идут по одному: на экране один, остальные ждут.
     func testQuestionsWaitTheirTurn() {
@@ -57,11 +57,33 @@ final class AskPanelTests: XCTestCase {
         XCTAssertEqual(panel.waiting, 2)
     }
 
+    /// Обычный случай: причёсывание слова не трогало — говорить не о чем.
+    func testQuestionNamesOnePairWhenNothingWasTidied() {
+        XCTAssertEqual(
+            AskLayout.question(first),
+            "Услышал «клайв», вы исправили на «Cribe». В словарь?"
+        )
+    }
+
+    /// Случай, ради которого вопрос вообще знает два слова. Человек правил «scribe» —
+    /// он его видел на экране; запомнится «клайв» — его услышало распознавание. Спросить
+    /// только про «клайв» значило бы спросить про слово, которого человек не видел.
+    func testQuestionNamesBothWordsWhenTidyingSwappedThem() {
+        let request = LearnRequest(
+            correction: Correction(heard: "клайв", meant: "Cribe"),
+            edited: "scribe"
+        )
+        XCTAssertEqual(
+            AskLayout.question(request),
+            "Услышал «клайв» (в тексте — «scribe»), вы исправили на «Cribe». В словарь?"
+        )
+    }
+
     /// Плашка кроится по длине пары: длинный термин обязан делать её шире.
     func testCapsuleGrowsWithTheWords() {
-        let short = AskPanel.capsuleWidth(for: Correction(heard: "впс", meant: "VPS"))
+        let short = AskPanel.capsuleWidth(for: LearnRequest(correction: Correction(heard: "впс", meant: "VPS")))
         let long = AskPanel.capsuleWidth(
-            for: Correction(heard: "гиперконвергентный", meant: "hyperconverged")
+            for: LearnRequest(correction: Correction(heard: "гиперконвергентный", meant: "hyperconverged"))
         )
         XCTAssertGreaterThan(long, short)
         XCTAssertLessThanOrEqual(long, AskLayout.maximumWidth, "но не сверх потолка")

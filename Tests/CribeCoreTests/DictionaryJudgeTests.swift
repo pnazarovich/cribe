@@ -193,3 +193,60 @@ final class DictionaryJudgeTests: XCTestCase {
         XCTAssertTrue(DictionaryJudge.systemPrompt.contains("Сомневаешься"))
     }
 }
+
+/// Что человек увидит на плашке: пара для словаря берётся из услышанного, а слово,
+/// которое он правил своими руками, — из вставленного текста.
+@MainActor
+final class LearnRequestTests: XCTestCase {
+
+    private func observation(dictated: String, recognized: String, final: String, pairs: [(String, String)])
+        -> FieldObservation {
+        FieldObservation(
+            dictated: dictated,
+            recognized: recognized,
+            baseline: dictated,
+            final: final,
+            changes: [],
+            corrections: pairs.map {
+                ObservedCorrection(correction: Correction(heard: $0.0, meant: $0.1), after: 4)
+            }
+        )
+    }
+
+    /// Живой случай: услышано «клайв», вставлено «scribe», исправлено на «Cribe».
+    func testEditedWordIsTheOneThePersonSaw() {
+        let seen = observation(
+            dictated: "открой scribe сегодня",
+            recognized: "открой клайв сегодня",
+            final: "открой Cribe сегодня",
+            pairs: [("scribe", "Cribe")]
+        )
+        XCTAssertEqual(
+            DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen),
+            "scribe"
+        )
+    }
+
+    /// Причёсывание слова не тронуло: объяснять нечего, и второе слово не называем.
+    func testNothingToExplainWhenTheWordsMatch() {
+        let seen = observation(
+            dictated: "открой клайв сегодня",
+            recognized: "открой клайв сегодня",
+            final: "открой Cribe сегодня",
+            pairs: [("клайв", "Cribe")]
+        )
+        XCTAssertNil(DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen))
+    }
+
+    /// Разбор промолчал (правки шли подряд и слились) — второго слова просто нет,
+    /// и плашка говорит то, что знает.
+    func testNoEditedWordWhenTheDiffFoundNothing() {
+        let seen = observation(
+            dictated: "открой scribe сегодня",
+            recognized: "открой клайв сегодня",
+            final: "открой Cribe завтра",
+            pairs: []
+        )
+        XCTAssertNil(DictationController.edited(Correction(heard: "клайв", meant: "Cribe"), in: seen))
+    }
+}

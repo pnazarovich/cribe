@@ -23,6 +23,10 @@ struct DictionaryEditorView: View {
     @StateObject private var model: DictionaryEditorModel
 
     @State private var newTerm = ""
+    /// Порядок показа переживает закрытие окна: это вкус, а не состояние правки.
+    /// По умолчанию — сначала новые: чаще всего человек приходит сюда посмотреть на то,
+    /// что добавилось только что.
+    @AppStorage("dictionarySortOrder") private var sort = DictionaryEditorModel.SortOrder.recent
     /// Пустой словарь показывает не поле ввода, а пустое состояние; строка добавления
     /// появляется по кнопке из него — и дальше остаётся навсегда.
     @State private var addRequested = false
@@ -137,11 +141,27 @@ struct DictionaryEditorView: View {
             .padding(.vertical, 4)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
+            sortPicker
+
             Spacer(minLength: 8)
             saveMark
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+    }
+
+    /// Выбор порядка. Меню, а не сегменты: пунктов два, но названия длинные, и парой
+    /// кнопок они съели бы полстроки поиска.
+    private var sortPicker: some View {
+        Picker("Порядок", selection: $sort) {
+            ForEach(DictionaryEditorModel.SortOrder.allCases) { order in
+                Text(order.title).tag(order)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .fixedSize()
+        .help("Порядок карточек: сначала новые или по алфавиту")
     }
 
     /// Тихая отметка вместо кнопки: сохранение — не событие, о котором надо кричать,
@@ -204,7 +224,12 @@ struct DictionaryEditorView: View {
     // MARK: - Карточки терминов
 
     private var terms: some View {
-        let filtered = DictionaryEditorModel.filtered(model.terms, search: model.search)
+        // Сортировка — поверх отбора и только для показа: в модели и в файле порядок
+        // остаётся прежним, иначе «сначала новые» было бы некуда возвращать.
+        let filtered = DictionaryEditorModel.sorted(
+            DictionaryEditorModel.filtered(model.terms, search: model.search),
+            by: sort
+        )
         return Group {
             if filtered.isEmpty {
                 if model.search.isEmpty {

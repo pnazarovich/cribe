@@ -453,7 +453,7 @@ public final class DictationController: ObservableObject {
     ///
     /// Не назначен — словарь не пополняется правками (так живёт CLI): спрашивать некого,
     /// а класть без спроса нельзя.
-    public var onLearnRequest: ((Correction, @escaping (Bool) -> Void) -> Void)?
+    public var onLearnRequest: ((LearnRequest, @escaping (Bool) -> Void) -> Void)?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -1417,8 +1417,21 @@ public final class DictationController: ObservableObject {
             // не переспрашиваем.
             guard !known.contains(correction.heard.lowercased()),
                   !learner.isRefused(correction) else { continue }
-            ask(correction)
+            ask(LearnRequest(correction: correction, edited: Self.edited(correction, in: observation)))
         }
+    }
+
+    /// Слово, которое человек правил своими руками, — если оно не то же самое, что услышало
+    /// распознавание. Ищется среди однословных замен: они считаются по вставленному тексту,
+    /// то есть по тому, что человек видел на экране.
+    static func edited(_ correction: Correction, in observation: FieldObservation) -> String? {
+        observation.corrections
+            .map(\.correction)
+            .first {
+                $0.meant.caseInsensitiveCompare(correction.meant) == .orderedSame
+                    && $0.heard.caseInsensitiveCompare(correction.heard) != .orderedSame
+            }?
+            .heard
     }
 
     /// Показать человеку пару и спросить, класть ли её в словарь.
@@ -1430,15 +1443,16 @@ public final class DictationController: ObservableObject {
     ///
     /// Молчание — это «нет, но спросим ещё»: вопрос мог просто остаться незамеченным.
     /// Отказ — «нет навсегда»: он и запоминается.
-    private func ask(_ correction: Correction) {
+    private func ask(_ request: LearnRequest) {
+        let correction = request.correction
         logger.notice(
             """
-            Правка \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public): \
-            спрашиваем человека
+            Правка \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public) \
+            (в тексте было \(request.edited ?? "то же самое", privacy: .public)): спрашиваем человека
             """
         )
         guard let onLearnRequest else { return }
-        onLearnRequest(correction) { [weak self] accepted in
+        onLearnRequest(request) { [weak self] accepted in
             guard let self else { return }
             guard accepted else {
                 learner.ignore(correction)
@@ -1458,7 +1472,10 @@ public final class DictationController: ObservableObject {
             if let index = entries.firstIndex(where: { $0.id == entry.id }) {
                 entries[index] = entry
             } else {
-                entries.append(entry)
+                // Наверх, а не в конец: порядок файла — это и есть порядок новизны, по нему
+                // редактор показывает «сначала новые». Дописанное в конец слово оказывалось
+                // в самом низу списка — то есть именно там, где его никто не ищет.
+                entries.insert(entry, at: 0)
             }
         }
         dictionary.replace(entries: entries)

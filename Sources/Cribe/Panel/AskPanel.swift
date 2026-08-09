@@ -33,8 +33,8 @@ public final class AskPanel {
     private var hideTask: Task<Void, Never>?
     /// Вопрос на экране и очередь тех, что ждут своей очереди: две плашки друг над другом —
     /// это уже панель, а решать проще по одному.
-    private var current: (Correction, (Bool) -> Void)?
-    private var queue: [(Correction, (Bool) -> Void)] = []
+    private var current: (LearnRequest, (Bool) -> Void)?
+    private var queue: [(LearnRequest, (Bool) -> Void)] = []
 
     private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Panel")
 
@@ -51,9 +51,9 @@ public final class AskPanel {
     ///
     /// Вопросы идут по одному. Про одну и ту же пару дважды не спрашиваем: диктовка могла
     /// повториться, пока прошлый вопрос ещё висит.
-    public func ask(_ correction: Correction, reply: @escaping (Bool) -> Void) {
-        guard current?.0 != correction, !queue.contains(where: { $0.0 == correction }) else { return }
-        queue.append((correction, reply))
+    public func ask(_ request: LearnRequest, reply: @escaping (Bool) -> Void) {
+        guard current?.0 != request, !queue.contains(where: { $0.0 == request }) else { return }
+        queue.append((request, reply))
         showNext()
     }
 
@@ -69,7 +69,7 @@ public final class AskPanel {
         guard current == nil, !queue.isEmpty else { return }
         let item = queue.removeFirst()
         current = item
-        presentation.correction = item.0
+        presentation.request = item.0
 
         // Окно строится заново на каждый вопрос, и порядок здесь не вкусовой: сначала
         // размер, и только потом содержимое. Наоборот было — и не работало вовсе. Окно
@@ -149,8 +149,8 @@ public final class AskPanel {
     ///
     /// Считается заранее и тем же шрифтом, каким рисует SwiftUI: окно кроится по плашке,
     /// и разъехаться им нельзя — иначе текст обрежется краем окна.
-    static func capsuleWidth(for correction: Correction) -> CGFloat {
-        let question = AskLayout.question(correction)
+    static func capsuleWidth(for request: LearnRequest) -> CGFloat {
+        let question = AskLayout.question(request)
         let width = AskLayout.leading
             + AskLayout.width(question, font: AskLayout.questionFont)
             + AskLayout.gap
@@ -208,8 +208,18 @@ enum AskLayout {
     static let accept = "Добавить"
     static let refuse = "Нет"
 
-    static func question(_ correction: Correction) -> String {
-        "Услышал «\(correction.heard)», вы исправили на «\(correction.meant)». В словарь?"
+    /// Что написано на плашке.
+    ///
+    /// Когда причёсывание подменило слово, называем оба: человек правил «scribe», а
+    /// запомнится «клайв», и молчать об этом нельзя — вопрос про слово, которого он не
+    /// видел, поставил бы его в тупик.
+    static func question(_ request: LearnRequest) -> String {
+        let heard = request.correction.heard
+        let meant = request.correction.meant
+        guard let edited = request.edited else {
+            return "Услышал «\(heard)», вы исправили на «\(meant)». В словарь?"
+        }
+        return "Услышал «\(heard)» (в тексте — «\(edited)»), вы исправили на «\(meant)». В словарь?"
     }
 
     static func width(_ text: String, font: NSFont) -> CGFloat {
@@ -226,7 +236,7 @@ enum AskLayout {
 @MainActor
 private final class AskPresentation: ObservableObject {
     @Published var isVisible = false
-    @Published var correction: Correction?
+    @Published var request: LearnRequest?
 }
 
 private struct AskView: View {
@@ -237,8 +247,8 @@ private struct AskView: View {
 
     var body: some View {
         Group {
-            if presentation.isVisible, let correction = presentation.correction {
-                AskCapsule(correction: correction, answer: answer)
+            if presentation.isVisible, let request = presentation.request {
+                AskCapsule(request: request, answer: answer)
                     .transition(accessibility.reduceMotion ? .opacity : .ask)
             }
         }
@@ -264,12 +274,12 @@ extension AnyTransition {
 }
 
 private struct AskCapsule: View {
-    let correction: Correction
+    let request: LearnRequest
     let answer: (Bool) -> Void
 
     var body: some View {
         HStack(spacing: AskLayout.gap) {
-            Text(AskLayout.question(correction))
+            Text(AskLayout.question(request))
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)

@@ -71,6 +71,48 @@ final class DictionaryEditorLogicTests: XCTestCase {
 
     // MARK: - Поиск и слова диктовки
 
+    // MARK: - Порядок показа
+
+    /// «Сначала новые» — это порядок файла как есть. Трогать его нельзя: он и есть
+    /// единственная память о том, что добавлено недавно.
+    func testRecentOrderKeepsTheFileOrder() {
+        XCTAssertEqual(
+            Model.sorted([deploy, github], by: .recent).map(\.canonical),
+            ["deploy", "GitHub"]
+        )
+    }
+
+    /// Словарь смешанный: канонические формы в основном латиницей, но не все.
+    /// Системное сравнение ставит латиницу перед кириллицей и внутри каждой — по алфавиту;
+    /// так же сортирует Finder, и знакомый порядок здесь важнее выдуманного.
+    func testAlphabetSortsLatinThenCyrillic() {
+        let terms = [
+            Term(canonical: "Ярлык", variants: []),
+            Term(canonical: "deploy", variants: []),
+            Term(canonical: "Автор", variants: []),
+            Term(canonical: "GitHub", variants: []),
+        ]
+        XCTAssertEqual(
+            Model.sorted(terms, by: .alphabet).map(\.canonical),
+            ["deploy", "GitHub", "Автор", "Ярлык"]
+        )
+    }
+
+    /// Регистр порядок не меняет: «docker» и «Docker» — одно и то же слово для глаза.
+    func testAlphabetIgnoresCase() {
+        let terms = [Term(canonical: "docker", variants: []), Term(canonical: "Claude", variants: [])]
+        XCTAssertEqual(Model.sorted(terms, by: .alphabet).map(\.canonical), ["Claude", "docker"])
+    }
+
+    /// Одинаковые имена обязаны лечь устойчиво, иначе карточки прыгают на каждой правке.
+    func testEqualNamesKeepAStableOrder() {
+        let first = Term(canonical: "API", variants: ["апи"])
+        let second = Term(canonical: "api", variants: ["апі"])
+        let once = Model.sorted([first, second], by: .alphabet).map(\.id)
+        let twice = Model.sorted([second, first], by: .alphabet).map(\.id)
+        XCTAssertEqual(once, twice)
+    }
+
     func testSearchLooksAtBothCanonicalAndVariants() {
         let terms = [github, deploy]
         XCTAssertEqual(Model.filtered(terms, search: "hub").map(\.canonical), ["GitHub"])
