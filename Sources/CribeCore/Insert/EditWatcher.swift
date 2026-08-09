@@ -68,6 +68,8 @@ public final class EditWatcher: @unchecked Sendable {
     private var element: AnyObject?
     private var baseline: String?
     private var inserted: String?
+    /// Всё, что успели заметить за окно наблюдения, в порядке появления.
+    private var seen: [ObservedCorrection] = []
 
     public init(
         access: FieldAccess = .system,
@@ -83,7 +85,10 @@ public final class EditWatcher: @unchecked Sendable {
     ///
     /// Предыдущее наблюдение при этом закрывается: если человек надиктовал второй раз,
     /// первый текст он уже либо поправил, либо нет, и ждать дольше нечего.
-    public func watch(inserted text: String, then handle: @escaping @Sendable ([Correction]) -> Void) {
+    public func watch(
+        inserted text: String,
+        then handle: @escaping @Sendable ([ObservedCorrection]) -> Void
+    ) {
         collect(handle)
         queue.asyncAfter(deadline: .now() + Self.settleDelay) { [self] in
             // Каждый отказ называется вслух и на уровне `.notice` — то есть ложится на диск.
@@ -114,41 +119,58 @@ public final class EditWatcher: @unchecked Sendable {
             element = field
             baseline = point
             inserted = text
-            poll(elapsed: 0, settling: false, handle: handle)
+            poll(elapsed: 0, handle: handle)
         }
     }
 
-    /// Заглядывает в поле раз в `pollInterval`, пока не увидит изменение или не выйдет
-    /// время. Увидев — ждёт ещё один такт и только потом снимает итог: правят обычно
-    /// очередью в два-три слова, и снимок ровно по первому изменению разрезал бы её
-    /// посередине. А дальше наблюдение закрывается: всё, что человек пишет после правок,
-    /// это уже его работа, а не исправление нашего текста.
-    private func poll(elapsed: TimeInterval, settling: Bool, handle: @escaping @Sendable ([Correction]) -> Void) {
+    /// Заглядывает в поле раз в `pollInterval` всё окно наблюдения и копит найденные пары.
+    ///
+    /// Раньше здесь стоял один поздний снимок, и приложение само решало, какое изменение
+    /// считать правкой. Решать это ему нечем: отличить исправление нашего текста от начала
+    /// собственной работы человека можно только по смыслу. Поэтому копим ВСЁ, что нашлось
+    /// за пятнадцать секунд, вместе со временем появления, — и отдаём одним списком тому,
+    /// кто умеет судить (см. `DictionaryJudge`).
+    ///
+    /// Копятся не снимки поля, а пары слов: «что вставили мы» → «чем человек это заменил».
+    /// Снимок — это весь его текст, включая написанное после нашего; выносить такое наружу
+    /// ради двух слов нельзя.
+    private func poll(elapsed: TimeInterval, handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
         queue.asyncAfter(deadline: .now() + pollInterval) { [self] in
             // Наблюдение закрыли (следующая диктовка) — этот такт уже ничей.
-            guard let field = element, let before = baseline else { return }
-            if settling {
-                collect(handle)
-                return
-            }
+            guard let field = element, let before = baseline, let text = inserted else { return }
+            let moment = elapsed + pollInterval
+
             guard let now = access.text(field) else {
-                Self.logger.notice("Правки: поле перестало отдавать содержимое — наблюдение снято")
-                clear()
+                Self.logger.notice("Правки: поле перестало отдавать содержимое — отдаём найденное")
+                finish(handle)
                 return
             }
             if now != before {
-                poll(elapsed: elapsed + pollInterval, settling: true, handle: handle)
+                for correction in EditDiff.corrections(before: before, after: now, inserted: text)
+                where !seen.contains(where: { $0.correction == correction }) {
+                    seen.append(ObservedCorrection(correction: correction, after: moment))
+                }
+            }
+            guard moment + pollInterval <= pollWindow else {
+                finish(handle)
                 return
             }
-            guard elapsed + pollInterval < pollWindow else {
-                Self.logger.notice(
-                    "Правки: за \(self.pollWindow, format: .fixed(precision: 0)) с поле не изменилось — править было нечего"
-                )
-                clear()
-                return
-            }
-            poll(elapsed: elapsed + pollInterval, settling: false, handle: handle)
+            poll(elapsed: moment, handle: handle)
         }
+    }
+
+    /// Окно закрылось: отдаём всё найденное и снимаем наблюдение. Только на `queue`.
+    private func finish(_ handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
+        let found = seen
+        clear()
+        guard !found.isEmpty else {
+            Self.logger.notice(
+                "Правки: за \(self.pollWindow, format: .fixed(precision: 0)) с ничего не нашлось"
+            )
+            return
+        }
+        Self.logger.notice("Правки: замечено \(found.count, privacy: .public) за окно наблюдения")
+        handle(found)
     }
 
     /// Снять наблюдение, ничего не отдавая. Только на `queue`.
@@ -156,31 +178,17 @@ public final class EditWatcher: @unchecked Sendable {
         element = nil
         baseline = nil
         inserted = nil
+        seen = []
     }
 
-    /// Снять второй слепок и отдать правки. Наблюдение после этого закрывается.
-    public func collect(_ handle: @escaping @Sendable ([Correction]) -> Void) {
+    /// Закрыть идущее наблюдение досрочно и отдать всё, что нашлось.
+    ///
+    /// Зовётся, когда человек надиктовал снова: прошлый текст он к этому времени либо
+    /// поправил, либо нет, и ждать дольше нечего.
+    public func collect(_ handle: @escaping @Sendable ([ObservedCorrection]) -> Void) {
         queue.async { [self] in
-            guard let field = element, let before = baseline, let text = inserted else { return }
-            element = nil
-            baseline = nil
-            inserted = nil
-
-            guard let after = access.text(field) else {
-                Self.logger.notice("Правки: поле перестало отдавать содержимое — снимок не снят")
-                return
-            }
-            guard after != before else {
-                Self.logger.notice("Правки: поле не изменилось — править было нечего")
-                return
-            }
-            let corrections = EditDiff.corrections(before: before, after: after, inserted: text)
-            guard !corrections.isEmpty else {
-                Self.logger.notice("Правки: поле изменилось, но разбор правок ничего не дал")
-                return
-            }
-            Self.logger.notice("Правки: замечено \(corrections.count, privacy: .public)")
-            handle(corrections)
+            guard element != nil else { return }
+            finish(handle)
         }
     }
 

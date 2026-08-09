@@ -29,52 +29,77 @@ final class EditWatcherTests: XCTestCase {
     func testEditIsNoticedEndToEnd() {
         let field = NSObject()
         let text = LockedText(value: "поправим хероблок сегодня")
-        let watcher = EditWatcher(access: FieldAccess(
-            focused: { field },
-            text: { _ in text.value }
-        ))
+        // Такт и окно берём крошечные: проверяется сам цикл наблюдения, а не терпение.
+        let watcher = EditWatcher(
+            access: FieldAccess(focused: { field }, text: { _ in text.value }),
+            pollInterval: 0.05,
+            pollWindow: 0.4
+        )
 
         let noticed = expectation(description: "правка замечена")
-        var got: [Correction] = []
+        var got: [ObservedCorrection] = []
         watcher.watch(inserted: "поправим хероблок сегодня") { corrections in
             got = corrections
             noticed.fulfill()
         }
 
-        // Ждём снимка точки отсчёта, потом «правим» поле и снимаем второй слепок сами:
-        // ждать штатные двадцать секунд в прогоне незачем.
-        let edited = expectation(description: "поле поправлено")
-        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.1) {
             text.value = "поправим heroblock сегодня"
-            watcher.collect { corrections in
-                got = corrections
-                noticed.fulfill()
-            }
-            edited.fulfill()
         }
 
-        wait(for: [edited], timeout: 3)
         wait(for: [noticed], timeout: 3)
-        XCTAssertEqual(got, [Correction(heard: "хероблок", meant: "heroblock")])
+        XCTAssertEqual(got.map(\.correction), [Correction(heard: "хероблок", meant: "heroblock")])
+    }
+
+    /// Главная поломка приёма — и то, ради чего наблюдение стало накопительным.
+    ///
+    /// Человек поправил слово, а потом принялся печатать поверх соседнего. К концу окна
+    /// разница «до/после» вырождается: два соседних изменения сливаются в один блок из
+    /// двух слов, а разбор считает только замены «слово на слово» — и не даёт НИЧЕГО.
+    /// Единственный поздний снимок ровно так и терял настоящую правку. Накопление по
+    /// тактам её сохраняет: на раннем такте изменено было одно слово, и пара нашлась.
+    func testEarlyEditSurvivesLaterTypingThatDestroysTheDiff() {
+        let field = NSObject()
+        let text = LockedText(value: "поправим хероблок сегодня")
+        let watcher = EditWatcher(
+            access: FieldAccess(focused: { field }, text: { _ in text.value }),
+            pollInterval: 0.05,
+            pollWindow: 0.6
+        )
+
+        let noticed = expectation(description: "правка замечена")
+        var got: [ObservedCorrection] = []
+        watcher.watch(inserted: "поправим хероблок сегодня") { corrections in
+            got = corrections
+            noticed.fulfill()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.1) {
+            text.value = "поправим heroblock сегодня"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.35) {
+            text.value = "поправим heroblock gjrть"
+        }
+
+        wait(for: [noticed], timeout: 3)
+        XCTAssertEqual(got.map(\.correction), [Correction(heard: "хероблок", meant: "heroblock")])
+        XCTAssertLessThan(got.first?.after ?? .infinity, 0.35, "правка найдена на раннем такте")
     }
 
     /// Поле не тронули — обработчик не зовётся вовсе. Это самый частый исход, и он обязан
     /// быть тихим: ни правок, ни лишней работы.
     func testUntouchedFieldReportsNothing() {
         let field = NSObject()
-        let watcher = EditWatcher(access: FieldAccess(
-            focused: { field },
-            text: { _ in "поправим хероблок сегодня" }
-        ))
+        let watcher = EditWatcher(
+            access: FieldAccess(focused: { field }, text: { _ in "поправим хероблок сегодня" }),
+            pollInterval: 0.05,
+            pollWindow: 0.2
+        )
 
         let silent = expectation(description: "обработчик не позван")
         silent.isInverted = true
         watcher.watch(inserted: "поправим хероблок сегодня") { _ in silent.fulfill() }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.2) {
-            watcher.collect { _ in silent.fulfill() }
-        }
-        wait(for: [silent], timeout: 2)
+        wait(for: [silent], timeout: 1.5)
     }
 }
 

@@ -1372,49 +1372,51 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Решает судьба каждой правки: спрашиваем GPT, ошибка ли это распознавания.
+    /// Судьба замеченных правок: спрашиваем GPT, что из этого ошибка распознавания.
     ///
-    /// Прежде эту работу делало повторение — пара уезжала в словарь только со второго раза.
-    /// На живой работе это не сработало ни разу: за всё время механизм заметил одну правку,
-    /// и ту мусорную. Повторение стояло вместо ума, а отличить ошибку распознавания от
-    /// «человек передумал» правилом и нельзя.
+    /// Приложение само решить не может. Отличить исправление нашего текста от начала
+    /// собственной работы человека можно только по смыслу, поэтому наблюдение копит ВСЁ,
+    /// что нашлось за окно, а решает один запрос на всю пачку — с временем появления
+    /// каждой пары.
     ///
-    /// Судья не всесилен и не обязателен: GPT выключен или не ответил — возвращаемся к
-    /// прежнему правилу с повторением. Молча класть в словарь непроверенное нельзя: лишняя
-    /// пара портит ВСЕ будущие диктовки, а пропущенную человек добавит руками.
-    private func learn(_ corrections: [Correction], sentence: String) async {
-        var approved: [Correction] = []
-        var unjudged: [Correction] = []
-        for correction in corrections {
-            guard settings.gptEnabled else {
-                unjudged.append(correction)
-                continue
-            }
-            let verdict = await DictionaryJudge.verdict(
-                heard: correction.heard,
-                meant: correction.meant,
-                sentence: sentence,
-                language: settings.language,
-                config: settings.gptConfig
-            )
-            switch verdict {
-            case .some(let verdict) where verdict.learn:
-                approved.append(correction)
-                logger.notice(
-                    "Правку берём в словарь: \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public) (\(verdict.reason, privacy: .public))"
-                )
-            case .some(let verdict):
-                logger.notice(
-                    "Правку не берём: \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public) (\(verdict.reason, privacy: .public))"
-                )
-            case nil:
-                logger.notice("Судья не ответил — правка идёт прежним путём, через повторение")
-                unjudged.append(correction)
-            }
+    /// Наружу уходят пары слов, а не снимки поля: снимок — это весь текст человека,
+    /// включая написанное после нашего, и выносить такое ради двух слов нельзя.
+    ///
+    /// Судья не обязателен: GPT выключен или не ответил — возвращаемся к прежнему правилу
+    /// с повторением. Молча класть в словарь непроверенное нельзя: лишняя пара портит ВСЕ
+    /// будущие диктовки, а пропущенную человек добавит руками.
+    private func learn(_ found: [ObservedCorrection], sentence: String) async {
+        let corrections = found.map(\.correction)
+        guard settings.gptEnabled,
+              let verdicts = await DictionaryJudge.verdicts(
+                  on: found,
+                  sentence: sentence,
+                  language: settings.language,
+                  config: settings.gptConfig
+              ),
+              verdicts.count == corrections.count
+        else {
+            logger.notice("Правки: судьи нет — идут прежним путём, через повторение")
+            let learned = learner.observe(corrections, entries: dictionary.entries)
+            apply(learned)
+            return
         }
 
-        var learned = approved.map { learner.accept($0, entries: dictionary.entries) }
-        learned += learner.observe(unjudged, entries: dictionary.entries)
+        var approved: [Correction] = []
+        for (correction, verdict) in zip(corrections, verdicts) {
+            logger.notice(
+                """
+                Правка \(correction.heard, privacy: .public) → \(correction.meant, privacy: .public): \
+                \(verdict.learn ? "берём" : "не берём", privacy: .public) (\(verdict.reason, privacy: .public))
+                """
+            )
+            if verdict.learn { approved.append(correction) }
+        }
+        apply(approved.map { learner.accept($0, entries: dictionary.entries) })
+    }
+
+    /// Положить готовые статьи в словарь, не заведя дубля.
+    private func apply(_ learned: [DictionaryEntry]) {
         guard !learned.isEmpty else { return }
         var entries = dictionary.entries
         for entry in learned {

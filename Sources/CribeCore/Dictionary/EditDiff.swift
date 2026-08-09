@@ -14,6 +14,22 @@ public struct Correction: Hashable, Sendable {
     }
 }
 
+/// Правка вместе с тем, когда она появилась.
+///
+/// Время — не отчётность, а довод. Исправление нашего текста человек делает сразу,
+/// перечитав вставленное; всё, что всплывает под конец наблюдения, — это уже он сам пишет
+/// поверх, и такая «правка» на деле обрывок его работы. Судья видит секунды и судит с ними.
+public struct ObservedCorrection: Hashable, Sendable {
+    public let correction: Correction
+    /// Через сколько секунд после вставки пара впервые появилась в поле.
+    public let after: TimeInterval
+
+    public init(correction: Correction, after: TimeInterval) {
+        self.correction = correction
+        self.after = after
+    }
+}
+
 /// Что человек поправил в уже вставленном тексте.
 ///
 /// Приём тот же, что у Whispr Flow: приложение помнит, что вставило, а потом смотрит, во
