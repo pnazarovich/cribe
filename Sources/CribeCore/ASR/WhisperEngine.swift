@@ -190,14 +190,16 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         language: Language,
         prompt: String
     ) async throws -> [ASRSegment] {
-        try await run(samples, language: language, prompt: prompt)
+        let tokenizer = queue.sync { pipelines[language.whisperModel] }?.tokenizer
+        return try await run(samples, language: language, prompt: prompt)
             .flatMap(\.segments)
             .sorted { $0.start < $1.start }
-            .map {
+            .map { segment in
                 ASRSegment(
-                    text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    start: Double($0.start),
-                    end: Double($0.end)
+                    text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    start: Double(segment.start),
+                    end: Double(segment.end),
+                    words: tokenizer.map { Self.words(of: [segment], tokenizer: $0) } ?? []
                 )
             }
     }
@@ -239,6 +241,49 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         )
 
         return Self.text(of: try await pipe.transcribe(audioArray: samples, decodeOptions: options))
+    }
+
+    /// Тот же самый проход, что и `transcribe`, — но уверенность по словам не выбрасывается.
+    ///
+    /// Отдельный метод, а не другой проход: числа приезжают из того же декодирования, просто
+    /// обычный `transcribe` их теряет. Второго прохода здесь нет и быть не должно — вся
+    /// затея с уверенностью держится на том, что она бесплатна.
+    public func transcribeDetailed(
+        _ samples: [Float],
+        language: Language,
+        prompt: String
+    ) async throws -> Transcript {
+        let results = try await run(samples, language: language, prompt: prompt)
+        return Transcript(text: Self.text(of: results), words: words(of: results, language: language))
+    }
+
+    /// Уверенность по словам из готового результата прохода. Без токенизатора чисел не
+    /// собрать, и это законная пустота: правило по цепочке просто не сработает.
+    private func words(of results: [TranscriptionResult], language: Language) -> [WordProbe] {
+        guard let pipe = queue.sync(execute: { pipelines[language.whisperModel] }),
+              let tokenizer = pipe.tokenizer
+        else { return [] }
+        return Self.words(of: results.flatMap(\.segments), tokenizer: tokenizer)
+    }
+
+    private static func words(
+        of segments: [TranscriptionSegment],
+        tokenizer: WhisperTokenizer
+    ) -> [WordProbe] {
+        let pieces = segments
+            .sorted { $0.start < $1.start }
+            .flatMap { segment in
+                segment.tokenLogProbs.compactMap { entry -> TokenProbe? in
+                    guard let (token, logProbability) = entry.first,
+                          token < tokenizer.specialTokens.specialTokenBegin
+                    else { return nil }
+                    return TokenProbe(
+                        text: tokenizer.decode(tokens: [token]),
+                        probability: exp(logProbability)
+                    )
+                }
+            }
+        return WordConfidence.words(from: pieces)
     }
 
     // MARK: - Private
@@ -300,7 +345,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
               // Три гигабайта ради проверки не качаем: нет модели соседа — нет и мнения.
               store.isInstalled(variant: neighbour.whisperModel),
               let own = queue.sync(execute: { pipelines[language.whisperModel] })
-        else { return NeighbourPass(text: plain, replaced: 0) }
+        else { return NeighbourPass(text: plain) }
 
         // Разметка фраз — отдельным проходом без подсказки. Взять её из основного прохода
         // нельзя: со словарной подсказкой модель отдаёт запись ОДНИМ куском (замерено:
@@ -309,12 +354,12 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         // и энергетический VAD склеивают их в один отрезок 5.28–11.88 с. Границу здесь
         // проводит только язык, а видит её только сам распознаватель.
         guard let marked = try? await run(samples, language: language, prompt: "") else {
-            return NeighbourPass(text: plain, replaced: 0)
+            return NeighbourPass(text: plain)
         }
         let pieces = marked.flatMap(\.segments).sorted { $0.start < $1.start }
         // Одного куска достаточно: замерены записи, где вся фраза целиком украинская,
         // а кусок при этом один. Прежний порог «больше одного» их молча пропускал.
-        guard !pieces.isEmpty else { return NeighbourPass(text: plain, replaced: 0) }
+        guard !pieces.isEmpty else { return NeighbourPass(text: plain) }
 
         // Шаг первый, дешёвый: спрашиваем модель сессии, на каком языке звучит каждый кусок.
         // Ответ нужен не сам по себе — важна уверенность: на украинской фразе модель ответила
@@ -339,7 +384,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
                 "Кусок \(start, format: .fixed(precision: 2))–\(end, format: .fixed(precision: 2)) с звучит не по-своему: \(detected.language, privacy: .public) \(confidence, format: .fixed(precision: 3))"
             )
         }
-        guard !suspicious.isEmpty else { return NeighbourPass(text: plain, replaced: 0) }
+        guard !suspicious.isEmpty else { return NeighbourPass(text: plain) }
 
         // Шаг второй: слово модели соседнего языка. Ждать её прогрева здесь нельзя —
         // компиляция под ANE идёт минуты, а человек в этот момент смотрит на «Распознаю…»
@@ -348,11 +393,12 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         guard let other = queue.sync(execute: { pipelines[neighbour.whisperModel] }) else {
             warmUp(neighbour)
             Self.logger.notice("Модель соседа ещё не прогрета — проверка отложена")
-            return NeighbourPass(text: plain, replaced: 0)
+            return NeighbourPass(text: plain)
         }
 
         var texts = pieces.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-        var replaced = 0
+        /// Перечитанные фразы в новом виде — их и назовёт предупреждение.
+        var reread: [String] = []
         for index in suspicious {
             let piece = pieces[index]
             guard let audio = Self.slice(
@@ -372,14 +418,14 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
                   SecondOpinion.usable(theirs)
             else { continue }
             texts[index] = theirs.trimmingCharacters(in: .whitespacesAndNewlines)
-            replaced += 1
+            reread.append(texts[index])
             Self.logger.notice(
                 "Кусок отдан языку \(neighbour.rawValue, privacy: .public) по вердикту большой модели \(verdict.langProbs[verdict.language] ?? 0, format: .fixed(precision: 3))"
             )
         }
         // Ничего не забрали — отдаём исходную склейку слово в слово: пересобирать текст
         // из кусков зря значит менять расстановку пробелов там, где менять нечего.
-        guard replaced > 0 else { return NeighbourPass(text: plain, replaced: 0) }
+        guard !reread.isEmpty else { return NeighbourPass(text: plain) }
 
         // Свои куски перечитываем с той же словарной подсказкой, что и основной проход.
         // Без этого одна заменённая фраза выбрасывала бы весь основной проход и вся
@@ -395,7 +441,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         }
         return NeighbourPass(
             text: texts.filter { !$0.isEmpty }.joined(separator: " "),
-            replaced: replaced
+            phrases: reread
         )
     }
 

@@ -26,11 +26,16 @@ import Foundation
 /// о замене вслух.
 public struct NeighbourPass: Equatable, Sendable {
     public let text: String
-    public let replaced: Int
+    /// Перечитанные фразы — в том виде, в каком они теперь стоят в тексте. Именно их
+    /// и называет предупреждение: человеку нужен адрес, а не счёт. Считать по этому же
+    /// массиву, отдельного числа не держим.
+    public let phrases: [String]
 
-    public init(text: String, replaced: Int) {
+    public var replaced: Int { phrases.count }
+
+    public init(text: String, phrases: [String] = []) {
         self.text = text
-        self.replaced = replaced
+        self.phrases = phrases
     }
 }
 

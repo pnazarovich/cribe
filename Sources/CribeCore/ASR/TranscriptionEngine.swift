@@ -34,11 +34,29 @@ public struct ASRSegment: Sendable, Equatable {
     public let text: String
     public let start: Double
     public let end: Double
+    /// Уверенность распознавания по словам этого куска. Пусто — движок её не отдаёт.
+    public let words: [WordProbe]
 
-    public init(text: String, start: Double, end: Double) {
+    public init(text: String, start: Double, end: Double, words: [WordProbe] = []) {
         self.text = text
         self.start = start
         self.end = end
+        self.words = words
+    }
+}
+
+/// Распознанный текст вместе с уверенностью по словам.
+///
+/// Числа приезжают из того же прохода, что и текст, — их просто перестали выбрасывать.
+/// По ним конвейер решает две вещи: назвать ли человеку сломанный кусок и стоит ли платить
+/// за дорогую сверку соседним языком (см. `Uncertainty`).
+public struct Transcript: Sendable, Equatable {
+    public let text: String
+    public let words: [WordProbe]
+
+    public init(text: String, words: [WordProbe]) {
+        self.text = text
+        self.words = words
     }
 }
 
@@ -60,6 +78,9 @@ public protocol TranscriptionEngine: AnyObject {
         prompt: String,
         translating: Bool
     ) async throws -> String
+
+    /// Тот же проход, что и `transcribe`, но уверенность по словам не выбрасывается.
+    func transcribeDetailed(_ samples: [Float], language: Language, prompt: String) async throws -> Transcript
 
     /// То же распознавание, что и `transcribe`, с теми же опциями, но результат — сегменты
     /// с таймкодами. Нужен потоковой финализации: по таймкоду последнего устоявшегося
@@ -116,6 +137,16 @@ public extension TranscriptionEngine {
         throw TranscriptionEngineError.segmentsUnsupported
     }
 
+    /// Движок без пословной уверенности — законное состояние: правило по цепочке просто
+    /// не сработает, и конвейер поведёт себя как раньше.
+    func transcribeDetailed(
+        _ samples: [Float],
+        language: Language,
+        prompt: String
+    ) async throws -> Transcript {
+        Transcript(text: try await transcribe(samples, language: language, prompt: prompt), words: [])
+    }
+
     func prepare(
         variant: String,
         language: Language,
@@ -140,7 +171,7 @@ public extension TranscriptionEngine {
         language: Language,
         prompt: String
     ) async -> NeighbourPass {
-        NeighbourPass(text: text, replaced: 0)
+        NeighbourPass(text: text)
     }
 
     func preparePreview() async throws {}

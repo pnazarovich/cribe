@@ -286,14 +286,10 @@ struct PanelPill: View {
             spinnerRow("✨ Чищу…")
 
         case .inserted:
-            // Зелёная вспышка удачи: галочка обводится на глазах, свечение — на всей строке.
-            HStack(spacing: 6) {
-                DrawnCheck(reduceMotion: accessibility.reduceMotion)
-                Text("Вставлено")
-            }
-            .foregroundStyle(Color.green)
-            .shadow(color: .green.opacity(0.45), radius: 4)
-            .transition(ticker)
+            // Сюда панель не приходит: удачная вставка гасит капсулу, не меняя её содержимого
+            // (см. `LivePanel.handle`). Текст уже стоит в поле — сообщать об этом поверх него
+            // нечего, и капсула просто уходит.
+            EmptyView()
 
         case .carded:
             // Не вставили — значит, некуда: текст ждёт карточкой внизу слева. Тон тот же,
@@ -419,36 +415,6 @@ private struct RecordingDot: View {
                 pulsing = !reduceMotion
                 sonar = !reduceMotion
             }
-    }
-}
-
-/// Галочка, которая сама себя рисует: путь обводится за 0.25 с и в конце чуть подпрыгивает.
-/// Именно рисование (а не появление готового значка) читается как «сделано вот сейчас».
-private struct DrawnCheck: View {
-    let reduceMotion: Bool
-
-    @State private var drawn: CGFloat = 0
-    @State private var popped = false
-
-    var body: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 0, y: 5))
-            path.addLine(to: CGPoint(x: 4, y: 9))
-            path.addLine(to: CGPoint(x: 11, y: 0))
-        }
-        .trim(from: 0, to: drawn)
-        .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-        .frame(width: 11, height: 9)
-        .scaleEffect(popped ? 1 : 0.86)
-        .onAppear {
-            guard !reduceMotion else {
-                drawn = 1
-                popped = true
-                return
-            }
-            withAnimation(.easeOut(duration: 0.25)) { drawn = 1 }
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.5).delay(0.22)) { popped = true }
-        }
     }
 }
 

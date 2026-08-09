@@ -124,6 +124,17 @@ actor EngineGate {
         return try await task.value
     }
 
+    /// Тот же проход, но с уверенностью по словам.
+    func transcribeDetailed(_ samples: [Float], language: Language, prompt: String) async throws -> Transcript {
+        let previous = inFlight
+        let task = Task { [self] in
+            await previous?.value
+            return try await engine.transcribeDetailed(samples, language: language, prompt: prompt)
+        }
+        chain(task)
+        return try await task.value
+    }
+
     /// Второе мнение о соседнем языке: тот же порядок, что и у проходов, — оно тоже
     /// занимает модель, и лезть в неё поперёк идущего распознавания нельзя.
     func reconsideringNeighbour(
@@ -140,7 +151,7 @@ actor EngineGate {
             )
         }
         inFlight = Task { _ = try? await task.value }
-        return (try? await task.value) ?? NeighbourPass(text: text, replaced: 0)
+        return (try? await task.value) ?? NeighbourPass(text: text)
     }
 
     func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
@@ -184,7 +195,7 @@ enum StreamingMerge {
     /// Что из прохода можно считать устоявшимся: все сегменты, кроме последнего — его Whisper
     /// почти всегда переписывает на следующем проходе, когда слышит конец фразы.
     /// `nil` — подтверждать нечего.
-    static func confirmed(from segments: [ASRSegment]) -> (text: String, endSample: Int)? {
+    static func confirmed(from segments: [ASRSegment]) -> (text: String, endSample: Int, words: [WordProbe])? {
         // Хвостовые пустые сегменты текста не дают, но подняли бы границу подтверждённого —
         // и следующий, уже осмысленный проход не смог бы её сдвинуть (граница монотонна).
         var stable = segments.dropLast()
@@ -197,7 +208,10 @@ enum StreamingMerge {
 
         let text = stable.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
         guard !text.isEmpty else { return nil }
-        return (text, Int(last.end * AudioCaptureFormat.sampleRate))
+        // Уверенность берём с той же устоявшейся части, что и текст: последний сегмент
+        // Whisper почти всегда переписывает, и его слова — самые неуверенные в проходе.
+        // Взять их значило бы кричать на каждой длинной диктовке.
+        return (text, Int(last.end * AudioCaptureFormat.sampleRate), stable.flatMap(\.words))
     }
 
     static func merge(confirmed: String, tail: String) -> String {
@@ -298,6 +312,9 @@ private final class DictationSession {
     /// от начала записи.
     var confirmedText = ""
     var confirmedEndSample = 0
+    /// Уверенность по словам подтверждённой части и хвоста — из тех же проходов, что и текст.
+    var confirmedWords: [WordProbe] = []
+    var tailWords: [WordProbe] = []
     /// Фоновый проход упал — на этой диктовке потоковый путь выключен.
     var rollingFailed = false
     /// Язык переключили прямо на записи — фоновые проходы и хвост могли бы разъехаться.
@@ -334,6 +351,7 @@ private final class DictationSession {
         else { return }
         confirmedEndSample = pass.endSample
         confirmedText = pass.text
+        confirmedWords = pass.words
     }
 }
 
@@ -1006,6 +1024,8 @@ public final class DictationController: ObservableObject {
             // Решение о переводе принято на стопе — здесь его только исполняем.
             let wantsTranslation = session.translatesToEnglish
             let raw: String
+            /// Уверенность распознавания по словам — из того же прохода, что и текст.
+            var heardWords: [WordProbe] = []
             // Звук, которому соответствует текст: потоковый путь собирает его по всей
             // записи, обычный — по обрезанной. Второму мнению нужен именно он, иначе
             // таймкоды фраз указывали бы не туда.
@@ -1013,28 +1033,45 @@ public final class DictationController: ObservableObject {
             if let streamed = await streamedTranscript(session, samples: leveled) {
                 raw = streamed
                 heard = leveled
+                heardWords = session.confirmedWords + session.tailWords
             } else {
                 let vad = try await ensureVad()
                 guard let speech = try await vad.trimmed(leveled) else {
                     throw DictationError.noSpeech
                 }
-                raw = try await gate.transcribe(speech, language: language, prompt: session.prompt)
+                let pass = try await gate.transcribeDetailed(
+                    speech, language: language, prompt: session.prompt
+                )
+                raw = pass.text
+                heardWords = pass.words
                 heard = speech
             }
+            // Сломанные куски — те, где распознаватель шёл неуверенно несколько слов подряд
+            // (см. `Uncertainty`). Ими решаются сразу два вопроса: что сказать человеку и
+            // стоит ли платить за сверку соседним языком.
+            let shaky = Uncertainty.runs(in: heardWords)
             // Единственное место, где текст диктовки уже собран целиком, — здесь. Проверка
             // соседнего языка обязана стоять именно тут: внутри распознавания она видела бы
             // только хвост длинной диктовки (см. `WhisperEngine.reconsideringNeighbour`).
-            let checked = await gate.reconsideringNeighbour(
-                raw, samples: heard, language: language, prompt: session.prompt
-            )
+            //
+            // И только когда есть что перечитывать. Проверка стоит лишнего полного прохода
+            // плюс трети секунды на каждый кусок — раньше это платила КАЖДАЯ диктовка, в том
+            // числе чистейший русский, где перечитывать нечего (замерено: 2,6 с против 4,9 с
+            // на девятисекундной записи). Пословная уверенность бесплатна и закрывает ворота
+            // там, где ломаться нечему.
+            let checked = shaky.isEmpty
+                ? NeighbourPass(text: raw)
+                : await gate.reconsideringNeighbour(
+                    raw, samples: heard, language: language, prompt: session.prompt
+                )
             var text = ReplacementEngine.apply(checked.text, entries: entries)
             var degradations: [String] = []
-            // О замене говорим вслух. Гладкая чужая фраза опаснее явного мусора: мусор
+            // О беде говорим вслух и АДРЕСНО. Гладкая фраза опаснее явного мусора: мусор
             // человек видит и переговаривает, а складную — принимает на веру, даже если
-            // распознавание потеряло в ней отрицание.
-            if checked.replaced > 0 {
-                let word = checked.replaced == 1 ? "фраза перечитана" : "фразы перечитаны"
-                degradations.append("\(checked.replaced) \(word) на украинском — сверьте")
+            // распознавание потеряло в ней отрицание. Безадресное «фраза перечитана» этой
+            // работы не делает: искать, куда смотреть, всё равно приходится самому.
+            if let alarm = Uncertainty.alarm(runs: shaky, reread: checked.phrases) {
+                degradations.append(alarm)
             }
             var translation: String?
             let skipsGPT = ShortDictation.skipsGPT(
@@ -1196,16 +1233,18 @@ public final class DictationController: ObservableObject {
             let vad = try await ensureVad()
             guard let tail = try await vad.trimmed(Array(samples[start...])) else { return nil }
 
-            let tailText = try await gate.transcribe(
+            let tailPass = try await gate.transcribeDetailed(
                 tail,
                 language: session.language,
                 prompt: session.prompt
             )
+            let tailText = tailPass.text
             // Пустой хвост — не «там была тишина», а признак того, что проход не удался
             // (например, окно короче внутреннего `windowClipTime` WhisperKit). Слова терять
             // нельзя, поэтому откатываемся на полный проход.
             guard !tailText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
+            session.tailWords = tailPass.words
             return StreamingMerge.merge(confirmed: session.confirmedText, tail: tailText)
         } catch {
             logger.error("Потоковая финализация не удалась: \(error.localizedDescription, privacy: .public)")

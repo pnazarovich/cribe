@@ -3,7 +3,7 @@ import CribeCore
 import WhisperKit
 
 private let usage = """
-usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate] [--neighbour]
+usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate] [--neighbour] [--words]
 
   --lang ru|uk|en  язык диктовки (обязателен)
   --no-gpt       без слоя 3 (GPT-чистки)
@@ -11,6 +11,8 @@ usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate
   --translate    вернуть английский перевод (переводит сама модель, слой 1)
   --neighbour    перечитывать фразы, звучащие на соседнем языке (в приложении — настройка;
                  своим ключом, потому что у CLI собственный домен UserDefaults)
+  --words        замерный режим: уверенность распознавания по каждому слову и найденные
+                 по ней сломанные куски (см. `Uncertainty`). Текста не печатает.
 
 Стадии печатаются в stderr, финальный текст — в stdout.
 """
@@ -66,18 +68,49 @@ struct CLI {
 
         let entries = UserDictionary(url: UserDictionary.defaultURL).entries
         log("словарь: \(entries.count) терминов")
+        // Замерный режим: печатаем уверенность по словам и найденные по ней сломанные куски.
+        if options.words {
+            let pass = try await engine.transcribeDetailed(
+                speech,
+                language: options.language,
+                prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language)
+            )
+            for probe in pass.words {
+                print(String(format: "%.3f\t%@", probe.probability, probe.word))
+            }
+            for run in Uncertainty.runs(in: pass.words) {
+                log("цепочка: \(run.text)")
+            }
+            return ""
+        }
         log("распознавание…")
-        let raw = try await engine.transcribe(
-            speech,
-            language: options.language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language),
-            translating: options.translate
-        )
         let prompt = PromptBuilder.initialPrompt(entries: entries, language: options.language)
-        let checked = await engine.reconsideringNeighbour(
-            raw, samples: speech, language: options.language, prompt: prompt
-        )
+        let raw: String
+        var heardWords: [WordProbe] = []
+        if options.translate {
+            raw = try await engine.transcribe(
+                speech, language: options.language, prompt: prompt, translating: true
+            )
+        } else {
+            let pass = try await engine.transcribeDetailed(
+                speech, language: options.language, prompt: prompt
+            )
+            raw = pass.text
+            heardWords = pass.words
+        }
+        // Те же ворота, что и в конвейере: нет цепочки неуверенных слов — ломаться нечему,
+        // и за дорогую сверку соседним языком не платим.
+        let shaky = Uncertainty.runs(in: heardWords)
+        for run in shaky { log("цепочка: \(run.text)") }
+        let checked = shaky.isEmpty
+            ? NeighbourPass(text: raw)
+            : await engine.reconsideringNeighbour(
+                raw, samples: speech, language: options.language, prompt: prompt
+            )
         if checked.replaced > 0 { log("перечитано фраз на соседнем языке: \(checked.replaced)") }
+        if let alarm = Uncertainty.alarm(runs: shaky, reread: checked.phrases) {
+            log("предупреждение: \(alarm)")
+        }
         log("слой 1: \(checked.text)")
 
         let text = ReplacementEngine.apply(checked.text, entries: entries)
@@ -114,6 +147,7 @@ private struct Options {
     let useVAD: Bool
     let translate: Bool
     let neighbour: Bool
+    let words: Bool
 
     init(arguments: [String]) throws {
         var path: String?
@@ -122,6 +156,7 @@ private struct Options {
         var useVAD = true
         var translate = false
         var neighbour = false
+        var words = false
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
@@ -135,6 +170,7 @@ private struct Options {
             case "--no-vad": useVAD = false
             case "--translate": translate = true
             case "--neighbour": neighbour = true
+            case "--words": words = true
             case "-h", "--help": throw CLIError(usage)
             default:
                 guard !argument.hasPrefix("-"), path == nil else {
@@ -153,6 +189,7 @@ private struct Options {
         self.useVAD = useVAD
         self.translate = translate
         self.neighbour = neighbour
+        self.words = words
     }
 }
 

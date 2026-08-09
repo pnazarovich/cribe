@@ -59,11 +59,15 @@ public final class LivePanel {
 
         init(_ state: DictationState) {
             switch state {
-            case .idle: self = .hidden
+            // Удачная вставка — это НЕ повод показывать что-то ещё: текст уже стоит в поле,
+            // человек его видит, и вспышка «Вставлено» поверх собственного текста только
+            // мешает. Капсула уходит ровно в тот момент, когда текст доехал.
+            case .idle, .inserted: self = .hidden
             case .preparingModel, .recording: self = .starting
             // `.cancelled` — тоже видимая фаза: вспышку «Отменено» надо успеть показать,
-            // а панель прячет только `.idle` следом за ней.
-            case .transcribing, .cleaning, .inserted, .carded, .cancelled, .degraded, .error:
+            // а панель прячет только `.idle` следом за ней. `.carded` и `.degraded` тем
+            // более: там текст уехал не в поле либо уехал с оговоркой.
+            case .transcribing, .cleaning, .carded, .cancelled, .degraded, .error:
                 self = .processing
             }
         }
@@ -155,8 +159,14 @@ public final class LivePanel {
     }
 
     private func handle(_ state: DictationState) {
-        // Последний непустой кадр остаётся на экране, пока капсула уходит.
-        if case .idle = state {} else { presentation.state = state }
+        // Последний непустой кадр остаётся на экране, пока капсула уходит: и на `.idle`,
+        // и на удачной вставке. Во втором случае это «✨ Чищу…» — то, чем капсула и была
+        // занята; менять её содержимое на прощание значит показать новый кадр ради того,
+        // чтобы тут же его стереть.
+        switch state {
+        case .idle, .inserted: break
+        default: presentation.state = state
+        }
         // Окно трогаем только на смене фазы: поток уровня (~12 обновлений в секунду)
         // целиком укладывается в одну фазу и до окна не доходит.
         let next = Phase(state)
