@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 import CribeCore
 
@@ -35,8 +36,10 @@ public final class AskPanel {
     private var current: (Correction, (Bool) -> Void)?
     private var queue: [(Correction, (Bool) -> Void)] = []
 
+    private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Panel")
+
     public init() {
-        panel = Self.makeShell()
+        panel = Self.makeShell(width: AskLayout.maximumWidth)
         install()
     }
 
@@ -61,15 +64,28 @@ public final class AskPanel {
         current = item
         presentation.correction = item.0
 
-        // Свежая оболочка на каждый показ — по той же причине, что и у пилюли: прописка
-        // во всех пространствах у прожившего часами окна протухает (см. `HUDWindow`).
-        if !panel.isVisible {
-            panel = HUDWindow.renew(panel) { Self.makeShell() }
-            install()
-        }
-        place(for: item.0)
+        // Окно строится заново на каждый вопрос, и порядок здесь не вкусовой: сначала
+        // размер, и только потом содержимое. Наоборот было — и не работало вовсе. Окно
+        // кроится по длине пары, а менять размер окну, в котором уже живёт SwiftUI,
+        // значит стравить две раскладки: AppKit насчитывает по десятку проходов на кадр,
+        // упирается в собственный предел («limit: 8») и бросает окно недосчитанным.
+        // Пустое место на экране — весь итог. У записки этой беды нет ровно потому, что
+        // её окно всегда одного размера.
+        panel.orderOut(nil)
+        panel = Self.makeShell(width: Self.capsuleWidth(for: item.0) + Self.margin * 2)
+        place()
+        install()
         HUDWindow.orderFront(panel, extra: .stationary)
         withAnimation(Self.appearAnimation) { presentation.isVisible = true }
+        Self.logger.notice(
+            """
+            Вопрос о правке показан: \(Int(self.panel.frame.width), privacy: .public)×\
+            \(Int(self.panel.frame.height), privacy: .public) в \
+            (\(Int(self.panel.frame.minX), privacy: .public), \
+            \(Int(self.panel.frame.minY), privacy: .public)), \
+            на экране=\(self.panel.isVisible ? "да" : "нет", privacy: .public)
+            """
+        )
 
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: Self.linger)
@@ -96,21 +112,17 @@ public final class AskPanel {
         }
     }
 
-    /// Окно ровно по плашке: клики мимо неё обязаны доходить до окна под ней.
-    private func place(for correction: Correction) {
-        let width = Self.capsuleWidth(for: correction) + Self.margin * 2
-        let height = Self.capsuleHeight + Self.margin * 2
+    /// Низ по центру экрана, на котором сейчас курсор. Только место: размер окно получило
+    /// при рождении и больше не меняется.
+    private func place() {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         guard let screen else { return }
-        panel.setFrame(
-            NSRect(
-                x: (screen.frame.midX - width / 2).rounded(),
-                y: (screen.frame.minY + Self.bottomInset).rounded(),
-                width: width.rounded(),
-                height: height
-            ),
-            display: false
+        panel.setFrameOrigin(
+            NSPoint(
+                x: (screen.frame.midX - panel.frame.width / 2).rounded(),
+                y: (screen.frame.minY + Self.bottomInset).rounded()
+            )
         )
     }
 
@@ -141,9 +153,9 @@ public final class AskPanel {
         HUDAccessibility.shared.reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.3)
     }
 
-    private static func makeShell() -> NSPanel {
+    private static func makeShell(width: CGFloat) -> NSPanel {
         let panel = NonKeyAskPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: capsuleHeight + margin * 2),
+            contentRect: NSRect(x: 0, y: 0, width: width.rounded(), height: capsuleHeight + margin * 2),
             styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -251,6 +263,10 @@ private struct AskCapsule: View {
         .padding(.leading, AskLayout.leading)
         .padding(.trailing, AskLayout.trailing)
         .frame(height: 44)
+        // Собственный размер плашки ограничен так же, как у записки: окно скроено по нему,
+        // и расти сверх него плашке нельзя — иначе она снова начнёт спорить с окном.
+        .frame(maxWidth: AskLayout.maximumWidth)
+        .fixedSize(horizontal: true, vertical: false)
         .background { GlassPlate(shape: Capsule()) }
         .overlay { GlassRim(shape: Capsule()) }
         .overlay { GlassSheen(shape: Capsule()) }
