@@ -132,7 +132,10 @@ struct MenuBarView: View {
         case .preparingModel(.warming): return "Готовлю модель…"
         case .recording: return "● Идёт запись · \(displayLanguage.displayName)\(translateMark)"
         case .transcribing: return "Распознаю…"
-        case .cleaning: return "✨ Чищу…"
+        // Тем же словом, что и капсула: переводящая диктовка не чистится, а переводится.
+        case .cleaning:
+            return (controller.activeSessionTranslate ?? settings.translateToEnglish)
+                ? "🌐 Перевожу…" : "✨ Чищу…"
         case .inserted: return "✓ Вставлено"
         case .carded: return "⤷ В карточку"
         case .cancelled: return "✕ Отменено"

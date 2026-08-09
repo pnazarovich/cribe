@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 import OSLog
@@ -66,13 +67,31 @@ public final class EditWatcher: @unchecked Sendable {
     public func watch(inserted text: String, then handle: @escaping @Sendable ([Correction]) -> Void) {
         collect(handle)
         queue.asyncAfter(deadline: .now() + Self.settleDelay) { [self] in
-            guard let field = access.focused(), let value = access.text(field) else { return }
+            // Каждый отказ называется вслух и на уровне `.notice` — то есть ложится на диск.
+            // Приём молчал во всех пяти местах разом, и по этой тишине нельзя было отличить
+            // «поле не отдаёт текст» от «человек ничего не правил». Первый разбор жалобы
+            // на неработающее автодобавление упёрся ровно в это.
+            guard let field = access.focused() else {
+                Self.logger.notice("Правки: фокуса нет — наблюдение не начато")
+                return
+            }
+            guard let value = access.text(field) else {
+                Self.logger.notice(
+                    "Правки: поле не отдаёт содержимое (\(Self.frontmostApp(), privacy: .public)) — наблюдение не начато"
+                )
+                return
+            }
             guard let point = Self.baseline(value: value, inserted: text) else {
                 // Вставленного текста в поле нет: либо оно не отдаёт содержимое, либо текст
                 // уехал не туда. Наблюдать не за чем.
-                Self.logger.debug("вставленного текста в поле не видно — наблюдение не начато")
+                Self.logger.notice(
+                    "Правки: вставленного текста в поле не видно (\(Self.frontmostApp(), privacy: .public)) — наблюдение не начато"
+                )
                 return
             }
+            Self.logger.notice(
+                "Правки: наблюдаю поле в \(Self.frontmostApp(), privacy: .public)"
+            )
             element = field
             baseline = point
             inserted = text
@@ -90,10 +109,20 @@ public final class EditWatcher: @unchecked Sendable {
             baseline = nil
             inserted = nil
 
-            guard let after = access.text(field), after != before else { return }
+            guard let after = access.text(field) else {
+                Self.logger.notice("Правки: поле перестало отдавать содержимое — снимок не снят")
+                return
+            }
+            guard after != before else {
+                Self.logger.notice("Правки: поле не изменилось — править было нечего")
+                return
+            }
             let corrections = EditDiff.corrections(before: before, after: after, inserted: text)
-            guard !corrections.isEmpty else { return }
-            Self.logger.debug("замечено правок: \(corrections.count, privacy: .public)")
+            guard !corrections.isEmpty else {
+                Self.logger.notice("Правки: поле изменилось, но разбор правок ничего не дал")
+                return
+            }
+            Self.logger.notice("Правки: замечено \(corrections.count, privacy: .public)")
             handle(corrections)
         }
     }
@@ -113,6 +142,12 @@ public final class EditWatcher: @unchecked Sendable {
 extension EditWatcher {
     /// Тот же таймаут, что у детектора поля: чужое приложение не имеет права нас держать.
     private static let messagingTimeout: Float = 0.25
+
+    /// Кто был впереди в момент отказа. Без этого полевой отчёт «не доучивается» разобрать
+    /// нечем: приём зависит от приложения-приёмника, а не от нас.
+    static func frontmostApp() -> String {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "—"
+    }
 
     static func systemFocusedElement() -> AnyObject? {
         guard AXIsProcessTrusted() else { return nil }
