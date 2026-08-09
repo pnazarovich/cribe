@@ -160,6 +160,19 @@ public final class EditWatcher: @unchecked Sendable {
                 finish(handle)
                 return
             }
+            // Поле опустело — сообщение отправлено, и ждать больше нечего: править уже
+            // нечего, а всё, что человек напечатает следом, к нашему тексту отношения не
+            // имеет. Закрываем окно досрочно и отдаём последнее НЕПУСТОЕ состояние: взять
+            // итогом пустое поле значит потерять слово, которое человек туда вписал, —
+            // и проверка отбросила бы его же правку как выдуманную.
+            if now.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               previous?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                Self.logger.notice(
+                    "Правки: поле опустело на \(moment, format: .fixed(precision: 0)) с — отдаём найденное сразу"
+                )
+                finish(handle)
+                return
+            }
             if now != before {
                 for correction in EditDiff.corrections(before: before, after: now, inserted: text)
                 where !seen.contains(where: { $0.correction == correction }) {

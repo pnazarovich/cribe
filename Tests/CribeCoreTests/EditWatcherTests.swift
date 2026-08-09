@@ -143,6 +143,44 @@ final class EditWatcherTests: XCTestCase {
         )
     }
 
+    /// Сообщение отправлено — поле опустело, и ждать оставшееся окно нечего: править
+    /// уже нечего, а печать следующего сообщения к нашему тексту отношения не имеет.
+    ///
+    /// Итогом при этом идёт последнее НЕПУСТОЕ состояние. Возьми мы пустое поле — слово,
+    /// которое человек вписал, в нём не нашлось бы, и его же правку отбросили бы как
+    /// выдуманную (см. `DictionaryJudge.confirmed`).
+    func testEmptiedFieldClosesTheWindowAtOnce() {
+        let field = NSObject()
+        let text = LockedText(value: "поправим хероблок сегодня")
+        // Окно намеренно длинное: если ранний выход не сработает, тест не дождётся.
+        let watcher = EditWatcher(
+            access: FieldAccess(focused: { field }, text: { _ in text.value }),
+            pollInterval: 0.05,
+            pollWindow: 5
+        )
+
+        let noticed = expectation(description: "правка доехала досрочно")
+        var got: FieldObservation?
+        watcher.watch(inserted: "поправим хероблок сегодня", recognized: "поправим хероблок сегодня") { observation in
+            got = observation
+            noticed.fulfill()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.1) {
+            text.value = "поправим heroblock сегодня"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + EditWatcher.settleDelay + 0.25) {
+            text.value = ""
+        }
+
+        wait(for: [noticed], timeout: 2)
+        XCTAssertEqual(
+            got?.corrections.map(\.correction),
+            [Correction(heard: "хероблок", meant: "heroblock")]
+        )
+        XCTAssertEqual(got?.final, "поправим heroblock сегодня", "итог — последнее непустое поле")
+    }
+
     /// Поле не тронули — обработчик не зовётся вовсе. Это самый частый исход, и он обязан
     /// быть тихим: ни правок, ни лишней работы.
     func testUntouchedFieldReportsNothing() {
