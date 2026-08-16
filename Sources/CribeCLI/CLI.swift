@@ -3,9 +3,13 @@ import CribeCore
 import WhisperKit
 
 private let usage = """
-usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate] [--neighbour] [--words]
+usage: cribe-cli <audio-file> --lang ru|uk|en [--variant NAME] [--no-gpt] [--no-vad] [--translate] [--neighbour] [--words]
 
   --lang ru|uk|en  язык диктовки (обязателен)
+  --variant NAME   вариант модели вместо выбранного языком: например
+                   openai_whisper-large-v3 для русской записи, которую обычно
+                   разбирает turbo. Ради замера «какая модель слышит лучше» —
+                   сравнивать модели иначе не на чем.
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (переводит сама модель, слой 1)
@@ -57,8 +61,9 @@ struct CLI {
         // Ловля соседнего языка: в приложении это настройка, здесь — флаг.
         engine.checksNeighbourLanguage = options.neighbour
         let progress = ModelProgress()
-        log("модель \(options.language.whisperModel) — подготовка…")
-        try await engine.prepare(language: options.language) { progress.report($0) }
+        let variant = options.variant ?? options.language.whisperModel
+        log("модель \(variant) — подготовка…")
+        try await engine.prepare(variant: variant, language: options.language) { progress.report($0) }
         // Второе мнение спрашивают у прогретой модели соседа: в приложении её греют заранее,
         // здесь — прямо сейчас, иначе первый же прогон отложил бы проверку.
         if options.neighbour, let neighbour = options.language.neighbour {
@@ -73,6 +78,7 @@ struct CLI {
             let pass = try await engine.transcribeDetailed(
                 speech,
                 language: options.language,
+                variant: variant,
                 prompt: PromptBuilder.initialPrompt(entries: entries, language: options.language)
             )
             for probe in pass.words {
@@ -93,7 +99,7 @@ struct CLI {
             )
         } else {
             let pass = try await engine.transcribeDetailed(
-                speech, language: options.language, prompt: prompt
+                speech, language: options.language, variant: variant, prompt: prompt
             )
             raw = pass.text
             heardWords = pass.words
@@ -148,6 +154,7 @@ private struct Options {
     let translate: Bool
     let neighbour: Bool
     let words: Bool
+    let variant: String?
 
     init(arguments: [String]) throws {
         var path: String?
@@ -157,6 +164,7 @@ private struct Options {
         var translate = false
         var neighbour = false
         var words = false
+        var variant: String?
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
@@ -171,6 +179,11 @@ private struct Options {
             case "--translate": translate = true
             case "--neighbour": neighbour = true
             case "--words": words = true
+            case "--variant":
+                guard let value = rest.next() else {
+                    throw CLIError("--variant требует имя варианта модели\n\n\(usage)")
+                }
+                variant = value
             case "-h", "--help": throw CLIError(usage)
             default:
                 guard !argument.hasPrefix("-"), path == nil else {
@@ -190,6 +203,7 @@ private struct Options {
         self.translate = translate
         self.neighbour = neighbour
         self.words = words
+        self.variant = variant
     }
 }
 

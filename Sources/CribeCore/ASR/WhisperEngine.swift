@@ -251,9 +251,10 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     public func transcribeDetailed(
         _ samples: [Float],
         language: Language,
+        variant: String? = nil,
         prompt: String
     ) async throws -> Transcript {
-        let results = try await run(samples, language: language, prompt: prompt)
+        let results = try await run(samples, language: language, variant: variant, prompt: prompt)
         return Transcript(text: Self.text(of: results), words: words(of: results, language: language))
     }
 
