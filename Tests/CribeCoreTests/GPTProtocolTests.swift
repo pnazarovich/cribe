@@ -301,8 +301,11 @@ final class GPTProtocolTests: XCTestCase {
         let plain = PostProcessor.systemPrompt(entries: entries, language: .ru)
         let translating = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: true)
 
-        XCTAssertFalse(plain.lowercased().contains("англи"), "обычный промпт не должен просить перевод")
-        XCTAssertTrue(translating.lowercased().contains("англи"))
+        // Ищем саму просьбу перевести, а не слово «английский»: про английское написание
+        // терминов говорит и обычная чистка — она возвращает латиницу названиям, которые
+        // распознавание записало на слух.
+        XCTAssertFalse(plain.contains("переведи результат"), "обычный промпт не должен просить перевод")
+        XCTAssertTrue(translating.contains("переведи результат"))
         XCTAssertTrue(translating.lowercased().contains("только"), "перевод возвращается без оригинала")
         // Правила чистки и словарь никуда не делись.
         XCTAssertTrue(translating.contains("гитхаб"))

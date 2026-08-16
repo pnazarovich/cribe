@@ -79,7 +79,13 @@ struct CLI {
                 // Тип берётся из подписи: имя `Language` в этом файле занято нашим.
                 language: .init(rawValue: options.language.rawValue)
             )
-            return result.text
+            log("слой 1: \(result.text)")
+            // Дальше — общий конвейер: словарь и GPT движка не касаются, и сравнивать
+            // движки честно можно только по одинаковому пути.
+            let entries = UserDictionary(url: UserDictionary.defaultURL).entries
+            let replaced = ReplacementEngine.apply(result.text, entries: entries)
+            log("слой 2: \(replaced)")
+            return try await cleaned(replaced, entries: entries, options: options)
         }
 
         let engine = WhisperEngine()
@@ -148,6 +154,15 @@ struct CLI {
 
         let text = ReplacementEngine.apply(checked.text, entries: entries)
         log("слой 2: \(text)")
+        return try await cleaned(text, entries: entries, options: options)
+    }
+
+    /// Слой 3 общий для обоих движков: сравнивать их иначе нечестно.
+    private static func cleaned(
+        _ text: String,
+        entries: [DictionaryEntry],
+        options: Options
+    ) async throws -> String {
         guard options.useGPT else { return text }
 
         log(options.translate ? "слой 3: чистка и перевод…" : "слой 3: чистка…")
@@ -157,7 +172,7 @@ struct CLI {
                 entries: entries,
                 language: options.language,
                 config: AppSettings.shared.gptConfig,
-                timeout: 10,
+                timeout: 40,
                 translateToEnglish: options.translate,
                 restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts
             )
