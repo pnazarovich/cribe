@@ -174,6 +174,11 @@ private struct GeneralPane: View {
                 }
 
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
+                Toggle("Точное распознавание (медленнее)", isOn: $settings.preciseRecognition)
+                if settings.preciseRecognition,
+                   !ModelStore.shared.isInstalled(variant: WhisperModel.large) {
+                    caption("Нужна модель «Українська» — она же большая; скачайте её ниже.")
+                }
                 // Второе мнение спрашивают у модели соседнего языка: нет её на диске —
                 // переключателю нечем работать, и обещать он не должен.
                 let neighbour = settings.language.neighbour
@@ -193,6 +198,12 @@ private struct GeneralPane: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     caption("Язык диктовки форсируется: распознавание его не угадывает.")
+                    caption(
+                        "Точное распознавание слушает большой моделью вместо быстрой. "
+                            + "На чистой речи разницы нет, а на трудной она решает: быстрая модель "
+                            + "способна слепить название с частицей отрицания и перевернуть смысл. "
+                            + "Цена — вдвое дольше на каждой диктовке."
+                    )
                     caption(
                         "Украинская фраза внутри русской диктовки выходит фонетическим мусором: "
                             + "распознавание слушает всю запись одним языком. С ловлей приложение "

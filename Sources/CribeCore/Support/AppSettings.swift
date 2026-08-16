@@ -41,6 +41,7 @@ public final class AppSettings: ObservableObject {
         static let catchesNeighbourLanguage = "catchesNeighbourLanguage"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let learnsFromEdits = "learnsFromEdits"
+        static let preciseRecognition = "preciseRecognition"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
         static let dictationsStarted = "dictationsStarted"
@@ -130,6 +131,17 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(learnsFromEdits, forKey: Key.learnsFromEdits) }
     }
 
+    /// Слушать самой точной моделью вместо самой быстрой.
+    ///
+    /// Разницу видно не на всякой речи. Три чистые записи подряд обе модели разобрали
+    /// слово в слово; а на фразе с именем сервиса быстрая turbo услышала «в пост, но не
+    /// пересобери» вместо «в Постмане, пересобери» — то есть слепила название с частицей
+    /// отрицания и перевернула смысл. Полная large-v3 ту же запись разобрала верно.
+    /// Стоит это вдвое большего времени, поэтому спрашиваем, а не решаем за человека.
+    @Published public var preciseRecognition: Bool {
+        didSet { defaults.set(preciseRecognition, forKey: Key.preciseRecognition) }
+    }
+
     /// Граница «короткой» диктовки в словах.
     @Published public var shortDictationWordLimit: Int {
         didSet { defaults.set(shortDictationWordLimit, forKey: Key.shortDictationWordLimit) }
@@ -204,6 +216,7 @@ public final class AppSettings: ObservableObject {
         catchesNeighbourLanguage = defaults.object(forKey: Key.catchesNeighbourLanguage) as? Bool ?? false
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         learnsFromEdits = defaults.object(forKey: Key.learnsFromEdits) as? Bool ?? true
+        preciseRecognition = defaults.object(forKey: Key.preciseRecognition) as? Bool ?? false
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)

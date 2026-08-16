@@ -82,6 +82,7 @@ final class AppCore: ObservableObject {
     private var escTap: KeyDownTap?
     private var hotkeyModeSubscription: AnyCancellable?
     private var neighbourWatch: AnyCancellable?
+    private var accuracyWatch: AnyCancellable?
     private var escTapSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
     private var loggedEscFailure = false
@@ -127,6 +128,11 @@ final class AppCore: ObservableObject {
         engine.checksNeighbourLanguage = settings.catchesNeighbourLanguage
         neighbourWatch = settings.$catchesNeighbourLanguage.sink { [engine] on in
             engine.checksNeighbourLanguage = on
+        }
+        // Выбор модели — там же: движок знает варианты, настройки знают вкус.
+        engine.prefersAccuracy = settings.preciseRecognition
+        accuracyWatch = settings.$preciseRecognition.sink { [engine] on in
+            engine.prefersAccuracy = on
         }
     }
 

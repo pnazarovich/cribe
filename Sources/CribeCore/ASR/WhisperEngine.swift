@@ -57,15 +57,30 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
+    /// Брать самую точную модель, а не самую быструю.
+    ///
+    /// Замерено на живой ошибке (2026-08-17). Turbo на фразе «проверь вебхук в Постмане,
+    /// пересобери вебпак» услышала «в пост, но не пересобери» — то есть слепила имя
+    /// сервиса в предлог с ЧАСТИЦЕЙ ОТРИЦАНИЯ, перевернув смысл. Полная large-v3 на той же
+    /// записи услышала «в постмане, пересобери» верно. На чистой речи разницы между ними
+    /// нет вовсе (три записи подряд — слово в слово), и цена честная: вдвое дольше.
+    /// Поэтому это выбор человека, а не наш.
+    public var prefersAccuracy = false
+
+    /// Какой моделью слушать этот язык. Единственное место, где решается вопрос.
+    func variant(for language: Language) -> String {
+        prefersAccuracy ? WhisperModel.large : language.whisperModel
+    }
+
     public func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
-        try await prepare(variant: language.whisperModel, language: language, onState: onState)
+        try await prepare(variant: variant(for: language), language: language, onState: onState)
     }
 
     /// Скачана ли модель этого языка. Нужно прогреву при запуске: греть нечего, пока
     /// файлов нет, а `prepare` в этом случае полез бы их качать — полтора гигабайта
     /// в фоне, о которых никто не просил.
     public func isInstalled(for language: Language) -> Bool {
-        store.isInstalled(variant: language.whisperModel)
+        store.isInstalled(variant: variant(for: language))
     }
 
     /// Вариант модели названа явно: язык её больше не выбирает. Нужно повторному разбору
@@ -117,7 +132,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// обрывает скачивание (`CancellationError`), но только своё: чужую ведёт `prepare`
     /// идущей диктовки — ей и прогресс, и право её обрывать.
     public func download(language: Language, onProgress: @escaping @Sendable (Double) -> Void) async throws {
-        let variant = language.whisperModel
+        let variant = variant(for: language)
         guard !store.isInstalled(variant: variant) else { return }
 
         let pending: (task: Task<Void, Error>, owned: Bool) = queue.sync {
@@ -137,11 +152,11 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Убирает прогретую модель языка из памяти. Нужна перед удалением модели с диска:
     /// стирать файлы под живым инстансом нельзя. Модель не прогрета — вызов ничего не делает.
     public func unload(language: Language) {
-        queue.sync { pipelines[language.whisperModel] = nil }
+        queue.sync { pipelines[variant(for: language)] = nil }
     }
 
     public func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        try await transcribe(samples, language: language, variant: language.whisperModel, prompt: prompt)
+        try await transcribe(samples, language: language, variant: variant(for: language), prompt: prompt)
     }
 
     /// Модель, умеющая переводить. Turbo — не умеет: задачу перевода в неё не обучали.
@@ -190,7 +205,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         language: Language,
         prompt: String
     ) async throws -> [ASRSegment] {
-        let tokenizer = queue.sync { pipelines[language.whisperModel] }?.tokenizer
+        let tokenizer = queue.sync { pipelines[variant(for: language)] }?.tokenizer
         return try await run(samples, language: language, prompt: prompt)
             .flatMap(\.segments)
             .sorted { $0.start < $1.start }
@@ -261,7 +276,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
     /// Уверенность по словам из готового результата прохода. Без токенизатора чисел не
     /// собрать, и это законная пустота: правило по цепочке просто не сработает.
     private func words(of results: [TranscriptionResult], language: Language) -> [WordProbe] {
-        guard let pipe = queue.sync(execute: { pipelines[language.whisperModel] }),
+        guard let pipe = queue.sync(execute: { pipelines[variant(for: language)] }),
               let tokenizer = pipe.tokenizer
         else { return [] }
         return Self.words(of: results.flatMap(\.segments), tokenizer: tokenizer)
@@ -298,7 +313,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
         prompt: String,
         translating: Bool = false
     ) async throws -> [TranscriptionResult] {
-        let cached = queue.sync { pipelines[variant ?? language.whisperModel] }
+        let cached = queue.sync { pipelines[variant ?? self.variant(for: language)] }
         guard let pipe = cached else {
             throw TranscriptionEngineError.notPrepared(language)
         }
@@ -345,7 +360,7 @@ public final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
               let neighbour = language.neighbour,
               // Три гигабайта ради проверки не качаем: нет модели соседа — нет и мнения.
               store.isInstalled(variant: neighbour.whisperModel),
-              let own = queue.sync(execute: { pipelines[language.whisperModel] })
+              let own = queue.sync(execute: { pipelines[variant(for: language)] })
         else { return NeighbourPass(text: plain) }
 
         // Разметка фраз — отдельным проходом без подсказки. Взять её из основного прохода
