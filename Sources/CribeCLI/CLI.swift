@@ -1,15 +1,21 @@
 import Foundation
 import CribeCore
+import FluidAudio
 import WhisperKit
 
 private let usage = """
-usage: cribe-cli <audio-file> --lang ru|uk|en [--variant NAME] [--no-gpt] [--no-vad] [--translate] [--neighbour] [--words]
+usage: cribe-cli <audio-file> --lang ru|uk|en [--variant NAME] [--parakeet] [--no-prompt] [--no-gpt] [--no-vad] [--translate] [--neighbour] [--words]
 
   --lang ru|uk|en  язык диктовки (обязателен)
   --variant NAME   вариант модели вместо выбранного языком: например
                    openai_whisper-large-v3 для русской записи, которую обычно
                    разбирает turbo. Ради замера «какая модель слышит лучше» —
                    сравнивать модели иначе не на чем.
+  --parakeet     распознавать не Whisper, а Parakeet TDT v3 от NVIDIA (FluidAudio).
+                 Замерный режим: словарной подсказки у него нет по устройству,
+                 поэтому сравнивать честно можно только слой 1.
+  --no-prompt    не подсказывать Whisper словарные термины: замер «не портит ли
+                 подсказка то, что модель услышала бы сама»
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (переводит сама модель, слой 1)
@@ -57,6 +63,25 @@ struct CLI {
             log("VAD: \(seconds(trimmed.count)) c речи")
         }
 
+        // Другой движок целиком: у него ни подсказки, ни второго мнения — только слой 1.
+        if options.parakeet {
+            log("Parakeet TDT v3 — подготовка…")
+            // Именно многоязычный набор: у «unified» варианта модель английская,
+            // и русская запись возвращается пустой строкой.
+            let models = try await AsrModels.downloadAndLoad(version: .v3)
+            let manager = AsrManager()
+            try await manager.loadModels(models)
+            log("распознавание…")
+            var state = try TdtDecoderState()
+            let result = try await manager.transcribe(
+                speech,
+                decoderState: &state,
+                // Тип берётся из подписи: имя `Language` в этом файле занято нашим.
+                language: .init(rawValue: options.language.rawValue)
+            )
+            return result.text
+        }
+
         let engine = WhisperEngine()
         // Ловля соседнего языка: в приложении это настройка, здесь — флаг.
         engine.checksNeighbourLanguage = options.neighbour
@@ -90,7 +115,9 @@ struct CLI {
             return ""
         }
         log("распознавание…")
-        let prompt = PromptBuilder.initialPrompt(entries: entries, language: options.language)
+        let prompt = options.usePrompt
+            ? PromptBuilder.initialPrompt(entries: entries, language: options.language)
+            : ""
         let raw: String
         var heardWords: [WordProbe] = []
         if options.translate {
@@ -148,33 +175,39 @@ struct CLI {
 
 private struct Options {
     let path: String
-    let language: Language
+    let language: CribeCore.Language
     let useGPT: Bool
     let useVAD: Bool
     let translate: Bool
     let neighbour: Bool
     let words: Bool
     let variant: String?
+    let usePrompt: Bool
+    let parakeet: Bool
 
     init(arguments: [String]) throws {
         var path: String?
-        var language: Language?
+        var language: CribeCore.Language?
         var useGPT = true
         var useVAD = true
         var translate = false
         var neighbour = false
         var words = false
         var variant: String?
+        var usePrompt = true
+        var parakeet = false
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
             switch argument {
             case "--lang":
-                guard let value = rest.next(), let parsed = Language(rawValue: value) else {
+                guard let value = rest.next(), let parsed = CribeCore.Language(rawValue: value) else {
                     throw CLIError("--lang требует значение ru, uk или en\n\n\(usage)")
                 }
                 language = parsed
             case "--no-gpt": useGPT = false
+            case "--no-prompt": usePrompt = false
+            case "--parakeet": parakeet = true
             case "--no-vad": useVAD = false
             case "--translate": translate = true
             case "--neighbour": neighbour = true
@@ -204,6 +237,8 @@ private struct Options {
         self.neighbour = neighbour
         self.words = words
         self.variant = variant
+        self.usePrompt = usePrompt
+        self.parakeet = parakeet
     }
 }
 
