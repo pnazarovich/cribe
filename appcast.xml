@@ -285,6 +285,25 @@
                  type="application/octet-stream"
                  sparkle:edSignature="/ZlPJQK7J5YztfZGhDIaWO9Xq9EjzWTDnzO45ny1Jt0e/knxqkuhuEJsFDGgX10T8QjLoqNmekBSXKxK9v8qCw==" length="7773251" />
     </item>
+    <item>
+      <title>0.3.1</title>
+      <pubDate>Tue, 18 Aug 2026 00:44:17 +0200</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Украинские вставки перестала портить сама чистка</h3>
+<ul>
+<li>Правило о доминирующем языке писалось под Whisper: та слушает запись одним языком и украинскую вставку записывает фонетически по-русски. У Parakeet эта посылка неверна — он многоязычный и пишет украинские слова по-украински сам. Замер на смешанной фразе показал, что распознавание отдавало «треба ще раз», «вже дивився», «нічого не зрозумів» правильно, а чистка делала из них «ещё раз», «уже», «ничего не понял». Единственным, что портило смешанную речь, была сама чистка.</li>
+<li>Теперь «Ловить фразы на языке Українська» переключает и правила чистки. У Whisper галочка значит прежнее — перечитать подозрительную фразу украинской моделью. У Parakeet перечитывать нечего, и та же галочка честно значит «не переписывай услышанное по-русски». Выключена — человек диктует на одном языке, и случайное украинское слово ему в тексте не нужно.</li>
+<li>Русское слово с прилипшим украинским окончанием по-прежнему чинится: «не собирається» остаётся «не собирается».</li>
+<li>Галочка снова доступна при выбранном Parakeet — раньше она гасла с подписью «Работает только с Whisper».</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.3.1/Cribe-0.3.1.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="2G1DDMXM78n72Oqnga2hLkpsS/DkslcHnp7iP4IrRJRr/qsrB4gEO3U1gWNEAgBapHhbriUVKTIHA6C/0QO3CA==" length="7774993" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
