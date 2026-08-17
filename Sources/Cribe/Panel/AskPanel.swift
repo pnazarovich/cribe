@@ -33,8 +33,8 @@ public final class AskPanel {
     private var hideTask: Task<Void, Never>?
     /// Вопрос на экране и очередь тех, что ждут своей очереди: две плашки друг над другом —
     /// это уже панель, а решать проще по одному.
-    private var current: (LearnRequest, (Bool) -> Void)?
-    private var queue: [(LearnRequest, (Bool) -> Void)] = []
+    private var current: (AskPrompt, (Bool) -> Void)?
+    private var queue: [(AskPrompt, (Bool) -> Void)] = []
 
     private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Panel")
 
@@ -52,8 +52,13 @@ public final class AskPanel {
     /// Вопросы идут по одному. Про одну и ту же пару дважды не спрашиваем: диктовка могла
     /// повториться, пока прошлый вопрос ещё висит.
     public func ask(_ request: LearnRequest, reply: @escaping (Bool) -> Void) {
-        guard current?.0 != request, !queue.contains(where: { $0.0 == request }) else { return }
-        queue.append((request, reply))
+        ask(AskPrompt(request), reply: reply)
+    }
+
+    /// Тот же вопрос, но повод произвольный: плашка одна на все случаи, когда надо нажать.
+    public func ask(_ prompt: AskPrompt, reply: @escaping (Bool) -> Void) {
+        guard current?.0 != prompt, !queue.contains(where: { $0.0 == prompt }) else { return }
+        queue.append((prompt, reply))
         showNext()
     }
 
@@ -69,7 +74,7 @@ public final class AskPanel {
         guard current == nil, !queue.isEmpty else { return }
         let item = queue.removeFirst()
         current = item
-        presentation.request = item.0
+        presentation.prompt = item.0
 
         // Окно строится заново на каждый вопрос, и порядок здесь не вкусовой: сначала
         // размер, и только потом содержимое. Наоборот было — и не работало вовсе. Окно
@@ -150,13 +155,16 @@ public final class AskPanel {
     /// Считается заранее и тем же шрифтом, каким рисует SwiftUI: окно кроится по плашке,
     /// и разъехаться им нельзя — иначе текст обрежется краем окна.
     static func capsuleWidth(for request: LearnRequest) -> CGFloat {
-        let question = AskLayout.question(request)
+        capsuleWidth(for: AskPrompt(request))
+    }
+
+    static func capsuleWidth(for prompt: AskPrompt) -> CGFloat {
         let width = AskLayout.leading
-            + AskLayout.width(question, font: AskLayout.questionFont)
+            + AskLayout.width(prompt.question, font: AskLayout.questionFont)
             + AskLayout.gap
-            + AskLayout.buttonWidth(AskLayout.accept)
+            + AskLayout.buttonWidth(prompt.accept)
             + AskLayout.buttonGap
-            + AskLayout.buttonWidth(AskLayout.refuse)
+            + AskLayout.buttonWidth(prompt.refuse)
             + AskLayout.trailing
         return min(width, AskLayout.maximumWidth)
     }
@@ -194,6 +202,43 @@ public final class AskPanel {
 
 /// Размеры и слова вопроса. Вынесены отдельно, потому что нужны дважды: ими рисует SwiftUI
 /// и по ним же кроится окно.
+/// О чём спрашивает плашка. Поводов два — пополнить словарь и повторить чистку, — а
+/// поверхность одна: окно с кнопками стоит дорого (см. кройку окна выше), и второй такой
+/// заводить незачем.
+public struct AskPrompt: Equatable, Sendable {
+    public let question: String
+    public let accept: String
+    public let refuse: String
+
+    public init(question: String, accept: String, refuse: String) {
+        self.question = question
+        self.accept = accept
+        self.refuse = refuse
+    }
+
+    /// Вопрос о словаре.
+    ///
+    /// Названо ровно то слово, которое человек видел на экране и правил своими руками.
+    /// Услышанное распознаванием в вопросе не участвует, хотя в словарь уедет именно оно:
+    /// человеку нет дела до внутренней кухни, а слово, которого он в глаза не видел,
+    /// превращает понятный вопрос в загадку.
+    public init(_ request: LearnRequest) {
+        let shown = request.edited ?? request.correction.heard
+        self.init(
+            question: "Вы исправили «\(shown)» на «\(request.correction.meant)». В словарь?",
+            accept: "Добавить",
+            refuse: "Нет"
+        )
+    }
+
+    /// Предложение повторить не удавшуюся чистку.
+    public static let retryCleanup = AskPrompt(
+        question: "Текст вставлен без AI-чистки. Сделать ещё раз?",
+        accept: "Ещё раз",
+        refuse: "Не надо"
+    )
+}
+
 enum AskLayout {
     static let questionFont = NSFont.systemFont(ofSize: 12, weight: .medium)
     static let buttonFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
@@ -205,19 +250,11 @@ enum AskLayout {
     /// Дальше плашка не растёт: длинную пару лучше подрезать, чем растянуть на весь экран.
     static let maximumWidth: CGFloat = 720
 
+    /// Слова вопроса о словаре — оставлены здесь ради тестов, которые их и проверяют.
     static let accept = "Добавить"
     static let refuse = "Нет"
 
-    /// Что написано на плашке.
-    ///
-    /// Названо ровно то слово, которое человек видел на экране и правил своими руками.
-    /// Услышанное распознаванием в вопросе не участвует, хотя в словарь уедет именно оно:
-    /// человеку нет дела до внутренней кухни, а слово, которого он в глаза не видел,
-    /// превращает понятный вопрос в загадку.
-    static func question(_ request: LearnRequest) -> String {
-        let shown = request.edited ?? request.correction.heard
-        return "Вы исправили «\(shown)» на «\(request.correction.meant)». В словарь?"
-    }
+    static func question(_ request: LearnRequest) -> String { AskPrompt(request).question }
 
     static func width(_ text: String, font: NSFont) -> CGFloat {
         // Пара точек запаса: измерение AppKit и раскладка SwiftUI сходятся не до пикселя.
@@ -233,7 +270,7 @@ enum AskLayout {
 @MainActor
 private final class AskPresentation: ObservableObject {
     @Published var isVisible = false
-    @Published var request: LearnRequest?
+    @Published var prompt: AskPrompt?
 }
 
 private struct AskView: View {
@@ -244,8 +281,8 @@ private struct AskView: View {
 
     var body: some View {
         Group {
-            if presentation.isVisible, let request = presentation.request {
-                AskCapsule(request: request, answer: answer)
+            if presentation.isVisible, let prompt = presentation.prompt {
+                AskCapsule(prompt: prompt, answer: answer)
                     .transition(accessibility.reduceMotion ? .opacity : .ask)
             }
         }
@@ -271,19 +308,19 @@ extension AnyTransition {
 }
 
 private struct AskCapsule: View {
-    let request: LearnRequest
+    let prompt: AskPrompt
     let answer: (Bool) -> Void
 
     var body: some View {
         HStack(spacing: AskLayout.gap) {
-            Text(AskLayout.question(request))
+            Text(prompt.question)
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
             HStack(spacing: AskLayout.buttonGap) {
-                AskButton(title: AskLayout.accept, prominent: true) { answer(true) }
-                AskButton(title: AskLayout.refuse, prominent: false) { answer(false) }
+                AskButton(title: prompt.accept, prominent: true) { answer(true) }
+                AskButton(title: prompt.refuse, prominent: false) { answer(false) }
             }
         }
         .padding(.leading, AskLayout.leading)

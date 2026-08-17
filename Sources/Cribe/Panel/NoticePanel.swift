@@ -192,6 +192,16 @@ private final class NonKeyPanel: NSPanel {
 /// живут здесь, рядом с поверхностью, которая их показывает.
 enum NoticeText {
     /// Пустая строка означает «показывать нечего»: `NoticePanel.show` такую не покажет.
+    /// Чем кончился повтор чистки. Заменённый текст человек видит сам, поэтому строка
+    /// нужна ровно двум исходам, где результат оказался не там, где его ждут.
+    static func line(for outcome: CleanupRetryOutcome) -> String {
+        switch outcome {
+        case .replaced: return "✅ Чистка готова"
+        case .copied: return "📋 Чистка готова — текст в буфере обмена"
+        case .failed(let reason): return "⚠️ Чистка снова не удалась: \(reason)"
+        }
+    }
+
     static func line(for notice: DictationNotice, hotkey: HotkeyMode) -> String {
         switch notice {
         case .queueFull(let limit):

@@ -23,6 +23,10 @@ usage: cribe-cli <audio-file> --lang ru|uk|en [--variant NAME] [--parakeet] [--n
                  своим ключом, потому что у CLI собственный домен UserDefaults)
   --words        замерный режим: уверенность распознавания по каждому слову и найденные
                  по ней сломанные куски (см. `Uncertainty`). Текста не печатает.
+  --gpt-model NAME   модель слоя 3 вместо выбранной в настройках (gpt-5.6-luna,
+                 gpt-5.6-terra, gpt-5.6-sol). Ради замера «хватит ли модели подешевле».
+  --gpt-effort X     усилие рассуждения слоя 3: none|minimal|low|medium|high.
+                 Codex-бэкенд ниже low не опускается и сам нормализует.
 
 Стадии печатаются в stderr, финальный текст — в stdout.
 """
@@ -171,7 +175,7 @@ struct CLI {
                 text: text,
                 entries: entries,
                 language: options.language,
-                config: AppSettings.shared.gptConfig,
+                config: options.gptConfig,
                 timeout: 40,
                 translateToEnglish: options.translate,
                 restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts,
@@ -201,6 +205,14 @@ private struct Options {
     let variant: String?
     let usePrompt: Bool
     let parakeet: Bool
+    let gptModel: String?
+    let gptEffort: String?
+
+    /// Настройки слоя 3 с поправкой на замерные флаги: не указаны — берём как у приложения.
+    var gptConfig: GPTConfig {
+        let base = AppSettings.shared.gptConfig
+        return GPTConfig(mode: base.mode, model: gptModel ?? base.model, effort: gptEffort ?? base.effort)
+    }
 
     init(arguments: [String]) throws {
         var path: String?
@@ -213,6 +225,8 @@ private struct Options {
         var variant: String?
         var usePrompt = true
         var parakeet = false
+        var gptModel: String?
+        var gptEffort: String?
 
         var rest = arguments.dropFirst().makeIterator()
         while let argument = rest.next() {
@@ -234,6 +248,16 @@ private struct Options {
                     throw CLIError("--variant требует имя варианта модели\n\n\(usage)")
                 }
                 variant = value
+            case "--gpt-model":
+                guard let value = rest.next() else {
+                    throw CLIError("--gpt-model требует имя модели\n\n\(usage)")
+                }
+                gptModel = value
+            case "--gpt-effort":
+                guard let value = rest.next() else {
+                    throw CLIError("--gpt-effort требует none|minimal|low|medium|high\n\n\(usage)")
+                }
+                gptEffort = value
             case "-h", "--help": throw CLIError(usage)
             default:
                 guard !argument.hasPrefix("-"), path == nil else {
@@ -255,6 +279,8 @@ private struct Options {
         self.words = words
         self.variant = variant
         self.usePrompt = usePrompt
+        self.gptModel = gptModel
+        self.gptEffort = gptEffort
         self.parakeet = parakeet
     }
 }

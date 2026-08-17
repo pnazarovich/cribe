@@ -167,6 +167,19 @@ final class AppCore: ObservableObject {
         let asks = AskPanel()
         self.asks = asks
         controller.onLearnRequest = { correction, reply in asks.ask(correction, reply: reply) }
+        // Чистка не удалась, а текст уже в поле: предлагаем сделать её ещё раз. Осечка
+        // тут почти всегда сетевая, и второй заход обычно проходит — но решает человек,
+        // потому что заменять текст в чужом поле без спроса нельзя.
+        controller.onCleanupFailed = { [weak self] retry in
+            guard let self else { return }
+            asks.ask(.retryCleanup) { accepted in
+                guard accepted else { return }
+                Task { @MainActor in
+                    let outcome = await self.controller.retryCleanup(retry)
+                    self.notices?.show(NoticeText.line(for: outcome))
+                }
+            }
+        }
         // Ядро остаётся без UI: оно только сообщает, что вставлять было некуда, а карточку
         // из этого делает уже приложение. Перевод карточки — тоже дело приложения: только
         // здесь есть и настройки GPT, и словарь.

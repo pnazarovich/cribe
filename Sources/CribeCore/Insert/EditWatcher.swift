@@ -264,6 +264,13 @@ extension EditWatcher {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "—"
     }
 
+    /// Что сейчас в поле ввода под фокусом. Нужно повторной чистке: заменять текст в поле
+    /// можно, только убедившись, что в нём лежит ровно то, что мы туда вставили.
+    public static func fieldText() -> String? {
+        guard let element = systemFocusedElement() else { return nil }
+        return systemText(of: element)
+    }
+
     static func systemFocusedElement() -> AnyObject? {
         guard AXIsProcessTrusted() else { return nil }
         let system = AXUIElementCreateSystemWide()

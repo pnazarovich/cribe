@@ -40,6 +40,59 @@ public enum DictationState: Sendable, Equatable {
 /// должен быть свой выход — иначе они просто пропадут.
 ///
 /// Ядро остаётся без UI: оно называет ПОВОД, а текст и внешний вид выбирает приложение.
+/// Всё, что нужно, чтобы повторить не удавшуюся чистку. Текст здесь — результат слоя 2,
+/// то есть ровно то, что чистка не осилила; `delivered` — то, что в итоге уехало в поле.
+/// Второе нужно, чтобы решить, можно ли заменить текст на месте: заменять там, где человек
+/// уже что-то дописал, нельзя.
+public struct CleanupRetry: Sendable, Equatable {
+    public let text: String
+    public let delivered: String
+    public let language: Language
+    public let translating: Bool
+
+    public init(text: String, delivered: String, language: Language, translating: Bool) {
+        self.text = text
+        self.delivered = delivered
+        self.language = language
+        self.translating = translating
+    }
+}
+
+/// Чем кончился повтор чистки.
+public enum CleanupRetryOutcome: Sendable, Equatable {
+    /// Текст в поле заменён на чистый.
+    case replaced
+    /// Поле уже не наше (человек дописал или ушёл в другое окно) — чистый текст в буфере.
+    case copied
+    case failed(String)
+}
+
+extension CleanupRetry {
+    /// Куда деть результат повтора: заменить текст в поле или отдать в буфер обмена.
+    ///
+    /// Заменять вслепую нельзя. Замена — это Cmd-A и Cmd-V, то есть «выделить ВСЁ поле
+    /// и перезаписать»; если человек успел дописать своё или ушёл в другое окно, так
+    /// теряется его работа. Поэтому поле перечитывается прямо здесь, непосредственно перед
+    /// заменой, и должно содержать ровно то, что мы вставили. Всё остальное — в буфер.
+    ///
+    /// Отдельной функцией, а не строчками внутри контроллера, ровно затем, чтобы это решение
+    /// можно было проверить тестами: поднимать ради него конвейер с записью и GPT значит
+    /// проверять не то.
+    public func deliver(_ cleaned: String, using delivery: TextDelivery) -> CleanupRetryOutcome {
+        let wanted = delivered.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = delivery.fieldText()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard current == wanted else {
+            delivery.copy(cleaned)
+            return .copied
+        }
+        if case .pasted = delivery.replace(cleaned) { return .replaced }
+        // Замена не прошла (парольное поле, нет разрешения) — она в этом случае и в буфер
+        // ничего не кладёт. Кладём сами: терять результат повтора нельзя.
+        delivery.copy(cleaned)
+        return .copied
+    }
+}
+
 public enum DictationNotice: Sendable, Equatable {
     /// Очередь заполнена — новую диктовку начинать некуда, пока не доедет одна из идущих.
     case queueFull(limit: Int)
@@ -462,6 +515,14 @@ public final class DictationController: ObservableObject {
     /// Не назначен — словарь не пополняется правками (так живёт CLI): спрашивать некого,
     /// а класть без спроса нельзя.
     public var onLearnRequest: ((LearnRequest, @escaping (Bool) -> Void) -> Void)?
+
+    /// Чистка не удалась, а текст уже вставлен — предложить сделать её ещё раз.
+    /// Не назначен — ничего не предлагаем (так живёт CLI): текст слоя 2 и так на месте.
+    public var onCleanupFailed: ((CleanupRetry) -> Void)?
+
+    /// Строка истории той диктовки, чистку которой предложено повторить: успешный повтор
+    /// переписывает и её, иначе история осталась бы с нечищеным текстом навсегда.
+    private var retryHistoryID: UUID?
 
     private let gate: EngineGate
     private let dictionary: UserDictionary
@@ -1099,6 +1160,7 @@ public final class DictationController: ObservableObject {
                 degradations.append(alarm)
             }
             var translation: String?
+            var cleanupFailed = false
             let skipsGPT = ShortDictation.skipsGPT(
                 text: text,
                 enabled: settings.skipGPTForShort,
@@ -1137,6 +1199,11 @@ public final class DictationController: ObservableObject {
                     // Перевод к этому моменту уже сделан моделью — теряется только чистка.
                     degradations.append("без AI-чистки: \(error.localizedDescription)")
                     logger.error("GPT-слой не отработал: \(error.localizedDescription, privacy: .public)")
+                    // Текст слоя 2 всё равно уедет в поле — терять его нельзя. Но чистку
+                    // можно попробовать ещё раз: осечка тут почти всегда сетевая, и второй
+                    // заход обычно проходит. Что именно предлагать, решаем после доставки:
+                    // до неё неизвестно, попал ли текст в поле вообще.
+                    cleanupFailed = true
                 }
             } else if wantsTranslation {
                 degradations.append("без перевода")
@@ -1175,7 +1242,9 @@ public final class DictationController: ObservableObject {
             // и есть нужное поведение: человек мог за это время перейти в другое окно.
             let destination = await deliver(output)
             let saved = await backup.value
-            history.add(output, language: language, audio: saved?.name, seconds: saved?.seconds)
+            let historyID = history.add(
+                output, language: language, audio: saved?.name, seconds: saved?.seconds
+            )
             // Словарь учится на правках человека, а не на догадках по виду слова. Если текст
             // действительно уехал в поле, берём это поле под наблюдение: что человек в нём
             // поправит, то и есть настоящая ошибка распознавания. В карточке и в буфере
@@ -1190,6 +1259,19 @@ public final class DictationController: ObservableObject {
 
             if case .pasteboard(.clipboardOnly(let reason)) = destination {
                 degradations.append(Self.clipboardMessage(reason))
+            }
+            // Повтор предлагаем только тогда, когда есть что чинить И куда положить
+            // результат: в карточке и в буфере обмена заменять нечего.
+            if cleanupFailed, case .pasteboard(.pasted) = destination {
+                retryHistoryID = historyID
+                onCleanupFailed?(
+                    CleanupRetry(
+                        text: text,
+                        delivered: output,
+                        language: language,
+                        translating: wantsTranslation
+                    )
+                )
             }
             // Речи на выходе подозрительно мало для такой длинной записи. Молчать об этом
             // нельзя: именно так и выглядит потерянная диктовка — текст вроде есть, а половины
@@ -1534,6 +1616,49 @@ public final class DictationController: ObservableObject {
             logger.error("перевод моделью не удался: \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    /// Повторить чистку, которая не удалась. Текст слоя 2 к этому моменту уже в поле —
+    /// повтор либо заменяет его на чистый, либо (если поле стало чужим) кладёт результат
+    /// в буфер обмена.
+    ///
+    /// Заменять вслепую нельзя: Cmd-A выделяет ВСЁ поле, и если человек успел дописать своё
+    /// или ушёл в другое окно, замена затрёт чужое. Поэтому поле перечитывается прямо перед
+    /// заменой и должно содержать ровно то, что мы вставили.
+    @discardableResult
+    public func retryCleanup(_ retry: CleanupRetry) async -> CleanupRetryOutcome {
+        let entries = dictionary.entries
+        let cleaned: String
+        do {
+            cleaned = try await PostProcessor.cleanup(
+                text: retry.text,
+                entries: entries,
+                language: retry.language,
+                config: retry.translating ? settings.translateGPTConfig : settings.gptConfig,
+                translateToEnglish: retry.translating,
+                restoreUkrainianInserts: settings.restoreUkrainianInserts,
+                engine: settings.recognitionEngine,
+                keepsNeighbourLanguage: settings.catchesNeighbourLanguage
+            )
+        } catch {
+            logger.error("Повтор чистки не удался: \(error.localizedDescription, privacy: .public)")
+            return .failed(error.localizedDescription)
+        }
+
+        lastOriginal = retry.translating ? lastOriginal : cleaned
+        if retry.translating { lastTranslation = cleaned }
+        if let retryHistoryID {
+            history.replace(id: retryHistoryID, text: cleaned)
+            self.retryHistoryID = nil
+        }
+
+        // Опрос AX и синтетические клавиши блокируют поток — главный на это не занимаем.
+        let delivery = self.delivery
+        let outcome = await Task.detached(priority: .userInitiated) {
+            retry.deliver(cleaned, using: delivery)
+        }.value
+        logger.notice("Повтор чистки: \(String(describing: outcome), privacy: .public)")
+        return outcome
     }
 
     /// `TextInserter.insert` синхронно спит 20 мс — уводим с главного потока.

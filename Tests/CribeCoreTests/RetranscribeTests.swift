@@ -59,7 +59,9 @@ private final class CopySpy: @unchecked Sendable {
         TextDelivery(
             focus: { FocusVerdict(state: .unknown, role: nil) },
             insert: { _ in .pasted },
-            copy: { text in self.lock.withLock { self.texts.append(text) } }
+            copy: { text in self.lock.withLock { self.texts.append(text) } },
+            replace: { _ in .pasted },
+            fieldText: { nil }
         )
     }
 }

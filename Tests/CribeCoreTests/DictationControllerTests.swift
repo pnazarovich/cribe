@@ -171,6 +171,8 @@ private final class SpyDelivery: @unchecked Sendable {
     private let lock = NSLock()
     private var insertedTexts: [String] = []
     private var copiedTexts: [String] = []
+    private var replacedTexts: [String] = []
+    private var field: String?
     private let focus: FocusState
 
     init(focus: FocusState) {
@@ -179,6 +181,10 @@ private final class SpyDelivery: @unchecked Sendable {
 
     var inserted: [String] { lock.withLock { insertedTexts } }
     var copied: [String] { lock.withLock { copiedTexts } }
+    var replaced: [String] { lock.withLock { replacedTexts } }
+
+    /// Что «лежит в поле ввода» с точки зрения повторной чистки.
+    func setField(_ text: String?) { lock.withLock { field = text } }
 
     var delivery: TextDelivery {
         TextDelivery(
@@ -187,7 +193,12 @@ private final class SpyDelivery: @unchecked Sendable {
                 self.lock.withLock { self.insertedTexts.append(text) }
                 return .pasted
             },
-            copy: { text in self.lock.withLock { self.copiedTexts.append(text) } }
+            copy: { text in self.lock.withLock { self.copiedTexts.append(text) } },
+            replace: { text in
+                self.lock.withLock { self.replacedTexts.append(text) }
+                return .pasted
+            },
+            fieldText: { self.lock.withLock { self.field } }
         )
     }
 }

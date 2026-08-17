@@ -56,6 +56,32 @@ public enum TextInserter {
         return .pasted
     }
 
+    /// Заменить содержимое поля целиком: Cmd-A, затем обычная вставка.
+    ///
+    /// Нужно ровно одному случаю — повторной чистке, когда в поле лежит наш же текст
+    /// и ничего больше. Проверку «лежит ли» делает вызывающий (см. `EditWatcher.fieldText`)
+    /// НЕПОСРЕДСТВЕННО перед вызовом: Cmd-A в чужом поле выделит чужое, и вставка его
+    /// затрёт. Поэтому метод и не публичный соблазн на каждый день.
+    @discardableResult
+    public static func replace(_ text: String) -> InsertOutcome {
+        guard !IsSecureEventInputEnabled() else { return .clipboardOnly(reason: "secure input") }
+        guard hasAccessibility else { return .clipboardOnly(reason: "no accessibility") }
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let selectDown = CGEvent(keyboardEventSource: source, virtualKey: keyA, keyDown: true),
+              let selectUp = CGEvent(keyboardEventSource: source, virtualKey: keyA, keyDown: false)
+        else {
+            return .clipboardOnly(reason: "cgevent unavailable")
+        }
+        selectDown.flags = .maskCommand
+        selectUp.flags = .maskCommand
+        selectDown.post(tap: .cghidEventTap)
+        selectUp.post(tap: .cghidEventTap)
+        // Выделению нужно успеть примениться до того, как приедет вставка: иначе Cmd-V
+        // ляжет рядом с текстом, а не вместо него.
+        Thread.sleep(forTimeInterval: pasteboardSettleDelay)
+        return insert(text)
+    }
+
     /// Пауза между записью в пастборд и синтетическим Cmd-V: приложение-приёмник должно
     /// успеть увидеть новое содержимое. 20 мс с запасом хватает нативным приложениям
     /// (это больше одного тика системного нотификатора пастборда). Мосты буфера обмена
@@ -65,6 +91,8 @@ public enum TextInserter {
 
     /// Виртуальный код клавиши V (0x09).
     private static let keyV = CGKeyCode(kVK_ANSI_V)
+    /// Виртуальный код клавиши A (0x00) — «выделить всё» перед заменой.
+    private static let keyA = CGKeyCode(kVK_ANSI_A)
 }
 
 /// Всё, чем конвейер трогает систему на последнем шаге: буфер обмена, вставка и проверка
@@ -74,20 +102,35 @@ public struct TextDelivery: Sendable {
     public var focus: @Sendable () -> FocusVerdict
     public var insert: @Sendable (String) -> InsertOutcome
     public var copy: @Sendable (String) -> Void
+    /// Заменить содержимое поля целиком. Отдельно от `insert`, потому что и зовётся
+    /// отдельно — только повторной чисткой, и только когда в поле наш же текст.
+    public var replace: @Sendable (String) -> InsertOutcome
+    /// Что сейчас лежит в поле ввода; nil — поля нет или его не прочитать.
+    ///
+    /// Умолчаний у `replace` и `fieldText` намеренно нет. Живая замена шлёт Cmd-A и Cmd-V
+    /// в чужое окно, и молчаливый дефолт превратил бы любой забывчивый тест в стрельбу
+    /// по документу пользователя — ровно то, ради чего этот тип и существует.
+    public var fieldText: @Sendable () -> String?
 
     public init(
         focus: @escaping @Sendable () -> FocusVerdict,
         insert: @escaping @Sendable (String) -> InsertOutcome,
-        copy: @escaping @Sendable (String) -> Void
+        copy: @escaping @Sendable (String) -> Void,
+        replace: @escaping @Sendable (String) -> InsertOutcome,
+        fieldText: @escaping @Sendable () -> String?
     ) {
         self.focus = focus
         self.insert = insert
         self.copy = copy
+        self.replace = replace
+        self.fieldText = fieldText
     }
 
     public static let system = TextDelivery(
         focus: { FocusedFieldDetector.current() },
         insert: { TextInserter.insert($0) },
-        copy: { TextInserter.copy($0) }
+        copy: { TextInserter.copy($0) },
+        replace: { TextInserter.replace($0) },
+        fieldText: { EditWatcher.fieldText() }
     )
 }

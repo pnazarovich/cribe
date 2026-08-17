@@ -55,18 +55,25 @@ public final class HistoryStore: ObservableObject {
         }
     }
 
-    public func add(_ text: String, language: Language, audio: String? = nil, seconds: Double? = nil) {
+    /// Возвращает id добавленной строки — по нему её потом переписывает повторная чистка
+    /// (`replace(id:text:)`). `nil` — писать было нечего.
+    @discardableResult
+    public func add(
+        _ text: String,
+        language: Language,
+        audio: String? = nil,
+        seconds: Double? = nil
+    ) -> UUID? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
 
-        items.insert(
-            HistoryItem(text: trimmed, language: language, audio: audio, seconds: seconds),
-            at: 0
-        )
+        let item = HistoryItem(text: trimmed, language: language, audio: audio, seconds: seconds)
+        items.insert(item, at: 0)
         if items.count > Self.limit {
             items.removeLast(items.count - Self.limit)
         }
         save()
+        return item.id
     }
 
     /// Диктовка, у которой распознавание не дало текста. В историю она попадает ровно затем,
