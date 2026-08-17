@@ -41,7 +41,7 @@ public final class AppSettings: ObservableObject {
         static let catchesNeighbourLanguage = "catchesNeighbourLanguage"
         static let shortDictationWordLimit = "shortDictationWordLimit"
         static let learnsFromEdits = "learnsFromEdits"
-        static let preciseRecognition = "preciseRecognition"
+        static let recognitionEngine = "recognitionEngine"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
         static let dictationsStarted = "dictationsStarted"
@@ -131,15 +131,17 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(learnsFromEdits, forKey: Key.learnsFromEdits) }
     }
 
-    /// Слушать самой точной моделью вместо самой быстрой.
+    /// Чем слушать речь.
     ///
-    /// Разницу видно не на всякой речи. Три чистые записи подряд обе модели разобрали
-    /// слово в слово; а на фразе с именем сервиса быстрая turbo услышала «в пост, но не
-    /// пересобери» вместо «в Постмане, пересобери» — то есть слепила название с частицей
-    /// отрицания и перевернула смысл. Полная large-v3 ту же запись разобрала верно.
-    /// Стоит это вдвое большего времени, поэтому спрашиваем, а не решаем за человека.
-    @Published public var preciseRecognition: Bool {
-        didSet { defaults.set(preciseRecognition, forKey: Key.preciseRecognition) }
+    /// Идеальной модели среди трёх нет — замерено на своих же записях. Быстрая turbo на
+    /// фразе «проверь вебхук в Постмане, пересобери вебпак» услышала «в пост, но не
+    /// пересобери»: слепила имя сервиса с частицей отрицания и перевернула смысл. Полная
+    /// large-v3 ту же запись разобрала верно, но она вдвое медленнее, а на чистой речи
+    /// не отличается от turbo вовсе. Parakeet быстрее обеих вдесятеро и точнее их в
+    /// падежах, но каждое латинское слово пишет кириллицей — и держится на GPT-чистке,
+    /// которая возвращает названиям латиницу.
+    @Published public var recognitionEngine: RecognitionEngine {
+        didSet { defaults.set(recognitionEngine.rawValue, forKey: Key.recognitionEngine) }
     }
 
     /// Граница «короткой» диктовки в словах.
@@ -216,7 +218,8 @@ public final class AppSettings: ObservableObject {
         catchesNeighbourLanguage = defaults.object(forKey: Key.catchesNeighbourLanguage) as? Bool ?? false
         shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
         learnsFromEdits = defaults.object(forKey: Key.learnsFromEdits) as? Bool ?? true
-        preciseRecognition = defaults.object(forKey: Key.preciseRecognition) as? Bool ?? false
+        recognitionEngine = defaults.string(forKey: Key.recognitionEngine)
+            .flatMap(RecognitionEngine.init(rawValue:)) ?? .fast
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)

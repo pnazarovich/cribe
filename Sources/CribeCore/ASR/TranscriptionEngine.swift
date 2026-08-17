@@ -16,6 +16,8 @@ public enum TranscriptionEngineError: LocalizedError {
     case previewNotPrepared
     /// Движок не умеет отдавать сегменты с таймкодами.
     case segmentsUnsupported
+    /// Движок не умеет отдавать английский задачей декодера.
+    case translationUnsupported
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +27,8 @@ public enum TranscriptionEngineError: LocalizedError {
             return "Модель live-превью ещё не загружена."
         case .segmentsUnsupported:
             return "Движок не отдаёт сегменты с таймкодами."
+        case .translationUnsupported:
+            return "Движок не умеет переводить сам."
         }
     }
 }

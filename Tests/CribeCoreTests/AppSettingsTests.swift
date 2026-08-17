@@ -122,4 +122,20 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.gptConfig.model, "gpt-5.6-luna")
         XCTAssertEqual(settings.gptConfig.effort, "none")
     }
+
+    /// Распознавание по умолчанию — быстрое: смена движка ничего не должна менять сама собой.
+    func testRecognitionEngineDefaultsToFast() {
+        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .fast)
+    }
+
+    func testRecognitionEnginePersists() {
+        AppSettings(defaults: defaults).recognitionEngine = .parakeet
+        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .parakeet)
+    }
+
+    /// Чужое значение в ключе не должно ронять запуск: непонятное читается как быстрое.
+    func testUnknownRecognitionEngineFallsBackToFast() {
+        defaults.set("nemotron", forKey: "recognitionEngine")
+        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .fast)
+    }
 }

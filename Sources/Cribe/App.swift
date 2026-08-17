@@ -30,6 +30,9 @@ final class AppCore: ObservableObject {
     let history = HistoryStore.shared
     let learner = EditLearner.shared
     let engine = WhisperEngine()
+    /// Развилка между Whisper и Parakeet. Конвейеру уходит она, а не движок: выбор живёт
+    /// в настройках и меняется на лету, а `DictationController` берёт движок один раз.
+    let recognizer: Recognizer
     let dictionary = UserDictionary(url: UserDictionary.defaultURL)
     let controller: DictationController
 
@@ -92,7 +95,9 @@ final class AppCore: ObservableObject {
     private let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Hotkey")
 
     private init() {
-        controller = DictationController(engine: engine, dictionary: dictionary, settings: settings)
+        let recognizer = Recognizer(whisper: engine)
+        self.recognizer = recognizer
+        controller = DictationController(engine: recognizer, dictionary: dictionary, settings: settings)
         needsOnboarding = !UserDefaults.standard.bool(forKey: Self.onboardingKey)
         // Чаймы синтезируются заранее: на первом хоткее звук иначе опаздывал.
         SoundPlayer.preload()
@@ -110,11 +115,15 @@ final class AppCore: ObservableObject {
     /// и настоящая диктовка сообщит о беде сама.
     private func warmUpModel() {
         let engine = self.engine
+        let recognizer = self.recognizer
         let language = settings.language
-        let neighbour = settings.catchesNeighbourLanguage ? language.neighbour : nil
+        // Второе мнение умеет спрашивать только Whisper: у Parakeet перечитывание — заглушка,
+        // и греть ради него полтора гигабайта украинской модели было бы чистой тратой.
+        let catches = settings.catchesNeighbourLanguage && settings.recognitionEngine != .parakeet
+        let neighbour = catches ? language.neighbour : nil
         Task.detached(priority: .utility) {
-            guard engine.isInstalled(for: language) else { return }
-            try? await engine.prepare(language: language) { _ in }
+            guard recognizer.isInstalled(for: language) else { return }
+            try? await recognizer.prepare(language: language) { _ in }
             // Модель соседа греем следом и заранее: второе мнение спрашивают посреди
             // диктовки, и ждать там компиляции под ANE нельзя — это минуты молчания.
             guard let neighbour, engine.isInstalled(for: neighbour) else { return }
@@ -129,10 +138,10 @@ final class AppCore: ObservableObject {
         neighbourWatch = settings.$catchesNeighbourLanguage.sink { [engine] on in
             engine.checksNeighbourLanguage = on
         }
-        // Выбор модели — там же: движок знает варианты, настройки знают вкус.
-        engine.prefersAccuracy = settings.preciseRecognition
-        accuracyWatch = settings.$preciseRecognition.sink { [engine] on in
-            engine.prefersAccuracy = on
+        // Выбор распознавания — там же: развилка знает движки, настройки знают вкус.
+        recognizer.mode = settings.recognitionEngine
+        accuracyWatch = settings.$recognitionEngine.sink { [recognizer] choice in
+            recognizer.mode = choice
         }
     }
 

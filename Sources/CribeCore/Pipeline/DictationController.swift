@@ -243,11 +243,19 @@ enum StreamingMerge {
 
 /// Гейт коротких диктовок. На «ок» или «да, давай» GPT-чистка не меняет ничего, но стоит
 /// целого круга к модели — а именно короткие команды и диктуют, когда важна скорость.
-/// Перевод исключение: его делает тот же вызов, поэтому с включённым переводом слой 3
-/// обязателен всегда.
+///
+/// Исключений два, и оба про то, что слой 3 делает не только чистку. Перевод — его работа
+/// тем же вызовом. И Parakeet: он один пишет английские названия кириллицей, а латиницу
+/// им возвращает GPT, поэтому пропустить его нельзя и на одном слове.
 enum ShortDictation {
-    static func skipsGPT(text: String, enabled: Bool, wordLimit: Int, translating: Bool) -> Bool {
-        guard enabled, !translating else { return false }
+    static func skipsGPT(
+        text: String,
+        enabled: Bool,
+        wordLimit: Int,
+        translating: Bool,
+        engine: RecognitionEngine
+    ) -> Bool {
+        guard enabled, !translating, !engine.alwaysCleans else { return false }
         return wordCount(text) <= wordLimit
     }
 
@@ -1093,7 +1101,8 @@ public final class DictationController: ObservableObject {
                 text: text,
                 enabled: settings.skipGPTForShort,
                 wordLimit: settings.shortDictationWordLimit,
-                translating: wantsTranslation
+                translating: wantsTranslation,
+                engine: settings.recognitionEngine
             )
 
             if settings.gptEnabled, !skipsGPT {

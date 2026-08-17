@@ -174,15 +174,33 @@ private struct GeneralPane: View {
                 }
 
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
-                Toggle("Точное распознавание (медленнее)", isOn: $settings.preciseRecognition)
-                if settings.preciseRecognition,
-                   !ModelStore.shared.isInstalled(variant: WhisperModel.large) {
-                    caption("Нужна модель «Українська» — она же большая; скачайте её ниже.")
+
+                Picker("Слушать:", selection: $settings.recognitionEngine) {
+                    Text("Быстро (Whisper turbo)").tag(RecognitionEngine.fast)
+                    Text("Точно (Whisper large)").tag(RecognitionEngine.precise)
+                    Text("Parakeet + AI-чистка").tag(RecognitionEngine.parakeet)
                 }
+                switch settings.recognitionEngine {
+                case .fast:
+                    EmptyView()
+                case .precise:
+                    if !ModelStore.shared.isInstalled(variant: WhisperModel.large) {
+                        caption("Нужна модель «Українська» — она же большая; скачайте её ниже.")
+                    }
+                case .parakeet:
+                    if !settings.gptEnabled {
+                        caption("Без AI-чистки Parakeet оставит английские названия кириллицей.")
+                    }
+                }
+
                 // Второе мнение спрашивают у модели соседнего языка: нет её на диске —
-                // переключателю нечем работать, и обещать он не должен.
+                // переключателю нечем работать, и обещать он не должен. Parakeet его тоже
+                // не умеет — там перечитывать нечем.
                 let neighbour = settings.language.neighbour
-                let ready = neighbour.map { ModelStore.shared.isInstalled(variant: $0.whisperModel) }
+                let ready = neighbour.map {
+                    ModelStore.shared.isInstalled(variant: $0.whisperModel)
+                        && settings.recognitionEngine != .parakeet
+                }
                 if let neighbour, let ready {
                     Toggle(
                         "Ловить фразы на языке «\(neighbour.displayName)»",
@@ -190,7 +208,11 @@ private struct GeneralPane: View {
                     )
                     .disabled(!ready)
                     if !ready {
-                        caption("Нужна модель «\(neighbour.displayName)» — скачайте её ниже.")
+                        caption(
+                            settings.recognitionEngine == .parakeet
+                                ? "Работает только с Whisper."
+                                : "Нужна модель «\(neighbour.displayName)» — скачайте её ниже."
+                        )
                     }
                 }
             } header: {
@@ -199,10 +221,16 @@ private struct GeneralPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     caption("Язык диктовки форсируется: распознавание его не угадывает.")
                     caption(
-                        "Точное распознавание слушает большой моделью вместо быстрой. "
-                            + "На чистой речи разницы нет, а на трудной она решает: быстрая модель "
-                            + "способна слепить название с частицей отрицания и перевернуть смысл. "
-                            + "Цена — вдвое дольше на каждой диктовке."
+                        "«Точно» слушает большой моделью вместо быстрой. На чистой речи разницы "
+                            + "нет, а на трудной она решает: быстрая модель способна слепить "
+                            + "название с частицей отрицания и перевернуть смысл. Цена — вдвое "
+                            + "дольше на каждой диктовке."
+                    )
+                    caption(
+                        "Parakeet — модель NVIDIA: вдесятеро быстрее обеих и точнее их в падежах, "
+                            + "но каждое английское слово пишет кириллицей. Латиницу возвращает "
+                            + "AI-чистка, поэтому с Parakeet через неё идёт каждая диктовка, даже "
+                            + "однословная. Модель качается при первой диктовке (~600 МБ)."
                     )
                     caption(
                         "Украинская фраза внутри русской диктовки выходит фонетическим мусором: "
