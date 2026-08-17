@@ -69,13 +69,15 @@ public enum ModelRecommendations {
                     tier: .speed,
                     model: "gpt-5.6-luna",
                     effort: "low",
-                    note: "~3 с. Меньше всех тратит квоту Plus — можно диктовать весь день."
+                    note: "Экономит квоту Plus, но НЕ быстрее: замер дал 3,9 с против 2,5 с "
+                        + "у Terra, и качество ниже."
                 ),
                 ModelRecommendation(
                     tier: .balance,
                     model: "gpt-5.6-terra",
                     effort: "low",
-                    note: "~3 с. Качество ≈5.5 при в 2.5 раза меньшем расходе квоты."
+                    note: "~2,5 с — быстрее всех по замеру, качество без потерь и меньший "
+                        + "расход квоты, чем у Sol."
                 ),
                 ModelRecommendation(
                     tier: .quality,

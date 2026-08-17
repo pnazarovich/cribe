@@ -85,14 +85,16 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.translateEffort, AppSettings.defaultTranslateEffort)
     }
 
-    /// Усилия у чистки и перевода свои и разные — общий дефолт `GPTConfig` (минимум, с
-    /// которого начинает сам клиент) настройками приложения не переиспользуется.
+    /// Усилия у чистки и перевода свои и разные. Чистке хватает `low`: замер на 10 живых
+    /// записях (210 прогонов, 17 проверок) дал у `low` те же 51/51, что и у `medium`, при
+    /// меньшей задержке. Переводу оставлен `high` — цена ошибки там выше.
     func testEffortDefaultsAreOwnedByAppSettings() {
         let settings = AppSettings(defaults: defaults)
-        XCTAssertEqual(settings.gptEffort, "medium")
+        XCTAssertEqual(settings.gptEffort, "low")
         XCTAssertEqual(settings.translateEffort, "high")
-        XCTAssertEqual(AppSettings.defaultCleanupEffort, "medium")
+        XCTAssertEqual(AppSettings.defaultCleanupEffort, "low")
         XCTAssertEqual(AppSettings.defaultTranslateEffort, "high")
+        XCTAssertNotEqual(AppSettings.defaultCleanupEffort, AppSettings.defaultTranslateEffort)
     }
 
     func testTranslateModelSettingsPersist() {
