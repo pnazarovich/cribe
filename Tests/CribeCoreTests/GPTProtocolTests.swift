@@ -366,6 +366,118 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertTrue(uk.contains("англійською текст поїде окремим кроком нижче"), uk)
     }
 
+    /// Правило обратного чтения. Замерено на трёх диктовках про один проект: чистка сделала
+    /// из «джиклан» то «G-Clan», то «GCLID» — второе не описка, а ДРУГОЙ существующий термин
+    /// Google Ads вместо имени клиента. Такую подмену не видно глазом, поэтому в промпте нужен
+    /// проверяемый критерий, а не просьба быть аккуратнее.
+    func testReadBackRuleGuardsAgainstSubstitutedTerms() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        for engine in RecognitionEngine.allCases {
+            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: engine)
+            XCTAssertTrue(ru.contains("читаться обратно в услышанное"), ru)
+            XCTAssertTrue(ru.contains("GCLID"), ru)
+            // И обратная сторона: осторожность не должна превращаться в отказ латинизировать
+            // то, что подходит по звучанию, — на этом терялось «Fable».
+            XCTAssertTrue(ru.contains("не повод осторожничать"), ru)
+            XCTAssertTrue(ru.contains("Fable"), ru)
+            XCTAssertTrue(ru.contains("ОДИНАКОВО"), ru)
+        }
+    }
+
+    /// Верность речи и омофоны. Оба правила — из замера: чистка переставляла слова, меняла
+    /// наклонение («поставь» → «поставили»), срезала начало фразы и выбирала «компании»
+    /// там, где та же диктовка дальше говорила «рекламные кампании».
+    func testFaithfulnessAndHomophoneRules() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        for translating in [false, true] {
+            let ru = PostProcessor.systemPrompt(
+                entries: entries, language: .ru, translateToEnglish: translating
+            )
+            XCTAssertTrue(ru.contains("не превращай в «поставили»"), ru)
+            XCTAssertTrue(ru.contains("Не срезай начало фразы"), ru)
+            XCTAssertTrue(ru.contains("«рекламные кампании» (не «компании»)"), ru)
+            // Русские аббревиатуры латинице не отдаём: «СТО» уезжало в «CTO».
+            XCTAssertTrue(ru.contains("станция техобслуживания, а не CTO"), ru)
+        }
+    }
+
+    /// Про Parakeet чистка обязана знать: латиницы у него на выходе не бывает вовсе, а значит
+    /// словарные варианты — фонетические образцы, а не строки. Ровно на этом «прокид»
+    /// становится Parakeet, чего прежний промпт не делал никогда.
+    func testParakeetPromptExplainsTransliteration() {
+        let entries = [DictionaryEntry(canonical: "Parakeet", variants: ["parakit"])]
+        let parakeet = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: .parakeet)
+        XCTAssertTrue(parakeet.contains("Латиницей оно не пишет ВООБЩЕ"), parakeet)
+        XCTAssertTrue(parakeet.contains("сопоставляй по звучанию"), parakeet)
+
+        // Whisper латиницу выводит сама — ей этот абзац только мешал бы.
+        for engine in [RecognitionEngine.fast, .precise] {
+            let whisper = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: engine)
+            XCTAssertFalse(whisper.contains("Латиницей оно не пишет ВООБЩЕ"), whisper)
+        }
+
+        // Украинская и английская ветки про движок не знают вовсе — их правила свои.
+        for language in [Language.uk, .en] {
+            let other = PostProcessor.systemPrompt(entries: entries, language: language, engine: .parakeet)
+            XCTAssertFalse(other.contains("Латиницей оно не пишет ВООБЩЕ"), other)
+        }
+    }
+
+    /// Каноническая форма бывает кириллической («ТЗ», «аппрувить»), а запрет переводить
+    /// словарные термины исключений не знал — и английский перевод выходил с кириллицей
+    /// внутри: «We need to approve the ТЗ». Воспроизводилось 3 раза из 3 на живой записи.
+    func testTranslationTranslatesCyrillicCanonicalForms() {
+        let entries = [
+            DictionaryEntry(canonical: "ТЗ", variants: ["тэ зэ"]),
+            DictionaryEntry(canonical: "pull request", variants: ["пул реквест"]),
+        ]
+        for language in [Language.ru, .uk] {
+            let translating = PostProcessor.systemPrompt(
+                entries: entries, language: language, translateToEnglish: true
+            )
+            XCTAssertTrue(translating.contains("spec"), translating)
+            XCTAssertTrue(translating.contains("approve"), translating)
+
+            // На чистке этой оговорки быть не должно: там кириллица законна.
+            let plain = PostProcessor.systemPrompt(entries: entries, language: language)
+            XCTAssertFalse(plain.contains("→ spec"), plain)
+        }
+    }
+
+    /// «Ну» в начале фразы — оттенок, а не заминка: «Ну да» без него становится простым
+    /// согласием. Квалификатор «лишние» обязан стоять ПЕРЕД ним, иначе правило про филлеры
+    /// требует безусловного удаления и спорит с правилом о начале фразы.
+    func testFillerRuleTreatsNuAsConditional() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru)
+        XCTAssertTrue(ru.contains("«эээ», лишние «ну»"), ru)
+        XCTAssertFalse(ru.contains("«эээ», «ну»"), ru)
+
+        let uk = PostProcessor.systemPrompt(entries: entries, language: .uk)
+        XCTAssertTrue(uk.contains("«еее», зайві «ну»"), uk)
+        XCTAssertFalse(uk.contains("«еее», «ну»"), uk)
+    }
+
+    /// Термин без вариантов раньше не доезжал до чистки вовсе: его держала подсказка декодеру.
+    /// У Parakeet такой подсказки нет по устройству — и собственное название человека
+    /// оставалось неизвестным обоим слоям сразу.
+    func testGlossaryCarriesTermsWithoutVariants() {
+        let entries = [
+            DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"]),
+            DictionaryEntry(canonical: "G-Clan", variants: []),
+        ]
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: .parakeet)
+        XCTAssertTrue(ru.contains("Известные названия без вариантов: G-Clan"), ru)
+        // Запись с вариантами остаётся в основном списке, а не переезжает во второй.
+        XCTAssertTrue(ru.contains("- гитхаб → GitHub"), ru)
+
+        // Второй строки нет, когда таких терминов нет: пустой заголовок только путал бы модель.
+        let onlyVariants = PostProcessor.systemPrompt(
+            entries: [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])], language: .ru
+        )
+        XCTAssertFalse(onlyVariants.contains("Известные названия без вариантов"), onlyVariants)
+    }
+
     /// Английская сессия: инструкции по-английски, словарь на месте, перевод не запрашивается
     /// ни при каком флаге — переводить английский текст на английский нечего.
     func testEnglishPromptCleansWithoutTranslating() {

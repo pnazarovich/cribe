@@ -652,7 +652,8 @@ public final class DictationController: ObservableObject {
             entries: entries,
             language: language,
             config: settings.gptConfig,
-            restoreUkrainianInserts: settings.restoreUkrainianInserts
+            restoreUkrainianInserts: settings.restoreUkrainianInserts,
+            engine: settings.recognitionEngine
         )
     }
 
@@ -1118,7 +1119,10 @@ public final class DictationController: ObservableObject {
                         language: language,
                         config: wantsTranslation ? settings.translateGPTConfig : settings.gptConfig,
                         translateToEnglish: wantsTranslation,
-                        restoreUkrainianInserts: settings.restoreUkrainianInserts
+                        restoreUkrainianInserts: settings.restoreUkrainianInserts,
+                        // Чистка обязана знать, кто слушал: у Parakeet латиницы на выходе
+                        // не бывает вовсе, и это меняет разбор странного слова.
+                        engine: settings.recognitionEngine
                     )
                     if wantsTranslation {
                         translation = processed

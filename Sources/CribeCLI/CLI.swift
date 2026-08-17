@@ -174,7 +174,8 @@ struct CLI {
                 config: AppSettings.shared.gptConfig,
                 timeout: 40,
                 translateToEnglish: options.translate,
-                restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts
+                restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts,
+                engine: options.parakeet ? .parakeet : .fast
             )
         } catch {
             // Слой 3 не обязателен: отдаём результат слоя 2 и предупреждаем.
