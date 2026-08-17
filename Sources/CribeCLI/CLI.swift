@@ -175,7 +175,8 @@ struct CLI {
                 timeout: 40,
                 translateToEnglish: options.translate,
                 restoreUkrainianInserts: AppSettings.shared.restoreUkrainianInserts,
-                engine: options.parakeet ? .parakeet : .fast
+                engine: options.parakeet ? .parakeet : .fast,
+                keepsNeighbourLanguage: options.neighbour
             )
         } catch {
             // Слой 3 не обязателен: отдаём результат слоя 2 и предупреждаем.

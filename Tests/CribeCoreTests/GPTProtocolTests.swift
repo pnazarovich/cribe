@@ -458,6 +458,40 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertFalse(uk.contains("«еее», «ну»"), uk)
     }
 
+    /// Ловля соседнего языка у движков значит разное, потому что и беда у них разная.
+    /// Whisper слушает запись одним языком и украинскую вставку коверкает — ей нужно второе
+    /// мнение. Parakeet многоязычный и пишет украинское слово верно САМ, а портила его
+    /// потом чистка: замерено — «вже дивився, нічого не зрозумів» превращалось в «уже
+    /// смотрел, ничего не понял». Поэтому у Parakeet та же галочка означает «не русифицируй».
+    func testNeighbourToggleKeepsUkrainianOnParakeet() {
+        let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
+        let marker = "НЕ русифицируй их"
+
+        let keeping = PostProcessor.systemPrompt(
+            entries: entries, language: .ru, engine: .parakeet, keepsNeighbourLanguage: true
+        )
+        XCTAssertTrue(keeping.contains(marker), keeping)
+        XCTAssertTrue(keeping.contains("«ще раз» остаётся «ще раз»"), keeping)
+        // И одновременно — правило о доминирующем языке сужено, а не отменено: русское
+        // слово с прилипшим украинским окончанием по-прежнему чинится.
+        XCTAssertTrue(keeping.contains("«не собирається» → «не собирается»"), keeping)
+
+        // Выключена — человек диктует на одном языке, и абзаца быть не должно.
+        let plain = PostProcessor.systemPrompt(
+            entries: entries, language: .ru, engine: .parakeet, keepsNeighbourLanguage: false
+        )
+        XCTAssertFalse(plain.contains(marker), plain)
+
+        // У Whisper галочка работает вторым мнением (`SecondOpinion`), а не промптом:
+        // абзац про «оно пишет по-украински само» про неё был бы неправдой.
+        for engine in [RecognitionEngine.fast, .precise] {
+            let whisper = PostProcessor.systemPrompt(
+                entries: entries, language: .ru, engine: engine, keepsNeighbourLanguage: true
+            )
+            XCTAssertFalse(whisper.contains(marker), whisper)
+        }
+    }
+
     /// Термин без вариантов раньше не доезжал до чистки вовсе: его держала подсказка декодеру.
     /// У Parakeet такой подсказки нет по устройству — и собственное название человека
     /// оставалось неизвестным обоим слоям сразу.

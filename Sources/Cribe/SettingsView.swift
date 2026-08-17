@@ -193,13 +193,16 @@ private struct GeneralPane: View {
                     }
                 }
 
-                // Второе мнение спрашивают у модели соседнего языка: нет её на диске —
-                // переключателю нечем работать, и обещать он не должен. Parakeet его тоже
-                // не умеет — там перечитывать нечем.
+                // Один переключатель, но у движков он делает разное — потому что и беда
+                // у них разная. Whisper слушает запись одним языком и украинскую вставку
+                // коверкает: ей нужно ВТОРОЕ МНЕНИЕ — перечитать фразу украинской моделью,
+                // а для этого модель должна лежать на диске. Parakeet многоязычный и пишет
+                // украинское слово верно сам; перечитывать нечего, и та же галочка значит
+                // «не русифицируй услышанное» — это правило чистки, и модель ей не нужна.
                 let neighbour = settings.language.neighbour
+                let parakeet = settings.recognitionEngine == .parakeet
                 let ready = neighbour.map {
-                    ModelStore.shared.isInstalled(variant: $0.whisperModel)
-                        && settings.recognitionEngine != .parakeet
+                    parakeet || ModelStore.shared.isInstalled(variant: $0.whisperModel)
                 }
                 if let neighbour, let ready {
                     Toggle(
@@ -208,10 +211,11 @@ private struct GeneralPane: View {
                     )
                     .disabled(!ready)
                     if !ready {
+                        caption("Нужна модель «\(neighbour.displayName)» — скачайте её ниже.")
+                    } else if parakeet {
                         caption(
-                            settings.recognitionEngine == .parakeet
-                                ? "Работает только с Whisper."
-                                : "Нужна модель «\(neighbour.displayName)» — скачайте её ниже."
+                            "С Parakeet перечитывать не нужно — он слышит украинские слова верно "
+                                + "сам. Галочка говорит AI-чистке не переписывать их по-русски."
                         )
                     }
                 }

@@ -15,7 +15,8 @@ public enum PostProcessor {
         language: Language,
         translateToEnglish: Bool = false,
         restoreUkrainianInserts: Bool = false,
-        engine: RecognitionEngine = .fast
+        engine: RecognitionEngine = .fast,
+        keepsNeighbourLanguage: Bool = false
     ) -> String {
         let glossary = entries
             .filter { !$0.variants.isEmpty }
@@ -142,6 +143,37 @@ public enum PostProcessor {
             // Parakeet не просто «иногда пишет кириллицей»: латиницы у него на выходе
             // не бывает вовсе. Знание об этом переворачивает приоритет — странное слово
             // здесь скорее искажённое английское название, чем русское слово.
+            //
+            // Второй абзац — про украинский, и он важнее, чем кажется. Правило про
+            // доминирующий язык писалось под Whisper: та слушает запись одним языком
+            // и украинскую вставку записывает фонетически по-русски. У Parakeet посылка
+            // ЛОЖНА — он многоязычный и пишет украинские слова по-украински сам.
+            // Замерено на смешанной фразе: слой 1 отдал «треба ще раз», «вже дивився»,
+            // «нічого не зрозумів» верно, а чистка сделала из них «ещё раз», «уже»,
+            // «ничего не понял». То есть единственное, что портило смешанную речь, —
+            // сама чистка.
+            //
+            // Абзац идёт под той же галочкой, что и ловля соседнего языка. У Whisper она
+            // значит «перечитай подозрительную фразу украинской моделью», у Parakeet
+            // перечитывать нечего — он уже услышал верно, и та же галочка честно значит
+            // «не русифицируй услышанное». Выключена — человек диктует на одном языке,
+            // и случайное украинское слово ему в тексте не нужно.
+            let ukrainian = keepsNeighbourLanguage
+                ? """
+
+
+                А вот украинские слова оно пишет по-украински САМО и почти всегда верно. \
+                Поэтому НЕ русифицируй их: «ще», «вже», «треба», «нічого», «зрозумів», \
+                «зроблю», «поки», «гаразд» — это украинские слова, а не украинизированные \
+                русские, и они остаются как есть. Особенно осторожно с теми, у которых \
+                есть гладкий русский двойник: «ще раз» остаётся «ще раз», а не становится \
+                «ещё раз»; «вже» остаётся «вже», а не «уже»; «нічого не зрозумів» остаётся \
+                собой, а не «ничего не понял». Правило о доминирующем языке ниже касается \
+                только РУССКОГО слова, к которому прилипло украинское окончание \
+                («не собирається» → «не собирается»), — целого украинского слова оно \
+                не трогает никогда.
+                """
+                : ""
             let heard = engine == .parakeet
                 ? """
 
@@ -150,7 +182,7 @@ public enum PostProcessor {
                 («гугл эдс», «постхог», «прокид»). Пунктуацию и заглавные оно ставит само \
                 и часто ошибается в них. Словарные варианты ниже — образцы того, как оно \
                 слышит термин, а не полный список: сопоставляй по звучанию, искажения бывают \
-                сильными («прокид» — это parakit).
+                сильными («прокид» — это parakit).\(ukrainian)
                 """
                 : ""
 
@@ -257,14 +289,16 @@ public enum PostProcessor {
         timeout: TimeInterval = 10,
         translateToEnglish: Bool = false,
         restoreUkrainianInserts: Bool = false,
-        engine: RecognitionEngine = .fast
+        engine: RecognitionEngine = .fast,
+        keepsNeighbourLanguage: Bool = false
     ) async throws -> String {
         let instructions = systemPrompt(
             entries: entries,
             language: language,
             translateToEnglish: translateToEnglish,
             restoreUkrainianInserts: restoreUkrainianInserts,
-            engine: engine
+            engine: engine,
+            keepsNeighbourLanguage: keepsNeighbourLanguage
         )
         let client = GPTClient(config: config)
 
