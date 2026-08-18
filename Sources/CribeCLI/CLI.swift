@@ -84,7 +84,9 @@ struct CLI {
                 language: options.language,
                 config: options.gptConfig,
                 timeout: 40,
-                translateToEnglish: options.translate,
+                // Английский: у CLI своя роль — замерять слой 3, а не повторять настройки
+                // приложения. Понадобится мерить другой язык — придёт своим флагом.
+                translateTo: options.translate ? .en : nil,
                 mixesUkrainian: options.neighbour
             )
         } catch {

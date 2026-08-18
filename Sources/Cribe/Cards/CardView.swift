@@ -89,6 +89,9 @@ final class CardModel: ObservableObject {
     /// Доступен ли перевод вообще: без GPT переводить нечем. Ставит владелец карточки.
     var canTranslate = true
 
+    /// На какой язык переводит кнопка. Ставит владелец карточки из настроек.
+    var translationTarget = "английский"
+
     /// Карточка на месте: вход отыгран, уход ещё не начался. Ведёт и появление, и уход.
     @Published var isPresented = false
     @Published var isHovered = false
@@ -271,7 +274,8 @@ struct CardView: View {
     private func hint(for control: CardControl) -> String {
         switch control {
         case .expand: return "Посмотреть целиком"
-        case .translate: return model.showsTranslation ? "Вернуть оригинал" : "Перевести на английский"
+        case .translate:
+            return model.showsTranslation ? "Вернуть оригинал" : "Перевести на \(model.translationTarget)"
         case .copy: return "Скопировать"
         case .close: return "Убрать карточку"
         }

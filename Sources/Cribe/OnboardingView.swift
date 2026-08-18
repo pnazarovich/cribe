@@ -108,7 +108,7 @@ struct OnboardingView: View {
 
             HStack(alignment: .top, spacing: 12) {
                 KeyCap(prefix: "правый", key: "⌘", caption: "диктовка")
-                KeyCap(prefix: "правый", key: "⌥", caption: "с переводом на английский")
+                KeyCap(prefix: "правый", key: "⌥", caption: "с переводом на \(settings.translationTarget.afterOn)")
                 KeyCap(prefix: nil, key: "esc", caption: "отмена")
             }
         }
@@ -298,7 +298,8 @@ struct OnboardingView: View {
     private var aiBody: some View {
         caption(
             "GPT расставит знаки препинания и заглавные буквы, а правый ⌥ переведёт диктовку "
-                + "на английский. Без входа всё остальное работает как есть."
+                + "на \(settings.translationTarget.afterOn). Язык перевода выбирается в настройках. "
+                + "Без входа всё остальное работает как есть."
         )
 
         if let session = signIn.session {

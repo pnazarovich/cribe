@@ -159,8 +159,9 @@ private struct GeneralPane: View {
                 case .rightCommand:
                     caption(
                         accessibilityGranted
-                            ? "Правый ⌥ — диктовка с переводом на английский. Esc отменяет запись."
-                            : "Правый ⌥ — диктовка с переводом на английский. "
+                            ? "Правый ⌥ — диктовка с переводом на \(settings.translationTarget.afterOn). "
+                                + "Esc отменяет запись."
+                            : "Правый ⌥ — диктовка с переводом на \(settings.translationTarget.afterOn). "
                                 + "Нужно разрешение Accessibility."
                     )
                 case .custom:
@@ -462,6 +463,13 @@ private struct AIPane: View {
 
             Section {
                 Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
+
+                Picker("Переводить на:", selection: $settings.translationTarget) {
+                    ForEach(TranslationTarget.allCases, id: \.self) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+                .disabled(!settings.gptEnabled)
             } header: {
                 Text("Чистка текста")
             } footer: {
@@ -476,6 +484,12 @@ private struct AIPane: View {
                         "Перевод правым ⌥ делает она же: выключенная чистка — это и выключенный "
                             + "перевод. Постоянный перевод включается в меню строки состояния."
                     )
+                    if settings.translationTarget.matches(settings.language) {
+                        caption(
+                            "Язык перевода сейчас совпадает с языком диктовки — переводить "
+                                + "нечего, и правый ⌥ работает как обычная диктовка."
+                        )
+                    }
                     caption("Модель — \(GPTConfig.defaultModel): выбрана замером, менять её не нужно.")
                 }
             }

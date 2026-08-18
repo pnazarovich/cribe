@@ -23,6 +23,7 @@ struct PanelView: View {
                     // Перевод сессии, а не настройки: правый ⌥ переводит вопреки выключенному
                     // тумблеру. Без переопределения (nil) всё как раньше — по тумблеру.
                     translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish,
+                    translationTarget: settings.translationTarget,
                     // Живое число, а не кадр из `presentation`: очередь живёт своим темпом
                     // и меняется в том числе пока на экране доигрывает чужая вспышка.
                     pending: controller.pendingCount,
@@ -90,6 +91,7 @@ struct PanelPill: View {
     let state: DictationState
     let language: Language
     let translateToEnglish: Bool
+    var translationTarget: TranslationTarget = .en
     /// Сколько диктовок записано и ещё не доехало. Ноль по умолчанию: так пилюлю собирают
     /// и проба рендера, и всё, что про очередь ничего не знает.
     var pending: Int = 0
@@ -293,7 +295,7 @@ struct PanelPill: View {
                 RecordingDot(reduceMotion: accessibility.reduceMotion)
                 Text(Self.flag(language))
                 if translateToEnglish {
-                    TranslationBadge()
+                    TranslationBadge(target: translationTarget)
                 }
                 // Бегущая строка встаёт на место волны, а не рядом: место в капсуле одно.
                 // Пока распознавание не отдало первых слов, показываем волну — пустое место
@@ -532,8 +534,12 @@ private struct QueueBadge: View {
 
 /// Метка «перевод на английский включён»: результат придёт не на языке записи.
 private struct TranslationBadge: View {
+    let target: TranslationTarget
+
     var body: some View {
-        Text("→ EN")
+        // Код языка, а не название: в капсуле места на две буквы, и «→ PL» читается
+        // с одного взгляда, а «→ Польский» туда попросту не влезет.
+        Text("→ \(target.rawValue.uppercased())")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.white.opacity(0.8))
             .padding(.horizontal, 5)

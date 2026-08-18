@@ -91,4 +91,16 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.translateGPTConfig.mode, .apiKey)
         XCTAssertEqual(settings.gptConfig.mode, .apiKey)
     }
+
+    /// Язык перевода по умолчанию — английский: у тех, кто обновится, правый ⌥ продолжит
+    /// работать ровно так же, как работал.
+    func testTranslationTargetDefaultsToEnglish() {
+        XCTAssertEqual(AppSettings(defaults: defaults).translationTarget, TranslationTarget.en)
+    }
+
+    /// И переживает перезапуск: иначе выбор языка пришлось бы делать каждый раз заново.
+    func testTranslationTargetPersists() {
+        AppSettings(defaults: defaults).translationTarget = .pl
+        XCTAssertEqual(AppSettings(defaults: defaults).translationTarget, TranslationTarget.pl)
+    }
 }

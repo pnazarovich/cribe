@@ -72,6 +72,7 @@ final class CardPanel {
         // человек уже мог переключиться.
         model = CardModel(text: text, source: NSWorkspace.shared.frontmostApplication?.localizedName)
         model.canTranslate = translator.isAvailable()
+        model.translationTarget = translator.targetName
 
         let host = PassthroughHostingView(rootView: CardView(model: model))
         // Ширину задаёт сама карточка, высоту считает SwiftUI по числу строк текста.
@@ -343,11 +344,15 @@ final class CardPanel {
 struct CardTranslator {
     /// Доступен ли перевод прямо сейчас (в настройках включён GPT).
     var isAvailable: @MainActor () -> Bool
+    /// На какой язык переводим — для подписи кнопки. Значение приходит из настроек:
+    /// кнопка, обещающая английский, а отдающая польский, — хуже отсутствующей кнопки.
+    var targetName: String = "английский"
     var translate: @MainActor (String) async throws -> String
 
     /// Переводить нечем: так живут CLI и прогон тестов.
     static let unavailable = CardTranslator(
         isAvailable: { false },
+        targetName: "английский",
         translate: { _ in throw CancellationError() }
     )
 }

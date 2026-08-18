@@ -62,19 +62,20 @@ final class AppCore: ObservableObject {
     /// у карточки и у строки один и тот же — по нему окно строку и находит.
     @Published var historyFocus: String?
 
-    /// Перевод на английский. Один и тот же путь у кнопки на карточке и у окна истории:
+    /// Перевод. Один и тот же путь у кнопки на карточке и у окна истории:
     /// про GPT-настройки и словарь знает только приложение, а второго переводчика в нём
     /// заводить незачем.
     var translator: CardTranslator {
         CardTranslator(
             isAvailable: { [settings] in settings.gptEnabled },
+            targetName: settings.translationTarget.afterOn,
             translate: { [settings, dictionary] text in
                 try await PostProcessor.cleanup(
                     text: text,
                     entries: dictionary.entries,
                     language: settings.language,
                     config: settings.translateGPTConfig,
-                    translateToEnglish: true
+                    translateTo: settings.translationTarget
                 )
             }
         )

@@ -983,7 +983,7 @@ public final class DictationController: ObservableObject {
                         entries: entries,
                         language: language,
                         config: wantsTranslation ? settings.translateGPTConfig : settings.gptConfig,
-                        translateToEnglish: wantsTranslation,
+                        translateTo: wantsTranslation ? settings.translationTarget : nil,
                         mixesUkrainian: settings.mixesUkrainian
                     )
                     if wantsTranslation {
@@ -1150,7 +1150,7 @@ public final class DictationController: ObservableObject {
                 // Именно язык `lastOriginal`: с прошлой диктовки язык могли переключить.
                 language: lastOriginalLanguage,
                 config: settings.translateGPTConfig,
-                translateToEnglish: true
+                translateTo: settings.translationTarget
             )
             // Пока переводили, могла закончиться новая диктовка — её кэш чужим переводом
             // не портим, но пользователю отдаём то, что он запросил.
@@ -1365,7 +1365,7 @@ public final class DictationController: ObservableObject {
                 entries: entries,
                 language: retry.language,
                 config: retry.translating ? settings.translateGPTConfig : settings.gptConfig,
-                translateToEnglish: retry.translating,
+                translateTo: retry.translating ? settings.translationTarget : nil,
                 mixesUkrainian: settings.mixesUkrainian
             )
         } catch {

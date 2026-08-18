@@ -256,7 +256,7 @@ private struct HistoryRow: View {
     /// стёр бы там саму диктовку. Поэтому он лежит рядом — целиком и с кнопкой.
     private func translationBlock(_ translation: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Перевод на английский")
+            Text("Перевод на \(translator.targetName)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Text(translation)
@@ -280,7 +280,7 @@ private struct HistoryRow: View {
             }
 
             if isExpanded {
-                Button("Перевести на английский") {
+                Button("Перевести на \(translator.targetName)") {
                     model.translate(shownText, using: translator)
                 }
                 .disabled(!translator.isAvailable() || model.isTranslating || shownText.isEmpty)

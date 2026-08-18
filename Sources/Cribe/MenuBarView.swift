@@ -60,7 +60,7 @@ struct MenuBarView: View {
         // Два тумблера, меняющие результат следующей же диктовки. «Звуки» отсюда ушли:
         // их ставят один раз и навсегда, а место они занимали такое же.
         Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
-        Toggle("Перевод на английский", isOn: $settings.translateToEnglish)
+        Toggle("Перевод на \(settings.translationTarget.afterOn)", isOn: $settings.translateToEnglish)
 
         Divider()
 

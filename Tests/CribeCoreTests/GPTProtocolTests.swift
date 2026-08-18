@@ -301,7 +301,7 @@ final class GPTProtocolTests: XCTestCase {
     func testTranslatePromptAsksForEnglishAndKeepsCleanupRules() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         let plain = PostProcessor.systemPrompt(entries: entries, language: .ru)
-        let translating = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: true)
+        let translating = PostProcessor.systemPrompt(entries: entries, language: .ru, translateTo: .en)
 
         // Ищем саму просьбу перевести, а не слово «английский»: про английское написание
         // терминов говорит и обычная чистка — она возвращает латиницу названиям, которые
@@ -323,12 +323,12 @@ final class GPTProtocolTests: XCTestCase {
     func testMixedLanguageRuleInEveryPromptVariant() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         for translating in [false, true] {
-            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: translating)
+            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateTo: translating ? .en : nil)
             XCTAssertTrue(ru.contains("Речь смешанная"), ru)
             XCTAssertTrue(ru.contains("НИКОГДА не переводи между русским и украинским"), ru)
             XCTAssertFalse(ru.contains("Сохраняй язык,"), "правило в единственном числе должно уйти")
 
-            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: translating)
+            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateTo: translating ? .en : nil)
             XCTAssertTrue(uk.contains("Мовлення змішане"), uk)
             XCTAssertTrue(uk.contains("НІКОЛИ не перекладай між російською та українською"), uk)
             XCTAssertFalse(uk.contains("Зберігай мову,"), "правило в единственном числе должно уйти")
@@ -341,13 +341,13 @@ final class GPTProtocolTests: XCTestCase {
     func testDominantLanguageRuleInEveryPromptVariant() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         for translating in [false, true] {
-            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: translating)
+            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateTo: translating ? .en : nil)
             XCTAssertTrue(ru.contains("Язык этой диктовки — русский"), ru)
             XCTAssertTrue(ru.contains("не переписывай"), ru)
             // И одновременно — запрет русифицировать настоящие украинские слова.
             XCTAssertTrue(ru.contains("оставь украинскими"), ru)
 
-            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: translating)
+            let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateTo: translating ? .en : nil)
             XCTAssertTrue(uk.contains("Мова цього диктування — українська"), uk)
             XCTAssertTrue(uk.contains("не переписуй"), uk)
             XCTAssertTrue(uk.contains("залиши російськими"), uk)
@@ -358,14 +358,14 @@ final class GPTProtocolTests: XCTestCase {
     /// действует только на чистке, а сам перевод остаётся отдельным шагом.
     func testDominantLanguageRuleDoesNotFightTranslation() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
-        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateToEnglish: true)
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, translateTo: .en)
         XCTAssertTrue(ru.contains("на чистке целиком на другой язык его не переписывай"), ru)
-        XCTAssertTrue(ru.contains("на английский текст уедет отдельным шагом ниже"), ru)
+        XCTAssertTrue(ru.contains("на язык перевода текст уедет отдельным шагом ниже"), ru)
         XCTAssertFalse(ru.contains("целиком на другой язык текст не переписывай"), ru)
 
-        let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: true)
+        let uk = PostProcessor.systemPrompt(entries: entries, language: .uk, translateTo: .en)
         XCTAssertTrue(uk.contains("на чистці цілком іншою мовою його не переписуй"), uk)
-        XCTAssertTrue(uk.contains("англійською текст поїде окремим кроком нижче"), uk)
+        XCTAssertTrue(uk.contains("мовою перекладу текст поїде окремим кроком нижче"), uk)
     }
 
     /// Правило обратного чтения. Замерено на трёх диктовках про один проект: чистка сделала
@@ -391,7 +391,7 @@ final class GPTProtocolTests: XCTestCase {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         for translating in [false, true] {
             let ru = PostProcessor.systemPrompt(
-                entries: entries, language: .ru, translateToEnglish: translating
+                entries: entries, language: .ru, translateTo: translating ? .en : nil
             )
             XCTAssertTrue(ru.contains("не превращай в «поставили»"), ru)
             XCTAssertTrue(ru.contains("Не срезай начало фразы"), ru)
@@ -427,7 +427,7 @@ final class GPTProtocolTests: XCTestCase {
         ]
         for language in [Language.ru, .uk] {
             let translating = PostProcessor.systemPrompt(
-                entries: entries, language: language, translateToEnglish: true
+                entries: entries, language: language, translateTo: .en
             )
             XCTAssertTrue(translating.contains("spec"), translating)
             XCTAssertTrue(translating.contains("approve"), translating)
@@ -495,12 +495,13 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertFalse(onlyVariants.contains("Известные названия без вариантов"), onlyVariants)
     }
 
-    /// Английская сессия: инструкции по-английски, словарь на месте, перевод не запрашивается
-    /// ни при каком флаге — переводить английский текст на английский нечего.
+    /// Английская сессия: инструкции по-английски, словарь на месте. Перевод НА АНГЛИЙСКИЙ
+    /// тут не запрашивается: переводить английский текст на английский нечего. Перевод
+    /// на другой язык отсюда как раз возможен — см. `TranslationTargetTests`.
     func testEnglishPromptCleansWithoutTranslating() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         for translating in [false, true] {
-            let prompt = PostProcessor.systemPrompt(entries: entries, language: .en, translateToEnglish: translating)
+            let prompt = PostProcessor.systemPrompt(entries: entries, language: .en, translateTo: translating ? .en : nil)
             XCTAssertTrue(prompt.hasPrefix("You are a proofreader"), prompt)
             XCTAssertTrue(prompt.contains("GitHub"), prompt)
             XCTAssertTrue(prompt.contains("гитхаб"), prompt)
@@ -513,7 +514,7 @@ final class GPTProtocolTests: XCTestCase {
         // Перевод английской сессии — тот же промпт: флаг ничего не меняет.
         XCTAssertEqual(
             PostProcessor.systemPrompt(entries: entries, language: .en),
-            PostProcessor.systemPrompt(entries: entries, language: .en, translateToEnglish: true)
+            PostProcessor.systemPrompt(entries: entries, language: .en, translateTo: .en)
         )
     }
 
@@ -539,7 +540,7 @@ final class GPTProtocolTests: XCTestCase {
         // Перевод: текст всё равно уедет в английский, украинское написание там ни к чему.
         XCTAssertFalse(
             PostProcessor.systemPrompt(
-                entries: entries, language: .ru, translateToEnglish: true, mixesUkrainian: true
+                entries: entries, language: .ru, translateTo: .en, mixesUkrainian: true
             ).contains(marker)
         )
 
@@ -549,7 +550,7 @@ final class GPTProtocolTests: XCTestCase {
                     PostProcessor.systemPrompt(
                         entries: entries,
                         language: language,
-                        translateToEnglish: translating,
+                        translateTo: translating ? .en : nil,
                         mixesUkrainian: true
                     ).contains(marker),
                     "\(language) не должен получать правило про украинские вставки"
@@ -575,10 +576,12 @@ final class GPTProtocolTests: XCTestCase {
     func testTranslatePromptUkrainian() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гітхаб"])]
         let plain = PostProcessor.systemPrompt(entries: entries, language: .uk)
-        let translating = PostProcessor.systemPrompt(entries: entries, language: .uk, translateToEnglish: true)
+        let translating = PostProcessor.systemPrompt(entries: entries, language: .uk, translateTo: .en)
 
-        XCTAssertFalse(plain.lowercased().contains("англі"))
-        XCTAssertTrue(translating.lowercased().contains("англі"))
+        XCTAssertFalse(plain.contains("English"))
+        // Язык перевода назван английским словом, а не украинским «англійською»:
+        // так его понимает любая модель, и гадать про склонения не приходится.
+        XCTAssertTrue(translating.contains("English"), translating)
         XCTAssertTrue(translating.contains("GitHub"))
         XCTAssertNotEqual(translating, plain)
     }

@@ -39,6 +39,7 @@ public final class AppSettings: ObservableObject {
         static let gptMode = "gptMode"
         static let inputDeviceUID = "inputDeviceUID"
         static let translateToEnglish = "translateToEnglish"
+        static let translationTarget = "translationTarget"
         static let soundsEnabled = "soundsEnabled"
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
@@ -68,9 +69,18 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(gptMode.rawValue, forKey: Key.gptMode) }
     }
 
-    /// Диктовка вставляется переводом на английский (GPT-слой переводит вместо простой чистки).
+    /// Диктовка вставляется переводом (GPT-слой переводит вместо простой чистки).
+    ///
+    /// Имя ключа осталось от тех времён, когда цель была одна — английский. Переименовать
+    /// его значило бы сбросить настройку у всех, кто уже обновился; цена косметическая,
+    /// а неудобство настоящее.
     @Published public var translateToEnglish: Bool {
         didSet { defaults.set(translateToEnglish, forKey: Key.translateToEnglish) }
+    }
+
+    /// На какой язык переводит правый ⌥.
+    @Published public var translationTarget: TranslationTarget {
+        didSet { defaults.set(translationTarget.rawValue, forKey: Key.translationTarget) }
     }
 
     /// Волна или бегущая строка слов в капсуле записи.
@@ -180,6 +190,9 @@ public final class AppSettings: ObservableObject {
         gptEnabled = defaults.object(forKey: Key.gptEnabled) as? Bool ?? true
         gptMode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
+        // Английский по умолчанию: у тех, кто обновится, перевод останется ровно тем же.
+        translationTarget = defaults.string(forKey: Key.translationTarget)
+            .flatMap(TranslationTarget.init(rawValue:)) ?? .en
         pillStyle = defaults.string(forKey: Key.pillStyle).flatMap(PillStyle.init(rawValue:)) ?? .wave
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
