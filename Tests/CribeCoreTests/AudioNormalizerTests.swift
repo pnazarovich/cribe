@@ -67,4 +67,35 @@ final class AudioNormalizerTests: XCTestCase {
     private static func tone(peak: Float) -> [Float] {
         (0..<1_000).map { peak * sin(Float($0) * 0.1) }
     }
+
+    /// Готовый множитель и множитель «по себе» — одно и то же на одном буфере: `normalized`
+    /// обязан остаться частным случаем `scaled`, иначе бегущая строка и финальный проход
+    /// поехали бы разными путями.
+    func testScaledIsTheGeneralCaseOfNormalized() {
+        let quiet = (0..<1600).map { _ in Float.random(in: -0.05...0.05) }
+        let byItself = AudioNormalizer.normalized(quiet)
+        let byGain = AudioNormalizer.scaled(quiet, by: AudioNormalizer.gain(forPeak: AudioNormalizer.peak(quiet)))
+        XCTAssertEqual(byItself, byGain)
+    }
+
+    /// Множитель ≤ 1 — буфер отдаётся как есть, без прохода по мегабайтам.
+    func testScaledByOneReturnsTheBufferUntouched() {
+        let samples: [Float] = [0.5, -0.5, 0.25]
+        XCTAssertEqual(AudioNormalizer.scaled(samples, by: 1), samples)
+        XCTAssertEqual(AudioNormalizer.scaled(samples, by: 0.3), samples)
+    }
+
+    /// Накопленный пик даёт не растущее усиление. Ради этого он и накапливается: иначе
+    /// громкое слово, вошедшее в окно предпросмотра, роняло бы множитель, и одна и та же
+    /// середина речи попадала бы в модель то тише, то громче — а модель на этом слышит
+    /// её иначе, и строка переписывалась бы сама собой.
+    func testAccumulatedPeakNeverRaisesTheGain() {
+        var peak: Float = 0
+        var gains: [Float] = []
+        for windowPeak: Float in [0.02, 0.08, 0.4, 0.05, 0.2] {
+            peak = max(peak, windowPeak)
+            gains.append(AudioNormalizer.gain(forPeak: peak))
+        }
+        XCTAssertEqual(gains, gains.sorted(by: >), "усиление обязано только падать: \(gains)")
+    }
 }

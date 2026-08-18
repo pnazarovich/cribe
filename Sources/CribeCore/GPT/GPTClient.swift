@@ -15,13 +15,16 @@ public struct GPTConfig: Sendable {
 
     public static let defaultEffort = "low"
 
-    public static func defaultModel(for mode: GPTAuthMode) -> String {
-        mode == .codex ? "gpt-5.6-terra" : "gpt-5.6-luna"
-    }
+    /// Модель у обоих бэкендов одна и выбрана замером, а не вкусом: 210 прогонов
+    /// по 17 проверкам на десяти живых записях. Terra оказалась и самой быстрой
+    /// (медиана 2,5 с), и не хуже прочих по качеству; «экономная» luna — медленнее
+    /// (3,9 с) и хуже. Остаётся полем `model`, а не константой в клиенте, чтобы CLI мог
+    /// подставить другую ради следующего такого замера.
+    public static let defaultModel = "gpt-5.6-terra"
 
     public init(mode: GPTAuthMode = .codex, model: String? = nil, effort: String = GPTConfig.defaultEffort) {
         self.mode = mode
-        self.model = model ?? GPTConfig.defaultModel(for: mode)
+        self.model = model ?? GPTConfig.defaultModel
         self.effort = effort
     }
 }

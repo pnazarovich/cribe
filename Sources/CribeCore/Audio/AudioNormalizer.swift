@@ -51,7 +51,17 @@ public enum AudioNormalizer {
 
     /// Нормализованная копия. Усиливать нечего — возвращает исходный буфер без копии.
     public static func normalized(_ samples: [Float]) -> [Float] {
-        var factor = gain(forPeak: peak(samples))
+        scaled(samples, by: gain(forPeak: peak(samples)))
+    }
+
+    /// Копия, умноженная на готовый множитель.
+    ///
+    /// Нужна там, где множитель считают не по самому буферу: у бегущей строки он копится
+    /// по окнам. Каждое окно, нормированное по своему пику, попадало бы в модель на своём
+    /// уровне — и одна и та же середина речи слышалась бы по-разному от прохода к проходу.
+    /// Это то же правило «один множитель», что и выше, только растянутое на серию окон.
+    public static func scaled(_ samples: [Float], by gain: Float) -> [Float] {
+        var factor = gain
         guard factor > 1 else { return samples }
 
         var result = [Float](repeating: 0, count: samples.count)

@@ -2,41 +2,13 @@ import XCTest
 @testable import CribeCore
 
 /// Движок-заглушка: `prepare` сообщает о загрузке и висит, пока тест его не отпустит —
-/// как первая загрузка WhisperKit, которая специализируется под ANE минутами.
-/// Фоновый проход по растущему буферу держится отдельным замком: так Esc попадает ровно
-/// в окно «проход уже считает».
+/// как первая загрузка модели, которая специализируется под ANE минутами.
 private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
-    private var passStartedFlag = false
-    private var passReleased = false
-    private var passContinuation: CheckedContinuation<Void, Never>?
-
-    /// Сегменты, которые отдаст фоновый проход. Пустой массив — движок сегментов не умеет
-    /// (как и по умолчанию в протоколе), и потокового пути в сессии не будет вовсе.
-    private let segments: [ASRSegment]
-
-    init(segments: [ASRSegment] = []) {
-        self.segments = segments
-    }
-
-    /// Фоновый проход дошёл до движка.
-    var passStarted: Bool { lock.withLock { passStartedFlag } }
-    /// Проход начался и всё ещё считает.
-    var passRunning: Bool { lock.withLock { passStartedFlag && !passReleased } }
 
     /// Отпускает загрузку: `prepare` доходит до конца, как и в жизни (прервать его нечем).
     func release() { lock.withLock { released = true } }
-
-    /// Отпускает фоновый проход — он досчитывает и отдаёт сегменты.
-    func releasePass() {
-        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
-            passReleased = true
-            defer { passContinuation = nil }
-            return passContinuation
-        }
-        continuation?.resume()
-    }
 
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         onState(.loading)
@@ -51,21 +23,6 @@ private final class GatedEngine: TranscriptionEngine, @unchecked Sendable {
         return ""
     }
 
-    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
-        guard !segments.isEmpty else { throw TranscriptionEngineError.segmentsUnsupported }
-        lock.withLock { passStartedFlag = true }
-        // Ждём через продолжение, а не `Task.sleep`: отмену задачи живой WhisperKit
-        // не смотрит, и проход обязан досчитать вопреки `rollingTask.cancel()`.
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let alreadyReleased = lock.withLock { () -> Bool in
-                if passReleased { return true }
-                passContinuation = continuation
-                return false
-            }
-            if alreadyReleased { continuation.resume() }
-        }
-        return segments
-    }
 }
 
 /// Движок, который запоминает промпт распознавания и сразу отдаёт текст.
@@ -229,6 +186,34 @@ private final class StubRecorder: AudioCapturing, @unchecked Sendable {
     func teardown() {}
 }
 
+/// Движок, отдающий заранее заданную очередь проходов: так проверяется бегущая строка,
+/// которой для жизни нужна серия перекрывающихся распознаваний хвоста записи.
+/// Очередь кончилась — повторяем последний проход: человек молчит, окно не меняется.
+private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var passes: [String]
+    private var index = 0
+
+    init(passes: [String]) {
+        self.passes = passes
+    }
+
+    /// Сколько проходов уже спросили. По нему тест ждёт следующего.
+    var served: Int { lock.withLock { index } }
+
+    func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
+        onState(.ready)
+    }
+
+    func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
+        lock.withLock {
+            let pass = passes[min(index, passes.count - 1)]
+            index += 1
+            return pass
+        }
+    }
+}
+
 @MainActor
 final class DictationControllerTests: XCTestCase {
     private var dictionaryURL: URL!
@@ -343,15 +328,16 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertNil(controller.activeSessionTranslate)
     }
 
-    /// До распознавания доезжает русский промпт русской сессии — ни одного украинского слова
-    /// в нём быть не может. Раньше сюда добавлялся образец смешанной речи с украинской
-    /// вставкой, и на настоящей диктовке он переворачивал язык всей записи.
-    func testRussianSessionPromptStaysRussian() async throws {
-        let ukrainianOnly: Set<Character> = ["і", "І", "ї", "Ї", "є", "Є", "ґ", "Ґ"]
+    /// До распознавания доезжает ПУСТОЙ промпт — входа для подсказки у Parakeet нет
+    /// по устройству, и словарь работает только вторым слоем.
+    ///
+    /// Проверка осталась после того, как подсказки не стало, и вот зачем. Пока промпт был,
+    /// в него однажды добавили образец смешанной речи с украинской вставкой — и на настоящей
+    /// русской диктовке он переворачивал язык всей записи. Стоит кому-нибудь снова начать
+    /// что-то класть в это поле, и та же беда вернётся молча.
+    func testSessionPromptIsEmptyBecauseTheEngineHasNoPromptInput() async throws {
         let prompt = try await sessionPrompt()
-
-        XCTAssertFalse(prompt.isEmpty)
-        XCTAssertFalse(prompt.contains(where: { ukrainianOnly.contains($0) }), prompt)
+        XCTAssertEqual(prompt, "")
     }
 
     /// Хоткей смены языка гоняет языки по кругу в порядке `Language.allCases`. С тремя языками
@@ -473,40 +459,6 @@ final class DictationControllerTests: XCTestCase {
         try await wait(for: "возврат в простой") { controller.state == .idle }
         XCTAssertNil(controller.lastOriginal)
         XCTAssertNil(controller.activeSessionLanguage)
-    }
-
-    /// Esc на длинной записи, когда фоновый проход уже считает: прервать проход нечем,
-    /// но отмена его не ждёт, а досчитанные сегменты уже мертвы — поколение сессии сдвинуто.
-    func testEscapeDuringRecordingKillsInFlightStreamingPass() async throws {
-        let recorder = StubRecorder()
-        // Длиннее порога потокового пути (6 с) — короче фоновых проходов не бывает вовсе.
-        recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 8))
-        // Два сегмента: первый устоявшийся, второй проход обычно переписывает — значит,
-        // подтвердить есть что, и молчание `confirm` не может быть случайным.
-        let engine = GatedEngine(segments: [
-            ASRSegment(text: "первый кусок", start: 0, end: 3),
-            ASRSegment(text: "второй кусок", start: 3, end: 6),
-        ])
-        let controller = makeController(engine: engine, recorder: recorder)
-
-        controller.toggle()
-        engine.release()
-        try await wait(for: "старт записи") {
-            if case .recording = controller.state { return true }
-            return false
-        }
-        try await wait(for: "старт фонового прохода") { engine.passStarted }
-
-        controller.cancelDictation()
-        // Отмена мгновенная: проход ещё считает, а сессии уже нет.
-        XCTAssertEqual(controller.state, .cancelled)
-        XCTAssertTrue(engine.passRunning)
-
-        engine.releasePass()
-        try await wait(for: "возврат в простой") { controller.state == .idle }
-        // Проход досчитал уже после отмены — подтверждать ему нечего.
-        XCTAssertEqual(controller.confirmedText, "")
-        XCTAssertEqual(controller.confirmedEndSample, 0)
     }
 
     /// Esc на загрузке модели отменяет сессию так же, как второй хоткей, но мигает
@@ -832,6 +784,84 @@ final class DictationControllerTests: XCTestCase {
         let recorder = StubRecorder()
         recorder.capturedSamples = [Float](repeating: 0.1, count: AudioCaptureFormat.samples(seconds: 3))
         return recorder
+    }
+
+    // MARK: - Бегущая строка
+
+    /// Порог и главный регресс: пока склейка не набрала четырёх слов, строки нет вовсе
+    /// (капсула держит волну), а как только она появилась — больше не пустеет до конца
+    /// записи. Мигание волна↔строка и было тем, что читалось как «показывается рывками».
+    func testLivePreviewAppearsOnTheFourthWordAndNeverBlanks() async throws {
+        let settings = makeSettings()
+        settings.pillStyle = .words
+        let recorder = StubRecorder()
+        recorder.capturedSamples = [Float](repeating: 0.2, count: AudioCaptureFormat.samples(seconds: 4))
+        let engine = ScriptedEngine(passes: [
+            "проверь",
+            "проверь webhooks",
+            "проверь webhooks и nginx",
+            // Проход в паузу: окно попало на тишину. Строку это гасить не имеет права.
+            "",
+            "webhooks и nginx потом задеплой",
+        ])
+        let controller = makeController(engine: engine, recorder: recorder, settings: settings)
+
+        controller.toggle()
+        try await wait(for: "старт записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+
+        // Первые два прохода — одно и два слова: строки быть не должно, капсула держит волну.
+        // Проверяем сразу после второго; следующий проход придёт только через период (0,9 с).
+        try await wait(for: "два прохода") { engine.served >= 2 }
+        XCTAssertEqual(Self.live(controller.state), "", "на двух словах строки ещё нет")
+
+        try await wait(for: "появление строки") { !Self.live(controller.state).isEmpty }
+        // Ровно то, что услышано, и с самого начала фразы: «проверь» не имеет права пропасть
+        // только потому, что первые проходы были короче якоря.
+        XCTAssertTrue(
+            Self.live(controller.state).hasPrefix("проверь webhooks и nginx"),
+            Self.live(controller.state)
+        )
+
+        // Дальше — что угодно, включая пустой проход, но строка не гаснет ни на кадр.
+        for _ in 0..<3 {
+            let before = engine.served
+            try await wait(for: "следующий проход") { engine.served > before }
+            XCTAssertFalse(Self.live(controller.state).isEmpty, "строка пропала посреди записи")
+        }
+        XCTAssertTrue(Self.live(controller.state).hasSuffix("задеплой"), Self.live(controller.state))
+
+        controller.cancelDictation()
+    }
+
+    /// Волна выбрана — проходов предпросмотра нет вовсе: они стоят настоящего распознавания,
+    /// и платить за них тому, кто их не просил, нельзя.
+    func testWaveStyleNeverRunsPreviewPasses() async throws {
+        let settings = makeSettings()
+        settings.pillStyle = .wave
+        let recorder = StubRecorder()
+        recorder.capturedSamples = [Float](repeating: 0.2, count: AudioCaptureFormat.samples(seconds: 4))
+        let engine = ScriptedEngine(passes: ["проверь webhooks и nginx потом"])
+        let controller = makeController(engine: engine, recorder: recorder, settings: settings)
+
+        controller.toggle()
+        try await wait(for: "старт записи") {
+            if case .recording = controller.state { return true }
+            return false
+        }
+        // Заведомо дольше периода предпросмотра (0,9 с).
+        try await Task.sleep(for: .milliseconds(1500))
+
+        XCTAssertEqual(engine.served, 0, "на волне предпросмотр не имеет права ходить в модель")
+        XCTAssertEqual(Self.live(controller.state), "")
+        controller.cancelDictation()
+    }
+
+    private static func live(_ state: DictationState) -> String {
+        guard case .recording(let live, _) = state else { return "" }
+        return live
     }
 
     private func makeController(

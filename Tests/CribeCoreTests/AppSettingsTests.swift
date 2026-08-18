@@ -40,33 +40,28 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).learnsFromEdits)
     }
 
-    /// Пропуск GPT на коротких диктовках включён по умолчанию, граница — 8 слов.
-    func testShortDictationDefaults() {
-        let settings = AppSettings(defaults: defaults)
-        XCTAssertTrue(settings.skipGPTForShort)
-        XCTAssertEqual(settings.shortDictationWordLimit, 8)
+    /// Смешанная речь ожидается по умолчанию: приложение делают двуязычные люди для
+    /// двуязычных. Выключённый тумблер переживает перезапуск (дефолт `true`, поэтому
+    /// `bool(forKey:)` не отличил бы «выключен» от «не задан»).
+    func testMixesUkrainianDefaultsOnAndPersists() {
+        XCTAssertTrue(AppSettings(defaults: defaults).mixesUkrainian)
+
+        AppSettings(defaults: defaults).mixesUkrainian = false
+        XCTAssertFalse(AppSettings(defaults: defaults).mixesUkrainian)
     }
 
-    /// Выключённый тумблер и своя граница переживают перезапуск (дефолт у тумблера — `true`,
-    /// поэтому `bool(forKey:)` не отличил бы «выключен» от «не задан»).
-    func testShortDictationSettingsPersist() {
-        let settings = AppSettings(defaults: defaults)
-        settings.skipGPTForShort = false
-        settings.shortDictationWordLimit = 3
-
-        let reloaded = AppSettings(defaults: defaults)
-        XCTAssertFalse(reloaded.skipGPTForShort)
-        XCTAssertEqual(reloaded.shortDictationWordLimit, 3)
+    /// Галочка собрана из двух прежних, и выбор человека обязан её пережить: тот, кто
+    /// выключил возврат украинских вставок, не должен получить его обратно обновлением.
+    func testMixesUkrainianInheritsTheOldKey() {
+        defaults.set(false, forKey: "restoreUkrainianInserts")
+        XCTAssertFalse(AppSettings(defaults: defaults).mixesUkrainian)
     }
 
-    /// Возврат украинских вставок включён по умолчанию — владелец диктует по-русски с
-    /// украинскими словами постоянно. Выключённый тумблер переживает перезапуск (дефолт
-    /// `true`, поэтому `bool(forKey:)` не отличил бы «выключен» от «не задан»).
-    func testRestoreUkrainianInsertsDefaultsOnAndPersists() {
-        XCTAssertTrue(AppSettings(defaults: defaults).restoreUkrainianInserts)
-
-        AppSettings(defaults: defaults).restoreUkrainianInserts = false
-        XCTAssertFalse(AppSettings(defaults: defaults).restoreUkrainianInserts)
+    /// Своё значение сильнее унаследованного: человек мог передумать уже в новой версии.
+    func testOwnKeyWinsOverTheOldOne() {
+        defaults.set(false, forKey: "restoreUkrainianInserts")
+        defaults.set(true, forKey: "mixesUkrainian")
+        XCTAssertTrue(AppSettings(defaults: defaults).mixesUkrainian)
     }
 
     /// Карточки включены по умолчанию, а выключённый тумблер переживает перезапуск
@@ -78,66 +73,22 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).cardsWhenNoField)
     }
 
-    /// У перевода своя пара «модель + усилие» с собственными дефолтами.
-    func testTranslateModelDefaults() {
+    /// Модель человек не выбирает — она одна и у чистки, и у перевода. Отличаются они
+    /// усилием: замер показал, что чистке хватает `low` (те же 51/51 при медиане 2,48 с
+    /// против 2,82 с у `medium`), а переводу оставлен `high` — цена ошибки там выше.
+    func testCleanupAndTranslateShareModelButNotEffort() {
         let settings = AppSettings(defaults: defaults)
-        XCTAssertEqual(settings.translateModel, AppSettings.defaultTranslateModel)
-        XCTAssertEqual(settings.translateEffort, AppSettings.defaultTranslateEffort)
+        XCTAssertEqual(settings.gptConfig.model, GPTConfig.defaultModel)
+        XCTAssertEqual(settings.translateGPTConfig.model, GPTConfig.defaultModel)
+        XCTAssertEqual(settings.gptConfig.effort, "low")
+        XCTAssertEqual(settings.translateGPTConfig.effort, "high")
     }
 
-    /// Усилия у чистки и перевода свои и разные. Чистке хватает `low`: замер на 10 живых
-    /// записях (210 прогонов, 17 проверок) дал у `low` те же 51/51, что и у `medium`, при
-    /// меньшей задержке. Переводу оставлен `high` — цена ошибки там выше.
-    func testEffortDefaultsAreOwnedByAppSettings() {
-        let settings = AppSettings(defaults: defaults)
-        XCTAssertEqual(settings.gptEffort, "low")
-        XCTAssertEqual(settings.translateEffort, "high")
-        XCTAssertEqual(AppSettings.defaultCleanupEffort, "low")
-        XCTAssertEqual(AppSettings.defaultTranslateEffort, "high")
-        XCTAssertNotEqual(AppSettings.defaultCleanupEffort, AppSettings.defaultTranslateEffort)
-    }
-
-    func testTranslateModelSettingsPersist() {
-        let settings = AppSettings(defaults: defaults)
-        settings.translateModel = "gpt-5.6-sol"
-        settings.translateEffort = "high"
-
-        let reloaded = AppSettings(defaults: defaults)
-        XCTAssertEqual(reloaded.translateModel, "gpt-5.6-sol")
-        XCTAssertEqual(reloaded.translateEffort, "high")
-    }
-
-    /// Конфигурация перевода берёт свою модель и своё усилие, но общий режим доступа —
-    /// и при этом не задевает конфигурацию обычной чистки.
-    func testTranslateGPTConfigIsSeparateFromCleanupConfig() {
+    /// Режим доступа общий: вход в ChatGPT один, и перевод не ходит мимо него.
+    func testTranslateConfigSharesTheAccessMode() {
         let settings = AppSettings(defaults: defaults)
         settings.gptMode = .apiKey
-        settings.gptModel = "gpt-5.6-luna"
-        settings.gptEffort = "none"
-        settings.translateModel = "gpt-5.6-sol"
-        settings.translateEffort = "medium"
-
         XCTAssertEqual(settings.translateGPTConfig.mode, .apiKey)
-        XCTAssertEqual(settings.translateGPTConfig.model, "gpt-5.6-sol")
-        XCTAssertEqual(settings.translateGPTConfig.effort, "medium")
-
-        XCTAssertEqual(settings.gptConfig.model, "gpt-5.6-luna")
-        XCTAssertEqual(settings.gptConfig.effort, "none")
-    }
-
-    /// Распознавание по умолчанию — быстрое: смена движка ничего не должна менять сама собой.
-    func testRecognitionEngineDefaultsToFast() {
-        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .fast)
-    }
-
-    func testRecognitionEnginePersists() {
-        AppSettings(defaults: defaults).recognitionEngine = .parakeet
-        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .parakeet)
-    }
-
-    /// Чужое значение в ключе не должно ронять запуск: непонятное читается как быстрое.
-    func testUnknownRecognitionEngineFallsBackToFast() {
-        defaults.set("nemotron", forKey: "recognitionEngine")
-        XCTAssertEqual(AppSettings(defaults: defaults).recognitionEngine, .fast)
+        XCTAssertEqual(settings.gptConfig.mode, .apiKey)
     }
 }

@@ -18,6 +18,7 @@ enum WindowID {
     static let dictionary = "dictionary"
     static let onboarding = "onboarding"
     static let history = "history"
+    static let modelUpdate = "modelUpdate"
 }
 
 /// Долгоживущие объекты приложения: движок, словарь, конвейер, живая панель.
@@ -29,16 +30,21 @@ final class AppCore: ObservableObject {
     let settings = AppSettings.shared
     let history = HistoryStore.shared
     let learner = EditLearner.shared
-    let engine = WhisperEngine()
-    /// Развилка между Whisper и Parakeet. Конвейеру уходит она, а не движок: выбор живёт
-    /// в настройках и меняется на лету, а `DictationController` берёт движок один раз.
-    let recognizer: Recognizer
+    let engine = ParakeetEngine()
     let dictionary = UserDictionary(url: UserDictionary.defaultURL)
     let controller: DictationController
+    /// Свёрнутый до двух величин срез конвейера для меню — чтобы поток уровня микрофона
+    /// не будил его двенадцать раз в секунду.
+    let menu: MenuState
 
     /// Онбординг показываем один раз; флаг ставим сразу при открытии, иначе окно,
     /// закрытое крестиком, возвращалось бы на каждом старте.
     @Published private(set) var needsOnboarding: Bool
+
+    /// Модели распознавания на диске нет, а онбординг человек уже проходил — значит, это
+    /// обновление, сменившее движок. Экран загрузки показываем на каждом запуске, пока
+    /// модель не приедет: без неё диктовка не работает вовсе, и молчать об этом нельзя.
+    @Published private(set) var needsModelUpdate: Bool
 
     /// Зачем открыли редактор словаря из меню. Редактор разворачивает нужный блок
     /// и сбрасывает значение — это разовый сигнал, а не состояние.
@@ -84,8 +90,6 @@ final class AppCore: ObservableObject {
     private var rightOptionTap: ModifierKeyTap?
     private var escTap: KeyDownTap?
     private var hotkeyModeSubscription: AnyCancellable?
-    private var neighbourWatch: AnyCancellable?
-    private var accuracyWatch: AnyCancellable?
     private var escTapSubscription: AnyCancellable?
     /// Об отсутствии разрешения пишем один раз на серию попыток, а не на каждую активацию.
     private var loggedEscFailure = false
@@ -95,10 +99,12 @@ final class AppCore: ObservableObject {
     private let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Hotkey")
 
     private init() {
-        let recognizer = Recognizer(whisper: engine)
-        self.recognizer = recognizer
-        controller = DictationController(engine: recognizer, dictionary: dictionary, settings: settings)
-        needsOnboarding = !UserDefaults.standard.bool(forKey: Self.onboardingKey)
+        let controller = DictationController(engine: engine, dictionary: dictionary, settings: settings)
+        self.controller = controller
+        menu = MenuState(controller: controller, settings: settings)
+        let seenOnboarding = UserDefaults.standard.bool(forKey: Self.onboardingKey)
+        needsOnboarding = !seenOnboarding
+        needsModelUpdate = seenOnboarding && !ParakeetEngine.isInstalled
         // Чаймы синтезируются заранее: на первом хоткее звук иначе опаздывал.
         SoundPlayer.preload()
     }
@@ -111,44 +117,20 @@ final class AppCore: ObservableObject {
     /// у него есть, и тратить его лучше заранее.
     ///
     /// Молча и без последствий: если модели ещё нет на диске, не делаем ничего — качать
-    /// полтора гигабайта без спроса нельзя. Ошибку тоже глотаем: это прогрев, а не работа,
-    /// и настоящая диктовка сообщит о беде сама.
+    /// полгигабайта без спроса нельзя, об этом спрашивает отдельный экран. Ошибку тоже
+    /// глотаем: это прогрев, а не работа, и настоящая диктовка сообщит о беде сама.
     private func warmUpModel() {
+        guard ParakeetEngine.isInstalled else { return }
         let engine = self.engine
-        let recognizer = self.recognizer
         let language = settings.language
-        // Второе мнение умеет спрашивать только Whisper: у Parakeet перечитывание — заглушка,
-        // и греть ради него полтора гигабайта украинской модели было бы чистой тратой.
-        let catches = settings.catchesNeighbourLanguage && settings.recognitionEngine != .parakeet
-        let neighbour = catches ? language.neighbour : nil
         Task.detached(priority: .utility) {
-            guard recognizer.isInstalled(for: language) else { return }
-            try? await recognizer.prepare(language: language) { _ in }
-            // Модель соседа греем следом и заранее: второе мнение спрашивают посреди
-            // диктовки, и ждать там компиляции под ANE нельзя — это минуты молчания.
-            guard let neighbour, engine.isInstalled(for: neighbour) else { return }
-            try? await engine.prepare(variant: neighbour.whisperModel, language: neighbour) { _ in }
-        }
-    }
-
-    /// Ловля фраз на соседнем языке живёт в движке, а спрашивают о ней в настройках —
-    /// связываем один раз и следим за переключателем.
-    private func followNeighbourSetting() {
-        engine.checksNeighbourLanguage = settings.catchesNeighbourLanguage
-        neighbourWatch = settings.$catchesNeighbourLanguage.sink { [engine] on in
-            engine.checksNeighbourLanguage = on
-        }
-        // Выбор распознавания — там же: развилка знает движки, настройки знают вкус.
-        recognizer.mode = settings.recognitionEngine
-        accuracyWatch = settings.$recognitionEngine.sink { [recognizer] choice in
-            recognizer.mode = choice
+            try? await engine.prepare(language: language) { _ in }
         }
     }
 
     /// Панель и глобальные хоткеи поднимаются после старта NSApplication.
     func start() {
         guard panel == nil else { return }
-        followNeighbourSetting()
         // Расписание проверок обновлений заводится здесь же: до старта NSApplication
         // показывать найденное обновление было бы нечем.
         UpdateController.shared.start()
@@ -319,6 +301,12 @@ final class AppCore: ObservableObject {
         needsOnboarding = false
         UserDefaults.standard.set(true, forKey: Self.onboardingKey)
     }
+
+    /// Экран загрузки закрыт. Второй раз в этом запуске он не появится — даже если модель
+    /// так и не доехала: человек его видел и решение принял.
+    func markModelUpdateShown() {
+        needsModelUpdate = false
+    }
 }
 
 /// Единственная задача делегата — точка «приложение стартовало».
@@ -372,9 +360,17 @@ struct CribeApp: App {
         }
         .defaultSize(width: 680, height: 560)
 
+        Window("Модель распознавания", id: WindowID.modelUpdate) {
+            ModelUpdateView(
+                install: ModelInstall.shared,
+                settings: AppCore.shared.settings,
+                onDone: { AppCore.shared.markModelUpdateShown() }
+            )
+        }
+        .windowResizability(.contentSize)
+
         Window("Настройка Cribe", id: WindowID.onboarding) {
             OnboardingView(
-                engine: AppCore.shared.engine,
                 settings: AppCore.shared.settings,
                 // Флаг первого запуска гасим отсюда: только появление окна доказывает,
                 // что онбординг пользователь действительно увидел.
@@ -423,6 +419,7 @@ private struct MenuBarScene: Scene {
             MenuBarView(
                 core: core,
                 controller: controller,
+                menu: core.menu,
                 settings: core.settings,
                 history: core.history,
                 learner: core.learner,
@@ -439,6 +436,17 @@ private struct MenuBarScene: Scene {
             guard text != nil else { return }
             WindowPresenter.shared.present(WindowID.history) {
                 openWindow(id: WindowID.history)
+            }
+        }
+        // Обновление сменило движок распознавания, и новую модель надо скачать. Окно
+        // открывается тем же путём, что и онбординг, и по тем же причинам: сцены к первому
+        // тику ещё только собираются, а всплыть позади чужих окон оно не должно.
+        .onChange(of: core.needsModelUpdate, initial: true) { _, needs in
+            guard needs else { return }
+            Task { @MainActor in
+                WindowPresenter.shared.present(WindowID.modelUpdate) {
+                    openWindow(id: WindowID.modelUpdate)
+                }
             }
         }
         .onChange(of: core.needsOnboarding, initial: true) { _, needs in

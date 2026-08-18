@@ -4,9 +4,23 @@ import CribeCore
 
 /// Содержимое меню в строке состояния. Стиль `.menu` — нативное NSMenu, поэтому
 /// внутри допустимы только меню-совместимые вью: Text, Button, Toggle, Picker, Menu, Section, Divider.
+///
+/// Состав собран по одному правилу: наверху то, за чем сюда заходят, глубже — то, что делают
+/// один раз в жизни. Меню было шестнадцатью строками подряд, и в нём приходилось искать
+/// глазами; в подменю уехало только по-настоящему разовое.
+///
+/// Частота нажатий — не то же самое, что важность. Обновления нажимают редко, но они остались
+/// наверху: их вторая половина (строка «Обновление найдено») приходит сама и живёт здесь же,
+/// и разносить две половины одного дела по разной глубине нельзя.
+///
+/// Конвейер вью НЕ наблюдает: на записи тот публикуется двенадцать раз в секунду (в состоянии
+/// едет уровень микрофона), а меню от уровня не зависит ни одной строкой. Всё нужное сведено
+/// в `MenuState` двумя дедуплицированными величинами — сам `controller` здесь только
+/// принимает команды.
 struct MenuBarView: View {
-    @ObservedObject var core: AppCore
-    @ObservedObject var controller: DictationController
+    let core: AppCore
+    let controller: DictationController
+    @ObservedObject var menu: MenuState
     @ObservedObject var settings: AppSettings
     @ObservedObject var history: HistoryStore
     @ObservedObject var learner: EditLearner
@@ -28,10 +42,11 @@ struct MenuBarView: View {
             Divider()
         }
 
-        Text(status)
+        Text(menu.status)
 
         Divider()
 
+        // Язык и микрофон — то, что меняют посреди работы. Дальше от верха им не место.
         Picker("Язык", selection: $settings.language) {
             ForEach(Language.allCases, id: \.self) { language in
                 Text(language.displayName).tag(language)
@@ -42,19 +57,29 @@ struct MenuBarView: View {
 
         Divider()
 
+        // Два тумблера, меняющие результат следующей же диктовки. «Звуки» отсюда ушли:
+        // их ставят один раз и навсегда, а место они занимали такое же.
         Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
         Toggle("Перевод на английский", isOn: $settings.translateToEnglish)
-        Toggle("Звуки", isOn: $settings.soundsEnabled)
 
-        Section("Последняя диктовка") {
+        Divider()
+
+        Menu("Последняя диктовка") {
             Button("Скопировать оригинал") { controller.copyLastOriginal() }
-                .disabled(controller.lastOriginal == nil)
+                .disabled(!menu.hasDictation)
 
             // Перевод делает GPT-слой: без него копировать нечего.
             Button("Скопировать перевод") {
                 Task { await controller.translateLastAndCopy() }
             }
-            .disabled(controller.lastOriginal == nil || !settings.gptEnabled)
+            .disabled(!menu.hasDictation || !settings.gptEnabled)
+
+            Divider()
+
+            // Разбор «я сказал X, получилось Y»: слова последней диктовки становятся
+            // вариантами в два клика, без переписывания их руками.
+            Button("Слова в словарь…") { openDictionary(.lastDictation) }
+                .disabled(!menu.hasDictation && history.items.isEmpty)
         }
 
         Menu("История") {
@@ -76,72 +101,53 @@ struct MenuBarView: View {
             Button("Открыть окно истории…") { openHistory() }
         }
 
-        Divider()
-
         Button("Словарь…") { openDictionary() }
 
-        // Разбор «я сказал X, получилось Y» начинается отсюда: слова последней диктовки
-        // становятся вариантами в два клика, без переписывания их руками.
-        Button("Добавить из последней диктовки") { openDictionary(.lastDictation) }
-            .disabled(controller.lastOriginal == nil && history.items.isEmpty)
-
-        // Пункт появляется, только когда есть что показать: замеченные правки не всплывают
-        // ничем и никогда — это тихая строка в меню, а не окно поверх работы.
+        // Строка появляется, только когда есть что показать, и остаётся наверху: замеченные
+        // правки не всплывают ничем и никогда, и спрятанные в подменю они не нашлись бы вовсе.
         if !learner.pending.isEmpty {
             Button("Замеченные правки (\(learner.pending.count))") { openDictionary(.corrections) }
         }
+
+        Divider()
 
         // Не `SettingsLink`: он открывает окно, но приложение не активирует, и настройки
         // появлялись позади чужих окон. Тот же путь через презентер, что и у остальных окон.
         Button("Настройки…") {
             WindowPresenter.shared.present { openSettings() }
         }
+
+        // Обновления остаются наверху, хотя нажимают их редко. Причина не в частоте: строка
+        // «Обновление найдено» приходит сама и живёт ровно здесь же (см. верх меню), и если
+        // ручная проверка спрятана в подменю, то две половины одного дела оказываются
+        // на разной глубине — а человек, которому «кажется, что-то давно не обновлялось»,
+        // ищет её именно тут.
+        //
         // Окно Sparkle поднимает сама: проверку начал человек, и фоновое приложение она
         // в этом случае активирует. Пункт гаснет, пока предыдущая проверка не закончилась.
-        Button("Проверить обновления…") { updates.checkForUpdates() }
-            .disabled(!updates.canCheck)
-        // Ручной вход в онбординг: разрешения и модели могут понадобиться и позже,
-        // а автоматически окно показывается только на первом запуске.
-        Button("Первичная настройка…") {
-            WindowPresenter.shared.present(WindowID.onboarding) {
-                openWindow(id: WindowID.onboarding)
+        Button(updates.canCheck ? "Проверить обновления…" : "Проверяю обновления…") {
+            updates.checkForUpdates()
+        }
+        .disabled(!updates.canCheck)
+
+        // Всё, что делают в первый день и потом почти никогда.
+        Menu("Ещё") {
+            Toggle("Звуки старта и окончания", isOn: $settings.soundsEnabled)
+
+            Divider()
+
+            // Ручной вход в онбординг: разрешения и модель могут понадобиться и позже,
+            // а автоматически окно показывается только на первом запуске.
+            Button("Первичная настройка…") {
+                WindowPresenter.shared.present(WindowID.onboarding) {
+                    openWindow(id: WindowID.onboarding)
+                }
             }
         }
 
         Divider()
 
         Button("Выход") { NSApp.terminate(nil) }
-    }
-
-    /// Пока сессия идёт, показываем её язык: переключение на живой записи меняет настройку,
-    /// но не то, чем распознаётся текущая диктовка.
-    private var displayLanguage: Language {
-        controller.activeSessionLanguage ?? settings.language
-    }
-
-    /// Метка перевода в строке записи: сессия правого ⌥ переводит вопреки выключенному
-    /// тумблеру, поэтому переопределение сессии сильнее настройки (как и в панели).
-    private var translateMark: String {
-        (controller.activeSessionTranslate ?? settings.translateToEnglish) ? " → EN" : ""
-    }
-
-    private var status: String {
-        switch controller.state {
-        case .idle: return "Готов · \(displayLanguage.displayName)"
-        case .preparingModel(.downloading(let progress)): return "Качаю модель… \(Int(progress * 100))%"
-        case .preparingModel(.warming): return "Готовлю модель…"
-        case .recording: return "● Идёт запись · \(displayLanguage.displayName)\(translateMark)"
-        case .transcribing: return "Распознаю…"
-        // Тем же словом, что и капсула: переводящая диктовка не чистится, а переводится.
-        case .cleaning:
-            return (controller.activeSessionTranslate ?? settings.translateToEnglish)
-                ? "🌐 Перевожу…" : "✨ Чищу…"
-        case .inserted: return "✓ Вставлено"
-        case .carded: return "⤷ В карточку"
-        case .cancelled: return "✕ Отменено"
-        case .degraded(let reason): return "⚠️ \(reason)"
-        case .error(let message): return "⚠️ \(message)"
-        }
     }
 
     private func openHistory() {

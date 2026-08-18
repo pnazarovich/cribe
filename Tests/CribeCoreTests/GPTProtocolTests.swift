@@ -278,9 +278,11 @@ final class GPTProtocolTests: XCTestCase {
 
     // MARK: - Дефолты и промпт
 
-    func testDefaultModelsPerMode() {
-        XCTAssertEqual(GPTConfig.defaultModel(for: .codex), "gpt-5.6-terra")
-        XCTAssertEqual(GPTConfig.defaultModel(for: .apiKey), "gpt-5.6-luna")
+    /// Модель одна на оба бэкенда и выбрана замером, а не режимом доступа.
+    func testDefaultModelIsTheMeasuredWinner() {
+        XCTAssertEqual(GPTConfig.defaultModel, "gpt-5.6-terra")
+        XCTAssertEqual(GPTConfig(mode: .codex).model, "gpt-5.6-terra")
+        XCTAssertEqual(GPTConfig(mode: .apiKey).model, "gpt-5.6-terra")
         XCTAssertEqual(GPTConfig.defaultEffort, "low")
     }
 
@@ -372,16 +374,14 @@ final class GPTProtocolTests: XCTestCase {
     /// проверяемый критерий, а не просьба быть аккуратнее.
     func testReadBackRuleGuardsAgainstSubstitutedTerms() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
-        for engine in RecognitionEngine.allCases {
-            let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: engine)
-            XCTAssertTrue(ru.contains("читаться обратно в услышанное"), ru)
-            XCTAssertTrue(ru.contains("GCLID"), ru)
-            // И обратная сторона: осторожность не должна превращаться в отказ латинизировать
-            // то, что подходит по звучанию, — на этом терялось «Fable».
-            XCTAssertTrue(ru.contains("не повод осторожничать"), ru)
-            XCTAssertTrue(ru.contains("Fable"), ru)
-            XCTAssertTrue(ru.contains("ОДИНАКОВО"), ru)
-        }
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru)
+        XCTAssertTrue(ru.contains("читаться обратно в услышанное"), ru)
+        XCTAssertTrue(ru.contains("GCLID"), ru)
+        // И обратная сторона: осторожность не должна превращаться в отказ латинизировать
+        // то, что подходит по звучанию, — на этом терялось «Fable».
+        XCTAssertTrue(ru.contains("не повод осторожничать"), ru)
+        XCTAssertTrue(ru.contains("Fable"), ru)
+        XCTAssertTrue(ru.contains("ОДИНАКОВО"), ru)
     }
 
     /// Верность речи и омофоны. Оба правила — из замера: чистка переставляла слова, меняла
@@ -401,24 +401,18 @@ final class GPTProtocolTests: XCTestCase {
         }
     }
 
-    /// Про Parakeet чистка обязана знать: латиницы у него на выходе не бывает вовсе, а значит
-    /// словарные варианты — фонетические образцы, а не строки. Ровно на этом «прокид»
-    /// становится Parakeet, чего прежний промпт не делал никогда.
-    func testParakeetPromptExplainsTransliteration() {
+    /// Про распознавание чистка обязана знать: латиницы у Parakeet на выходе не бывает
+    /// вовсе, а значит словарные варианты — фонетические образцы, а не строки. Ровно на этом
+    /// «прокид» становится Parakeet, чего прежний промпт не делал никогда.
+    func testPromptExplainsTransliteration() {
         let entries = [DictionaryEntry(canonical: "Parakeet", variants: ["parakit"])]
-        let parakeet = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: .parakeet)
-        XCTAssertTrue(parakeet.contains("Латиницей оно не пишет ВООБЩЕ"), parakeet)
-        XCTAssertTrue(parakeet.contains("сопоставляй по звучанию"), parakeet)
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru)
+        XCTAssertTrue(ru.contains("Латиницей оно не пишет ВООБЩЕ"), ru)
+        XCTAssertTrue(ru.contains("сопоставляй по звучанию"), ru)
 
-        // Whisper латиницу выводит сама — ей этот абзац только мешал бы.
-        for engine in [RecognitionEngine.fast, .precise] {
-            let whisper = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: engine)
-            XCTAssertFalse(whisper.contains("Латиницей оно не пишет ВООБЩЕ"), whisper)
-        }
-
-        // Украинская и английская ветки про движок не знают вовсе — их правила свои.
+        // Украинская и английская ветки этого абзаца не знают — их правила свои.
         for language in [Language.uk, .en] {
-            let other = PostProcessor.systemPrompt(entries: entries, language: language, engine: .parakeet)
+            let other = PostProcessor.systemPrompt(entries: entries, language: language)
             XCTAssertFalse(other.contains("Латиницей оно не пишет ВООБЩЕ"), other)
         }
     }
@@ -458,38 +452,27 @@ final class GPTProtocolTests: XCTestCase {
         XCTAssertFalse(uk.contains("«еее», «ну»"), uk)
     }
 
-    /// Ловля соседнего языка у движков значит разное, потому что и беда у них разная.
-    /// Whisper слушает запись одним языком и украинскую вставку коверкает — ей нужно второе
-    /// мнение. Parakeet многоязычный и пишет украинское слово верно САМ, а портила его
-    /// потом чистка: замерено — «вже дивився, нічого не зрозумів» превращалось в «уже
-    /// смотрел, ничего не понял». Поэтому у Parakeet та же галочка означает «не русифицируй».
-    func testNeighbourToggleKeepsUkrainianOnParakeet() {
+    /// Смешанная речь — одна галочка на две беды сразу. Распознавание пишет украинское
+    /// слово верно САМ, а портила его потом чистка: замерено — «вже дивився, нічого
+    /// не зрозумів» превращалось в «уже смотрел, ничего не понял». Она же чинит обратное:
+    /// украинское слово, записанное на слух по-русски («требо» вместо «треба»).
+    func testMixedSpeechToggleDrivesBothHalves() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
-        let marker = "НЕ русифицируй их"
+        let keep = "НЕ русифицируй их"
+        let restore = "верни такому слову"
 
-        let keeping = PostProcessor.systemPrompt(
-            entries: entries, language: .ru, engine: .parakeet, keepsNeighbourLanguage: true
-        )
-        XCTAssertTrue(keeping.contains(marker), keeping)
-        XCTAssertTrue(keeping.contains("«ще раз» остаётся «ще раз»"), keeping)
+        let mixing = PostProcessor.systemPrompt(entries: entries, language: .ru, mixesUkrainian: true)
+        XCTAssertTrue(mixing.contains(keep), mixing)
+        XCTAssertTrue(mixing.contains("«ще раз» остаётся «ще раз»"), mixing)
+        XCTAssertTrue(mixing.lowercased().contains(restore), mixing)
         // И одновременно — правило о доминирующем языке сужено, а не отменено: русское
         // слово с прилипшим украинским окончанием по-прежнему чинится.
-        XCTAssertTrue(keeping.contains("«не собирається» → «не собирается»"), keeping)
+        XCTAssertTrue(mixing.contains("«не собирається» → «не собирается»"), mixing)
 
-        // Выключена — человек диктует на одном языке, и абзаца быть не должно.
-        let plain = PostProcessor.systemPrompt(
-            entries: entries, language: .ru, engine: .parakeet, keepsNeighbourLanguage: false
-        )
-        XCTAssertFalse(plain.contains(marker), plain)
-
-        // У Whisper галочка работает вторым мнением (`SecondOpinion`), а не промптом:
-        // абзац про «оно пишет по-украински само» про неё был бы неправдой.
-        for engine in [RecognitionEngine.fast, .precise] {
-            let whisper = PostProcessor.systemPrompt(
-                entries: entries, language: .ru, engine: engine, keepsNeighbourLanguage: true
-            )
-            XCTAssertFalse(whisper.contains(marker), whisper)
-        }
+        // Выключена — человек диктует на одном языке, и обеих половин быть не должно.
+        let plain = PostProcessor.systemPrompt(entries: entries, language: .ru, mixesUkrainian: false)
+        XCTAssertFalse(plain.contains(keep), plain)
+        XCTAssertFalse(plain.lowercased().contains(restore), plain)
     }
 
     /// Термин без вариантов раньше не доезжал до чистки вовсе: его держала подсказка декодеру.
@@ -500,7 +483,7 @@ final class GPTProtocolTests: XCTestCase {
             DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"]),
             DictionaryEntry(canonical: "G-Clan", variants: []),
         ]
-        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru, engine: .parakeet)
+        let ru = PostProcessor.systemPrompt(entries: entries, language: .ru)
         XCTAssertTrue(ru.contains("Известные названия без вариантов: G-Clan"), ru)
         // Запись с вариантами остаётся в основном списке, а не переезжает во второй.
         XCTAssertTrue(ru.contains("- гитхаб → GitHub"), ru)
@@ -536,14 +519,14 @@ final class GPTProtocolTests: XCTestCase {
 
     /// Украинские вставки в русской речи: распознавание знает один язык на сессию и пишет
     /// их на слух по-русски. Чинить это может только слой 3 — но ровно там, где это
-    /// осмысленно: русская сессия, чистка, включённый тумблер. Везде ещё правило вредно
+    /// осмысленно: русская сессия, чистка, включённая галочка смешанной речи. Везде ещё правило вредно
     /// (украинская сессия), бессмысленно (английская) или неуместно (перевод).
     func testUkrainianInsertRuleOnlyInRussianCleanup() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         let marker = "вставляет отдельные украинские слова"
 
         let ru = PostProcessor.systemPrompt(
-            entries: entries, language: .ru, restoreUkrainianInserts: true
+            entries: entries, language: .ru, mixesUkrainian: true
         )
         XCTAssertTrue(ru.contains(marker), ru)
         // Правило обязано быть консервативным: без этой оговорки оно украинизирует
@@ -556,7 +539,7 @@ final class GPTProtocolTests: XCTestCase {
         // Перевод: текст всё равно уедет в английский, украинское написание там ни к чему.
         XCTAssertFalse(
             PostProcessor.systemPrompt(
-                entries: entries, language: .ru, translateToEnglish: true, restoreUkrainianInserts: true
+                entries: entries, language: .ru, translateToEnglish: true, mixesUkrainian: true
             ).contains(marker)
         )
 
@@ -567,7 +550,7 @@ final class GPTProtocolTests: XCTestCase {
                         entries: entries,
                         language: language,
                         translateToEnglish: translating,
-                        restoreUkrainianInserts: true
+                        mixesUkrainian: true
                     ).contains(marker),
                     "\(language) не должен получать правило про украинские вставки"
                 )
@@ -580,7 +563,7 @@ final class GPTProtocolTests: XCTestCase {
     func testUkrainianInsertRuleDisappearsWhenOff() {
         let entries = [DictionaryEntry(canonical: "GitHub", variants: ["гитхаб"])]
         let off = PostProcessor.systemPrompt(
-            entries: entries, language: .ru, restoreUkrainianInserts: false
+            entries: entries, language: .ru, mixesUkrainian: false
         )
         XCTAssertFalse(off.contains("вставляет отдельные украинские слова"), off)
         XCTAssertTrue(off.contains("Язык этой диктовки — русский"), off)

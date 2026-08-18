@@ -1,6 +1,6 @@
 import Foundation
 
-/// Состояние ASR-модели для одного языка.
+/// Состояние ASR-модели.
 public enum ASRModelState: Sendable {
     case notLoaded
     /// Доля скачанного, 0...1.
@@ -10,12 +10,8 @@ public enum ASRModelState: Sendable {
 }
 
 public enum TranscriptionEngineError: LocalizedError {
-    /// `transcribe` вызван до успешного `prepare` для этого языка.
+    /// `transcribe` вызван до успешного `prepare`.
     case notPrepared(Language)
-    /// `transcribePreview` вызван до того, как лёгкая модель превью догрузилась.
-    case previewNotPrepared
-    /// Движок не умеет отдавать сегменты с таймкодами.
-    case segmentsUnsupported
     /// Движок не умеет отдавать английский задачей декодера.
     case translationUnsupported
 
@@ -23,109 +19,36 @@ public enum TranscriptionEngineError: LocalizedError {
         switch self {
         case let .notPrepared(language):
             return "Модель для языка «\(language.displayName)» не загружена."
-        case .previewNotPrepared:
-            return "Модель live-превью ещё не загружена."
-        case .segmentsUnsupported:
-            return "Движок не отдаёт сегменты с таймкодами."
         case .translationUnsupported:
-            return "Движок не умеет переводить сам."
+            return "Перевод делает ChatGPT — распознавание переводить не умеет."
         }
     }
 }
 
-/// Кусок распознанного текста с таймкодами относительно начала переданного буфера.
-public struct ASRSegment: Sendable, Equatable {
-    public let text: String
-    public let start: Double
-    public let end: Double
-    /// Уверенность распознавания по словам этого куска. Пусто — движок её не отдаёт.
-    public let words: [WordProbe]
-
-    public init(text: String, start: Double, end: Double, words: [WordProbe] = []) {
-        self.text = text
-        self.start = start
-        self.end = end
-        self.words = words
-    }
-}
-
-/// Распознанный текст вместе с уверенностью по словам.
+/// Движок распознавания речи: подготовка модели и распознавание PCM-сэмплов 16 кГц.
 ///
-/// Числа приезжают из того же прохода, что и текст, — их просто перестали выбрасывать.
-/// По ним конвейер решает две вещи: назвать ли человеку сломанный кусок и стоит ли платить
-/// за дорогую сверку соседним языком (см. `Uncertainty`).
-public struct Transcript: Sendable, Equatable {
-    public let text: String
-    public let words: [WordProbe]
-
-    public init(text: String, words: [WordProbe]) {
-        self.text = text
-        self.words = words
-    }
-}
-
-/// Движок распознавания речи: подготовка модели по языку и распознавание PCM-сэмплов 16 кГц.
+/// Протокол остался после того, как движков стало снова один (Parakeet): им подставляются
+/// двойники в тестах, и без него каждый прогон конвейера требовал бы настоящей модели
+/// на диске.
 public protocol TranscriptionEngine: AnyObject {
-    /// Скачивает (при необходимости) и загружает модель языка. Повторный вызов — no-op.
+    /// Скачивает (при необходимости) и загружает модель. Повторный вызов — no-op.
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws
 
-    /// Распознаёт моно-сэмплы 16 кГц. `prompt` — биасинг словарём/контекстом, может быть пустым.
-    /// Требует успешного `prepare` для этого языка, иначе бросает `TranscriptionEngineError.notPrepared`.
+    /// Распознаёт моно-сэмплы 16 кГц. `prompt` — биасинг словарём, может быть пустым;
+    /// движок вправе его игнорировать (у Parakeet входа для подсказки нет по устройству).
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String
 
-    /// Тот же проход, но модель сразу отдаёт английский: у Whisper это отдельная задача
-    /// декодера, а не второй вызов. Ради неё перевод и не зависит больше ни от сети,
-    /// ни от входа в ChatGPT.
+    /// Тот же проход, но модель сразу отдаёт английский. Умеет не всякий движок — тот,
+    /// кто не умеет, обязан бросить `translationUnsupported`, а не вернуть исходный язык
+    /// под видом перевода.
     func transcribe(
         _ samples: [Float],
         language: Language,
         prompt: String,
         translating: Bool
     ) async throws -> String
-
-    /// Тот же проход, что и `transcribe`, но уверенность по словам не выбрасывается.
-    func transcribeDetailed(_ samples: [Float], language: Language, prompt: String) async throws -> Transcript
-
-    /// То же распознавание, что и `transcribe`, с теми же опциями, но результат — сегменты
-    /// с таймкодами. Нужен потоковой финализации: по таймкоду последнего устоявшегося
-    /// сегмента считается, сколько записи уже распознано.
-    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment]
-
-    /// Готовит вариант модели, названный явно, — язык при этом остаётся своим.
-    /// Нужно повторному разбору записи из истории: у русской сессии вариант выбирает язык
-    /// (turbo), а на повторе человек вправе попросить large-v3, не становясь украинцем.
-    func prepare(
-        variant: String,
-        language: Language,
-        onState: @escaping @Sendable (ASRModelState) -> Void
-    ) async throws
-
-    /// То же распознавание, что и `transcribe`, но на явно названном варианте модели.
-    func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String
-
-    /// Перечитывает в готовом тексте фразы, звучащие на соседнем языке (см. `SecondOpinion`).
-    /// Зовётся один раз на диктовку, когда текст собран целиком, — и только там: середина
-    /// длинной диктовки приезжает фоновыми проходами, и проверка внутри распознавания
-    /// её не увидела бы.
-    func reconsideringNeighbour(
-        _ text: String,
-        samples: [Float],
-        language: Language,
-        prompt: String
-    ) async -> NeighbourPass
-
-    /// Готовит отдельную лёгкую модель для live-превью. Повторный вызов — no-op.
-    func preparePreview() async throws
-
-    /// Быстрый черновой проход для живой панели: другая (лёгкая) модель, без промпта.
-    /// Требует успешного `preparePreview`, иначе бросает `TranscriptionEngineError.previewNotPrepared`.
-    func transcribePreview(_ samples: [Float], language: Language) async throws -> String
 }
 
-/// Движок без лёгкой модели превью — законное состояние: вызывающий код откатывается
-/// на черновой проход основной модели. Так же и с сегментами: движок без них законен,
-/// потоковая финализация просто не включится. И с выбором варианта: движку с одной моделью
-/// выбирать не из чего — он делает обычный проход.
 public extension TranscriptionEngine {
     /// Двойники в тестах перевод не изображают — им хватает обычного прохода.
     func transcribe(
@@ -135,52 +58,5 @@ public extension TranscriptionEngine {
         translating: Bool
     ) async throws -> String {
         try await transcribe(samples, language: language, prompt: prompt)
-    }
-
-    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
-        throw TranscriptionEngineError.segmentsUnsupported
-    }
-
-    /// Движок без пословной уверенности — законное состояние: правило по цепочке просто
-    /// не сработает, и конвейер поведёт себя как раньше.
-    func transcribeDetailed(
-        _ samples: [Float],
-        language: Language,
-        prompt: String
-    ) async throws -> Transcript {
-        Transcript(text: try await transcribe(samples, language: language, prompt: prompt), words: [])
-    }
-
-    func prepare(
-        variant: String,
-        language: Language,
-        onState: @escaping @Sendable (ASRModelState) -> Void
-    ) async throws {
-        try await prepare(language: language, onState: onState)
-    }
-
-    func transcribe(
-        _ samples: [Float],
-        language: Language,
-        variant: String,
-        prompt: String
-    ) async throws -> String {
-        try await transcribe(samples, language: language, prompt: prompt)
-    }
-
-    /// Движок без второго мнения — законное состояние: текст остаётся как распознан.
-    func reconsideringNeighbour(
-        _ text: String,
-        samples: [Float],
-        language: Language,
-        prompt: String
-    ) async -> NeighbourPass {
-        NeighbourPass(text: text)
-    }
-
-    func preparePreview() async throws {}
-
-    func transcribePreview(_ samples: [Float], language: Language) async throws -> String {
-        throw TranscriptionEngineError.previewNotPrepared
     }
 }

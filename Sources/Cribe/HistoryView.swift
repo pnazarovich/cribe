@@ -297,18 +297,10 @@ private struct HistoryRow: View {
 
             if item.audio != nil {
                 Button("Распознать заново") {
-                    model.retranscribe(item, mode: .samePlainPass, controller: controller)
+                    model.retranscribe(item, controller: controller)
                 }
                 .disabled(model.isBusy)
-
-                Button("…на большой модели") {
-                    model.retranscribe(item, mode: .largeModel, controller: controller)
-                }
-                .disabled(model.isBusy)
-                .help(
-                    "large-v3: идёт в разы дольше и на русском часто хуже — украинизирует "
-                        + "слова («провєріть пріложення»). Занимает 2,9 ГБ на диске."
-                )
+                .help("Разбор записи целиком, без обрезки тишины.")
             }
 
             if model.busyItem == item.id || (isExpanded && model.isTranslating) {
@@ -430,26 +422,17 @@ final class HistoryModel: ObservableObject {
 
     // MARK: - Повторное распознавание
 
-    func retranscribe(
-        _ item: HistoryItem,
-        mode: DictationController.RetranscribeMode,
-        controller: DictationController
-    ) {
+    func retranscribe(_ item: HistoryItem, controller: DictationController) {
         guard busyItem == nil else { return }
-        if mode == .largeModel, !ModelStore.shared.isInstalled(variant: WhisperModel.large) {
-            guard confirmLargeDownload() else { return }
-        }
 
         busyItem = item.id
         noteIsError = false
-        note = mode == .largeModel
-            ? "Большая модель: это надолго — минуты, не секунды."
-            : "Полный разбор целиком, без обрезки тишины и без словарного промпта…"
+        note = "Полный разбор целиком, без обрезки тишины…"
 
         Task {
             defer { busyItem = nil }
             do {
-                let text = try await controller.retranscribe(item: item, mode: mode)
+                let text = try await controller.retranscribe(item: item)
                 // Раскрытая строка держит свой черновик: без этой строки он остался бы
                 // прежним и следующей же правкой затёр бы то, что только что разобралось.
                 if expanded == item.id { draft = text }
@@ -459,20 +442,6 @@ final class HistoryModel: ObservableObject {
                 note = "Не вышло: \(error.localizedDescription)"
             }
         }
-    }
-
-    /// 2,9 ГБ — не то, что качают за человека молча. Тому, кто диктует только по-русски,
-    /// большая модель не нужна вовсе, и об этом говорим прямо здесь.
-    private func confirmLargeDownload() -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "Скачать большую модель (2,9 ГБ)?"
-        alert.informativeText = """
-            large-v3 нужна украинскому языку. На русском она идёт в разы дольше и часто хуже: \
-            украинизирует слова — «провєріть пріложення», «всьо нормальна».
-            """
-        alert.addButton(withTitle: "Скачать")
-        alert.addButton(withTitle: "Отмена")
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Строка, с которой пришла карточка. Ищем по тексту: id у карточки нет — она

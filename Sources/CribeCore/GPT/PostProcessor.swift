@@ -14,9 +14,7 @@ public enum PostProcessor {
         entries: [DictionaryEntry],
         language: Language,
         translateToEnglish: Bool = false,
-        restoreUkrainianInserts: Bool = false,
-        engine: RecognitionEngine = .fast,
-        keepsNeighbourLanguage: Bool = false
+        mixesUkrainian: Bool = false
     ) -> String {
         let glossary = entries
             .filter { !$0.variants.isEmpty }
@@ -77,7 +75,7 @@ public enum PostProcessor {
             // смыслу. Правило намеренно узкое: ложная украинизация верного русского слова
             // портит текст, который был правильным, поэтому цена ошибки выше цены пропуска.
             // Только русская сессия и только чистка: на переводе всё равно уедет в английский.
-            let restore = (restoreUkrainianInserts && !translateToEnglish)
+            let restore = (mixesUkrainian && !translateToEnglish)
                 ? "И наоборот: человек диктует по-русски, но вставляет отдельные украинские "
                     + "слова, а распознавание пишет их на слух по-русски («требо» вместо "
                     + "«треба», «още» вместо «ще», «шось» вместо «щось»). Верни такому слову "
@@ -153,13 +151,12 @@ public enum PostProcessor {
             // «ничего не понял». То есть единственное, что портило смешанную речь, —
             // сама чистка.
             //
-            // Абзац идёт под той же галочкой, что и ловля соседнего языка. У Whisper она
-            // значит «перечитай подозрительную фразу украинской моделью», у Parakeet
-            // перечитывать нечего — он уже услышал верно, и та же галочка честно значит
-            // «не русифицируй услышанное». Выключена — человек диктует на одном языке,
-            // и случайное украинское слово ему в тексте не нужно.
-            let ukrainian = keepsNeighbourLanguage
-                ? """
+            // Абзац идёт под галочкой «Смешиваю русский и українську» — той же, что включает
+            // `restore` ниже. Обе половины про одно и то же намерение человека и потому живут
+            // одним тумблером: эта бережёт то, что распознавание услышало верно, а `restore`
+            // чинит то, что оно записало на слух по-русски. Выключено — человек диктует
+            // на одном языке, и случайное украинское слово ему в тексте не нужно.
+            let ukrainian = mixesUkrainian ? """
 
 
                 А вот украинские слова оно пишет по-украински САМО и почти всегда верно. \
@@ -172,10 +169,8 @@ public enum PostProcessor {
                 только РУССКОГО слова, к которому прилипло украинское окончание \
                 («не собирається» → «не собирается»), — целого украинского слова оно \
                 не трогает никогда.
-                """
-                : ""
-            let heard = engine == .parakeet
-                ? """
+                """ : ""
+            let heard = """
 
                 Текст пришёл от распознавания Parakeet. Латиницей оно не пишет ВООБЩЕ: \
                 каждое английское название приезжает кириллицей или набором слогов \
@@ -184,7 +179,6 @@ public enum PostProcessor {
                 слышит термин, а не полный список: сопоставляй по звучанию, искажения бывают \
                 сильными («прокид» — это parakit).\(ukrainian)
                 """
-                : ""
 
             return """
             \(role)
@@ -288,17 +282,13 @@ public enum PostProcessor {
         config: GPTConfig,
         timeout: TimeInterval = 10,
         translateToEnglish: Bool = false,
-        restoreUkrainianInserts: Bool = false,
-        engine: RecognitionEngine = .fast,
-        keepsNeighbourLanguage: Bool = false
+        mixesUkrainian: Bool = false
     ) async throws -> String {
         let instructions = systemPrompt(
             entries: entries,
             language: language,
             translateToEnglish: translateToEnglish,
-            restoreUkrainianInserts: restoreUkrainianInserts,
-            engine: engine,
-            keepsNeighbourLanguage: keepsNeighbourLanguage
+            mixesUkrainian: mixesUkrainian
         )
         let client = GPTClient(config: config)
 

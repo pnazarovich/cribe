@@ -20,6 +20,8 @@ public enum DictationState: Sendable, Equatable {
     case preparingModel(ModelPreparation)
     /// `live` всегда пуст: живого превью в панели больше нет, но форма кейса сохранена
     /// ради совместимости с внешним кодом, который на него сопоставляется.
+    /// `live` — склеенная бегущая строка (см. `LiveTranscript`). Пуста, пока слов меньше
+    /// `DictationController.livePreviewMinimumWords` или пока в настройках выбрана волна.
     case recording(live: String, level: Float)
     case transcribing
     case cleaning
@@ -110,13 +112,12 @@ public enum DictationError: LocalizedError, Sendable {
     }
 }
 
-/// Сериализует распознавание: WhisperKit-инстанс не потокобезопасен, а вызовы могут прийти
+/// Сериализует распознавание: инстанс модели не потокобезопасен, а вызовы могут прийти
 /// из разных задач. Актор реентерабелен (на `await` он освобождается), поэтому вызовы
 /// выстроены в цепочку задач — как в `VadGate.feedStream`.
 actor EngineGate {
     private let engine: TranscriptionEngine
-    /// Хвост цепочки: только «дождаться предыдущего», без его результата — так в одну
-    /// очередь встают проходы с разными типами результата (текст и сегменты).
+    /// Хвост цепочки: только «дождаться предыдущего», без его результата.
     private var inFlight: Task<Void, Never>?
 
     init(_ engine: TranscriptionEngine) {
@@ -124,27 +125,18 @@ actor EngineGate {
     }
 
     /// Загрузка модели идёт мимо цепочки: она не трогает уже прогретый инстанс,
-    /// а `WhisperEngine` сам склеивает параллельные `prepare`.
+    /// а движок сам склеивает параллельные `prepare`.
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         try await engine.prepare(language: language, onState: onState)
     }
 
-    /// То же, но вариант модели назван явно, — повторный разбор записи из истории.
-    func prepare(
-        variant: String,
-        language: Language,
-        onState: @escaping @Sendable (ASRModelState) -> Void
-    ) async throws {
-        try await engine.prepare(variant: variant, language: language, onState: onState)
-    }
-
-    /// Проход с переводом: модель сразу отдаёт английский. Ходит той же цепочкой, что и
-    /// обычный, — инстанс WhisperKit один на всех.
+    /// Проход распознавания. Сериализован: модель одна, и лезть в неё двумя задачами сразу
+    /// нельзя — при наложении диктовок это происходило бы постоянно.
     func transcribe(
         _ samples: [Float],
         language: Language,
         prompt: String,
-        translating: Bool
+        translating: Bool = false
     ) async throws -> String {
         let previous = inFlight
         let task = Task { [self] in
@@ -153,164 +145,20 @@ actor EngineGate {
                 samples, language: language, prompt: prompt, translating: translating
             )
         }
+        // Регистрация синхронна: между чтением и записью `inFlight` нет ни одного await.
+        // Ошибку цепочка глотает — она уже уехала тому, кто этот проход заказал.
         inFlight = Task { _ = try? await task.value }
         return try await task.value
-    }
-
-    func transcribe(_ samples: [Float], language: Language, variant: String, prompt: String) async throws -> String {
-        let previous = inFlight
-        let task = Task { [self] in
-            await previous?.value
-            return try await engine.transcribe(samples, language: language, variant: variant, prompt: prompt)
-        }
-        chain(task)
-        return try await task.value
-    }
-
-    func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        let previous = inFlight
-        let task = Task { [self] in
-            await previous?.value
-            return try await run(samples, language: language, prompt: prompt)
-        }
-        chain(task)
-        return try await task.value
-    }
-
-    /// Тот же проход, но с уверенностью по словам.
-    func transcribeDetailed(_ samples: [Float], language: Language, prompt: String) async throws -> Transcript {
-        let previous = inFlight
-        let task = Task { [self] in
-            await previous?.value
-            return try await engine.transcribeDetailed(samples, language: language, prompt: prompt)
-        }
-        chain(task)
-        return try await task.value
-    }
-
-    /// Второе мнение о соседнем языке: тот же порядок, что и у проходов, — оно тоже
-    /// занимает модель, и лезть в неё поперёк идущего распознавания нельзя.
-    func reconsideringNeighbour(
-        _ text: String,
-        samples: [Float],
-        language: Language,
-        prompt: String
-    ) async -> NeighbourPass {
-        let previous = inFlight
-        let task = Task { [self] in
-            await previous?.value
-            return await engine.reconsideringNeighbour(
-                text, samples: samples, language: language, prompt: prompt
-            )
-        }
-        inFlight = Task { _ = try? await task.value }
-        return (try? await task.value) ?? NeighbourPass(text: text)
-    }
-
-    func transcribeSegments(_ samples: [Float], language: Language, prompt: String) async throws -> [ASRSegment] {
-        let previous = inFlight
-        let task = Task { [self] in
-            await previous?.value
-            return try await runSegments(samples, language: language, prompt: prompt)
-        }
-        chain(task)
-        return try await task.value
-    }
-
-    /// Регистрация синхронна: между чтением и записью `inFlight` нет ни одного await.
-    /// Ошибку прохода цепочка глотает — она уже уехала тому, кто этот проход заказал.
-    private func chain<T>(_ task: Task<T, Error>) {
-        inFlight = Task { _ = try? await task.value }
-    }
-
-    private func run(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        try await engine.transcribe(samples, language: language, prompt: prompt)
-    }
-
-    private func runSegments(
-        _ samples: [Float],
-        language: Language,
-        prompt: String
-    ) async throws -> [ASRSegment] {
-        try await engine.transcribeSegments(samples, language: language, prompt: prompt)
     }
 }
 
-/// Склейка подтверждённой фоном части диктовки с хвостом, распознанным на стопе.
-/// Хвост берётся с нахлёстом назад, поэтому на стыке почти всегда есть общие слова —
-/// их надо схлопнуть, а не продублировать.
-enum StreamingMerge {
-    /// Потолок стыка. В нахлёст 0.5 c физически помещается 1–3 слова, поэтому длиннее искать
-    /// нечего — а вредно: на повторах («да да да да») длинный «стык» съел бы настоящий повтор.
-    /// Четыре слова — это верхняя граница возможной потери, а не рабочая длина.
-    private static let maxOverlapWords = 4
 
-    /// Что из прохода можно считать устоявшимся: все сегменты, кроме последнего — его Whisper
-    /// почти всегда переписывает на следующем проходе, когда слышит конец фразы.
-    /// `nil` — подтверждать нечего.
-    static func confirmed(from segments: [ASRSegment]) -> (text: String, endSample: Int, words: [WordProbe])? {
-        // Хвостовые пустые сегменты текста не дают, но подняли бы границу подтверждённого —
-        // и следующий, уже осмысленный проход не смог бы её сдвинуть (граница монотонна).
-        var stable = segments.dropLast()
-        while let last = stable.last, last.text.isEmpty {
-            stable = stable.dropLast()
-        }
-        // Таймкод считаем индексом, а `Int(_:)` падает на NaN и бесконечности — проверяем
-        // диапазоном: он же отсекает отрицательные и заведомо абсурдные значения.
-        guard let last = stable.last, (0..<Double(24 * 3600)).contains(last.end) else { return nil }
-
-        let text = stable.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
-        guard !text.isEmpty else { return nil }
-        // Уверенность берём с той же устоявшейся части, что и текст: последний сегмент
-        // Whisper почти всегда переписывает, и его слова — самые неуверенные в проходе.
-        // Взять их значило бы кричать на каждой длинной диктовке.
-        return (text, Int(last.end * AudioCaptureFormat.sampleRate), stable.flatMap(\.words))
-    }
-
-    static func merge(confirmed: String, tail: String) -> String {
-        let head = words(confirmed)
-        let rest = words(tail)
-        guard !head.isEmpty else { return rest.joined(separator: " ") }
-        guard !rest.isEmpty else { return head.joined(separator: " ") }
-
-        // Ищем самый длинный общий стык: совпадение в одно слово («и», «в») бывает случайным,
-        // длинное — нет, поэтому идём от длинных к коротким и берём первое же.
-        for length in stride(from: min(maxOverlapWords, head.count, rest.count), through: 1, by: -1) {
-            guard head.suffix(length).map(normalized) == rest.prefix(length).map(normalized) else { continue }
-            return (head + rest.dropFirst(length)).joined(separator: " ")
-        }
-        // Стык не нашёлся — терять слова нельзя, поэтому просто склеиваем.
-        return (head + rest).joined(separator: " ")
-    }
-
-    private static func words(_ text: String) -> [String] {
-        text.split(whereSeparator: \.isWhitespace).map(String.init)
-    }
-
-    /// Между проходами гуляют регистр и пунктуация («привет,» против «Привет»), поэтому
-    /// сравниваем очищенные формы, а в результат кладём слова как есть.
-    private static func normalized(_ word: String) -> String {
-        word.trimmingCharacters(in: .punctuationCharacters.union(.symbols)).lowercased()
-    }
-}
-
-/// Гейт коротких диктовок. На «ок» или «да, давай» GPT-чистка не меняет ничего, но стоит
-/// целого круга к модели — а именно короткие команды и диктуют, когда важна скорость.
-///
-/// Исключений два, и оба про то, что слой 3 делает не только чистку. Перевод — его работа
-/// тем же вызовом. И Parakeet: он один пишет английские названия кириллицей, а латиницу
-/// им возвращает GPT, поэтому пропустить его нельзя и на одном слове.
+/// Слова в тексте. Раньше рядом жил гейт коротких диктовок — «на „ок“ чистка ничего
+/// не меняет, а стоит целого круга к модели». С единственным Parakeet гейта не осталось:
+/// английские названия он пишет кириллицей, латиницу им возвращает только чистка, и на
+/// однословном «дэплой» её пропуск виден ярче всего. Поэтому через слой 3 идёт каждая
+/// диктовка, а настройки, которая это отключала, больше нет.
 enum ShortDictation {
-    static func skipsGPT(
-        text: String,
-        enabled: Bool,
-        wordLimit: Int,
-        translating: Bool,
-        engine: RecognitionEngine
-    ) -> Bool {
-        guard enabled, !translating, !engine.alwaysCleans else { return false }
-        return wordCount(text) <= wordLimit
-    }
 
     static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: \.isWhitespace).count
@@ -363,28 +211,13 @@ private final class DictationSession {
     let language: Language
     /// Перевод, назначенный хоткеем (правый ⌥); nil — решает настройка.
     let translating: Bool?
-    /// Промпт диктовки: фоновые проходы и финал обязаны идти с одним биасингом, иначе
-    /// подтверждённая часть и хвост распознаны по-разному и склейка врёт.
+    /// Промпт диктовки. Parakeet подсказку игнорирует (входа для неё у него нет), но поле
+    /// живёт: словарь всё равно применяется вторым слоем, а протокол движка промпт принимает.
     var prompt = ""
 
     // MARK: Живёт, пока идёт запись
 
-    /// Подтверждённая фоном часть и конец последнего подтверждённого сегмента в сэмплах
-    /// от начала записи.
-    var confirmedText = ""
-    var confirmedEndSample = 0
-    /// Уверенность по словам подтверждённой части и хвоста — из тех же проходов, что и текст.
-    var confirmedWords: [WordProbe] = []
-    var tailWords: [WordProbe] = []
-    /// Фоновый проход упал — на этой диктовке потоковый путь выключен.
-    var rollingFailed = false
-    /// Язык переключили прямо на записи — фоновые проходы и хвост могли бы разъехаться.
-    var languageSwitched = false
-    /// Длина буфера на момент запуска последнего фонового прохода.
-    var rollingPassSamples = 0
-    var rollingTask: Task<Void, Never>?
-    /// Диктовку сняли ещё на записи (Esc, сбой захвата): досчитавшему проходу подтверждать
-    /// уже нечего.
+    /// Диктовку сняли ещё на записи (Esc, сбой захвата).
     var cancelled = false
 
     // MARK: Снято на стопе — с этим диктовка едет в очередь
@@ -402,18 +235,6 @@ private final class DictationSession {
         self.translating = translating
     }
 
-    /// Итог фонового прохода. Назад не сдаём: перестройка сегментов может дать более
-    /// короткий подтверждённый префикс, и тогда честнее оставить прошлый — хвост всё
-    /// равно длиннее.
-    func confirm(_ segments: [ASRSegment]) {
-        guard !cancelled,
-              let pass = StreamingMerge.confirmed(from: segments),
-              pass.endSample > confirmedEndSample
-        else { return }
-        confirmedEndSample = pass.endSample
-        confirmedText = pass.text
-        confirmedWords = pass.words
-    }
 }
 
 /// Конвейер диктовки: запись → VAD → Whisper → словарь → GPT → вставка.
@@ -433,23 +254,6 @@ private final class DictationSession {
 @MainActor
 public final class DictationController: ObservableObject {
 
-    /// Потоковая финализация. Фоновый проход стартует не раньше, чем через `rollingGap`
-    /// после конца предыдущего, и только если с прошлого прохода записалось ещё
-    /// `rollingGrowth` звука — иначе проходы шли бы сплошняком без нового материала.
-    /// Не private: длинную диктовку меряет проба `LongAudioProbeTests`, и расписание
-    /// проходов в ней обязано быть тем же самым, а не переписанным по памяти.
-    static let rollingGap: TimeInterval = 0.5
-    private static let rollingPoll: TimeInterval = 0.1
-    static let rollingGrowth = AudioCaptureFormat.samples(seconds: 2)
-    /// Нахлёст хвоста назад: даёт склейке общие слова на стыке.
-    static let tailOverlap = AudioCaptureFormat.samples(seconds: 0.5)
-    /// Короче этого потоковый путь не включаем: полный проход и так быстрый,
-    /// а лишний риск на коротких диктовках не окупается.
-    static let streamingMinSamples = AudioCaptureFormat.samples(seconds: 6)
-    /// Дальше этого новые проходы не стартуют. Каждый проход переписывает весь буфер, а буфер
-    /// только растёт — на длинной записи это квадратичное сжигание ANE, и вдобавок стоп ждал бы
-    /// многосекундный проход. Подтверждённое к этому моменту остаётся в силе.
-    static let rollingMaxSamples = AudioCaptureFormat.samples(seconds: 50)
 
     /// Сколько записанных диктовок вправе ждать обработки. Потолок нужен не ради памяти,
     /// а ради контроля: за четвёртой человек уже не помнит, что сказал в первой, и очередь
@@ -566,14 +370,20 @@ public final class DictationController: ObservableObject {
     /// Второй хоткей гасит сессию молча — он же её и завёл, спрашивать там нечего.
     private var pendingCancelFlashes = false
 
-    /// Подтверждённая фоном часть живой записи. Не private: тест отмены проверяет напрямую,
-    /// что проход отменённой диктовки сюда не доезжает (как и подмена сообщения
-    /// в `message(for:)`).
-    var confirmedText: String { recording?.confirmedText ?? "" }
-    var confirmedEndSample: Int { recording?.confirmedEndSample ?? 0 }
-
     private var chunks: AsyncStream<[Float]>.Continuation?
     private var vadTask: Task<Void, Never>?
+    /// Петля бегущей строки: живёт ровно столько же, сколько запись.
+    private var livePreviewTask: Task<Void, Never>?
+    /// Склейка проходов бегущей строки в одну растущую строку. Живёт ровно одну запись.
+    private var livePreview = LiveTranscript()
+    /// Наибольший пик, встречавшийся в окнах предпросмотра этой записи.
+    ///
+    /// Раньше каждое окно нормировалось по своему пику, и множитель плавал: громкое слово
+    /// вошло в окно — и та же самая середина речи попадала в модель тише, чем в прошлый раз.
+    /// Модель на этом слышит её иначе, и строка переписывалась сама собой там, где человек
+    /// ничего нового не сказал. Накопленный пик назад не растёт: усиление перестаёт скакать
+    /// и сходится к тому, с каким запись пойдёт финальным проходом.
+    private var livePreviewPeak: Float = 0
     private var idleTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
     private var deviceSubscription: AnyCancellable?
@@ -670,9 +480,7 @@ public final class DictationController: ObservableObject {
     }
 
     public func switchLanguage() {
-        // Язык записи от этого не меняется (см. `activeSessionLanguage`), но потоковый путь
-        // должен быть гарантированно однородным — на живой записи просто выключаем его.
-        recording?.languageSwitched = true
+        // Язык уже идущей записи от этого не меняется — см. `activeSessionLanguage`.
         // По кругу в порядке `Language.allCases`: русский → украинский → English → русский.
         // Один и тот же порядок в меню, в настройках и под хоткеем — иначе третий язык
         // превратил бы шорткат в лотерею.
@@ -701,7 +509,7 @@ public final class DictationController: ObservableObject {
         let raw = try await gate.transcribe(
             speech,
             language: language,
-            prompt: PromptBuilder.initialPrompt(entries: entries, language: language)
+            prompt: ""
         )
         let text = ReplacementEngine.apply(raw, entries: entries)
         guard useGPT else { return text }
@@ -713,9 +521,7 @@ public final class DictationController: ObservableObject {
             entries: entries,
             language: language,
             config: settings.gptConfig,
-            restoreUkrainianInserts: settings.restoreUkrainianInserts,
-            engine: settings.recognitionEngine,
-            keepsNeighbourLanguage: settings.catchesNeighbourLanguage
+            mixesUkrainian: settings.mixesUkrainian
         )
     }
 
@@ -798,10 +604,9 @@ public final class DictationController: ObservableObject {
         chunks?.finish()
         chunks = nil
 
-        session.prompt = PromptBuilder.initialPrompt(
-            entries: dictionary.entries,
-            language: session.language
-        )
+        // Промпт пуст: у распознавания нет входа для подсказки словарём — словарь
+        // отрабатывает вторым слоем. Поле оставлено, потому что его принимает протокол.
+        session.prompt = ""
 
         let vad = try await ensureVad()
         // Первый за запуск подъём VAD (CoreML/ANE) занимает секунды и снова показывает
@@ -842,7 +647,7 @@ public final class DictationController: ObservableObject {
         }
 
         startVadLoop(stream: stream, vad: vad)
-        startRollingLoop(session)
+        startLivePreview(language: session.language)
         offerParallelHintIfDue()
     }
 
@@ -857,74 +662,6 @@ public final class DictationController: ObservableObject {
         onNotice?(.parallelHint)
     }
 
-    /// Фоновая финализация: пока идёт запись, большая модель переписывает весь накопленный
-    /// буфер и подтверждает всё, кроме последнего сегмента. К стопу остаётся распознать
-    /// только хвост, а не десять секунд заново.
-    ///
-    /// Проходы стоят в общей очереди `EngineGate` — WhisperKit-инстанс один, и финальный
-    /// хвост всё равно дождётся идущего прохода. Никакого состояния UI цикл не трогает.
-    private func startRollingLoop(_ session: DictationSession) {
-        session.rollingTask = Task { [weak self] in
-            while true {
-                // Потоковый путь уже снят (упавший проход, переключённый язык) — жечь на него
-                // ANE до конца записи незачем. Тождество диктовки заодно и есть признак
-                // «запись ещё идёт»: стоп и отмена отпускают `recording`.
-                guard let self, self.recording === session,
-                      !session.rollingFailed, !session.languageSwitched
-                else { return }
-
-                // Пока предыдущая диктовка не доехала, фоновые проходы молчат: инстанс
-                // WhisperKit один, и проход по растущему буферу отодвинул бы её вставку —
-                // а ждут сейчас именно её, свою будущую человек ещё договаривает.
-                guard self.pending.isEmpty else {
-                    try? await Task.sleep(nanoseconds: UInt64(Self.rollingPoll * 1_000_000_000))
-                    continue
-                }
-
-                // Опрашиваем длину, а не сам буфер: снимок массива стоит копии по записи
-                // на аудиопотоке. Дальше потолка новые проходы не стартуют вовсе.
-                let captured = self.recorder.capturedSampleCount
-                guard captured <= Self.rollingMaxSamples else { return }
-                // До порога потокового пути проходы бессмысленны и вредны: короткая диктовка
-                // всё равно пойдёт полным проходом, а идущий проход стоп обязан дождаться —
-                // это была бы чистая потеря там, где скорость важнее всего.
-                guard captured >= Self.streamingMinSamples,
-                      captured - session.rollingPassSamples >= Self.rollingGrowth
-                else {
-                    try? await Task.sleep(nanoseconds: UInt64(Self.rollingPoll * 1_000_000_000))
-                    continue
-                }
-
-                // Тот же подъём уровня, что и на финале: фоновый проход обязан слышать
-                // ровно то же, что услышит хвост, иначе подтверждённая часть и склейка
-                // считаются по разному звуку.
-                let samples = AudioNormalizer.normalized(self.recorder.capturedSamples)
-                session.rollingPassSamples = samples.count
-
-                do {
-                    let segments = try await self.gate.transcribeSegments(
-                        samples,
-                        language: session.language,
-                        prompt: session.prompt
-                    )
-                    session.confirm(segments)
-                } catch {
-                    // Один упавший проход — и весь потоковый путь снят: финал пойдёт полным
-                    // проходом, как раньше. Оптимизация не имеет права быть риском.
-                    session.rollingFailed = true
-                    self.logger.error(
-                        "Фоновый проход не удался: \(error.localizedDescription, privacy: .public)"
-                    )
-                    return
-                }
-
-                // Передышку берём только на живой записи: стоп ждёт эту задачу, и лишний сон
-                // после уже посчитанного прохода был бы прямой задержкой финала.
-                guard self.recording === session else { return }
-                try? await Task.sleep(nanoseconds: UInt64(Self.rollingGap * 1_000_000_000))
-            }
-        }
-    }
 
     private func append(_ chunk: [Float]) {
         guard isRecording else { return }
@@ -932,8 +669,119 @@ public final class DictationController: ObservableObject {
     }
 
     private func updateLevel(_ value: Float) {
-        guard isRecording else { return }
-        recordingState = .recording(live: "", level: value)
+        guard case .recording(let live, _) = recordingState else { return }
+        recordingState = .recording(live: live, level: value)
+        publish()
+    }
+
+    // MARK: - Бегущая строка
+
+    /// Сколько секунд хвоста записи перечитываем ради бегущей строки.
+    ///
+    /// Именно хвоста, а не всей записи: работа тогда постоянна и не зависит от длины
+    /// диктовки. Читать целиком означало бы, что на минутной речи проход занимает секунды
+    /// и строка отстаёт тем сильнее, чем дольше говорят, — то есть ломается ровно там,
+    /// где она нужнее. Бегущей строке дальнее прошлое и не нужно: оно уже уехало за край.
+    ///
+    /// Десять, а не пятнадцать. Контекст точности прибавляет, но платится за него не только
+    /// временем прохода: чем реже приходят куски, тем они крупнее, а лента показывает окно
+    /// шириной примерно в четыре слова. Кусок крупнее окна ей нечем «проехать» — она
+    /// упирается в конец текста и встаёт до следующего прохода (замерено следом движения:
+    /// четверть кадров простаивала). Десять секунд — проход около полусекунды, и куски
+    /// выходят по два-три слова, то есть меньше окна.
+    private static let livePreviewSeconds = 10.0
+
+    /// Пауза между проходами.
+    ///
+    /// Было 900 мс, и вместе с самим проходом это давало кусок раз в полторы секунды —
+    /// то есть четыре-пять слов разом при ширине окна в четыре. Лента такой кусок показать
+    /// не успевала: она проезжала его быстрее, чем приходил следующий, и стояла остаток
+    /// времени. 600 мс — куски по два-три слова, ход выходит непрерывным. Ниже опускаться
+    /// нельзя: проход по десяти секундам занимает около полусекунды, и при 600 мс движок
+    /// работал бы восемь десятых времени диктовки — это греет машину и отнимает у главного
+    /// распознавания. 800 мс — куски по два слова и примерно шесть десятых занятости.
+    private static let livePreviewPeriod = Duration.milliseconds(800)
+
+    /// Раньше этого не начинаем: на полусекунде речи распознавание отдаёт обрывок слова,
+    /// и строка дёргается больше, чем показывает.
+    private static let livePreviewMinimumSeconds = 1.0
+
+    /// Раньше этого числа слов строки нет вовсе — капсула держит волну.
+    ///
+    /// Дело не в красоте: на одном-двух словах якоря склейки (`LiveTranscript.anchorWords`)
+    /// ещё не набралось, и каждый проход правит сам себя целиком. Четыре слова — первый
+    /// момент, когда строка уже строка, а не мигающий обрывок.
+    private static let livePreviewMinimumWords = 4
+
+    /// Перечитывает хвост записи, пока она идёт, и складывает результат в капсулу.
+    ///
+    /// Стоит настоящих проходов распознавания, поэтому включается только выбором человека
+    /// (`PillStyle.words`). Проход идёт через тот же `EngineGate`, что и настоящая диктовка:
+    /// инстанс модели один. Отсюда же плата — стоп, пойманный ровно в момент идущего
+    /// предпросмотра, ждёт его конца (доли секунды). Ради этого предпросмотр не запускается,
+    /// когда очередь обработки не пуста: там чужой, уже сказанный текст, и он важнее.
+    private func startLivePreview(language: Language) {
+        // Новая запись — новая строка и новый пик: остаток прошлой диктовки в капсуле был бы
+        // враньём, а её пик занижал бы усиление этой.
+        livePreview = LiveTranscript()
+        livePreviewPeak = 0
+        guard settings.pillStyle == .words else { return }
+        livePreviewTask = Task { [weak self] in
+            var next = ContinuousClock.now
+            while !Task.isCancelled {
+                // Ждём до СЛЕДУЮЩЕГО срока, а не «столько-то после прошлого раза». Пауза
+                // и сам проход складывались: при паузе 600 мс и проходе в полсекунды текст
+                // приходил раз в 1,1 с, то есть кусками вдвое крупнее задуманного — а кусок
+                // крупнее окна ленте нечем проехать, она упирается в конец текста и встаёт.
+                next = next.advanced(by: Self.livePreviewPeriod)
+                try? await Task.sleep(until: next)
+                guard !Task.isCancelled, let self else { return }
+                guard let tail = self.livePreviewTail() else { continue }
+                guard let text = try? await self.gate.transcribe(
+                    tail, language: language, prompt: ""
+                ) else { continue }
+                guard !Task.isCancelled else { return }
+                self.showLive(text)
+                // Отстали БОЛЬШЕ ЧЕМ НА ПЕРИОД — не копим долг, а берём новый отсчёт:
+                // иначе после медленного прохода посыпалась бы очередь мгновенных.
+                //
+                // Сравнивать `next` с «сейчас» напрямую нельзя, и это была ровно та ошибка,
+                // ради починки которой всё и затевалось: `next` — срок, на котором проход
+                // НАЧАЛСЯ, значит после любого прохода ненулевой длительности он уже
+                // в прошлом. Расписание переставлялось на «сейчас» каждый раз, и период
+                // оставался прежним «пауза плюс проход».
+                let overdue = ContinuousClock.now
+                if next.advanced(by: Self.livePreviewPeriod) < overdue { next = overdue }
+            }
+        }
+    }
+
+    /// Хвост записи для предпросмотра — или nil, если читать нечего или сейчас не время.
+    private func livePreviewTail() -> [Float]? {
+        guard isRecording, pending.isEmpty else { return nil }
+        let captured = recorder.capturedSamples
+        guard captured.count >= AudioCaptureFormat.samples(seconds: Self.livePreviewMinimumSeconds) else {
+            return nil
+        }
+        let window = AudioCaptureFormat.samples(seconds: Self.livePreviewSeconds)
+        let tail = captured.count > window ? Array(captured.suffix(window)) : captured
+        livePreviewPeak = max(livePreviewPeak, AudioNormalizer.peak(tail))
+        return AudioNormalizer.scaled(tail, by: AudioNormalizer.gain(forPeak: livePreviewPeak))
+    }
+
+    /// Кладёт очередной проход в склейку и показывает то, что из неё вышло.
+    ///
+    /// Guard первым: проход мог доехать уже после Esc или стопа, и трогать склейку тогда
+    /// нельзя вовсе — следующая запись начала бы с чужого хвоста.
+    private func showLive(_ pass: String) {
+        guard case .recording(let shown, let level) = recordingState else { return }
+        livePreview.absorb(pass)
+        guard livePreview.wordCount >= Self.livePreviewMinimumWords else { return }
+        let text = livePreview.text
+        // Проход не добавил ни слова (человек молчит) — публиковать нечего: лишний `publish`
+        // перезапустил бы ход ленты на неизменившемся тексте.
+        guard text != shown else { return }
+        recordingState = .recording(live: text, level: level)
         publish()
     }
 
@@ -981,7 +829,8 @@ public final class DictationController: ObservableObject {
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
-        session.rollingTask?.cancel()
+        livePreviewTask?.cancel()
+        livePreviewTask = nil
         session.cancelled = true
         recording = nil
         recordingState = nil
@@ -1001,9 +850,10 @@ public final class DictationController: ObservableObject {
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
+        livePreviewTask?.cancel()
+        livePreviewTask = nil
         // Отмена не прерывает идущий проход (он живёт своей задачей в `EngineGate`),
         // зато снимает передышку между проходами — иначе финал ждал бы её впустую.
-        session.rollingTask?.cancel()
         recorder.onLevel = nil
         recorder.onFailure = nil
 
@@ -1036,11 +886,12 @@ public final class DictationController: ObservableObject {
         chunks = nil
         vadTask?.cancel()
         vadTask = nil
+        livePreviewTask?.cancel()
+        livePreviewTask = nil
         // Идущий фоновый проход не прерывается: `EngineGate` отмену не смотрит, а WhisperKit
         // не умеет её вовсе — он досчитает в никуда, как и загрузка модели на отмене.
         // Флаг делает его результат заведомо мёртвым: `confirm` отбросит сегменты, даже
         // если они придут раньше, чем начнётся следующая запись.
-        session.rollingTask?.cancel()
         session.cancelled = true
         recording = nil
         recordingState = nil
@@ -1097,79 +948,30 @@ public final class DictationController: ObservableObject {
         // Уровень поднимаем один раз на всю запись и дальше работаем только с поднятым:
         // и ворота речи, и Whisper обязаны слышать одно и то же (см. `AudioNormalizer`).
         let leveled = AudioNormalizer.normalized(samples)
-        // Идущий фоновый проход обязателен к ожиданию: он и досчитывает подтверждённую часть,
-        // и в любом случае занимает единственный инстанс WhisperKit. Задачу берём у самой
-        // диктовки — на микрофоне к этому моменту может писаться уже следующая, со своей.
-        await session.rollingTask?.value
-        session.rollingTask = nil
-
         processingState = .transcribing
         publish()
         do {
             let entries = dictionary.entries
             // Решение о переводе принято на стопе — здесь его только исполняем.
             let wantsTranslation = session.translatesToEnglish
-            let raw: String
-            /// Уверенность распознавания по словам — из того же прохода, что и текст.
-            var heardWords: [WordProbe] = []
-            // Звук, которому соответствует текст: потоковый путь собирает его по всей
-            // записи, обычный — по обрезанной. Второму мнению нужен именно он, иначе
-            // таймкоды фраз указывали бы не туда.
-            let heard: [Float]
-            if let streamed = await streamedTranscript(session, samples: leveled) {
-                raw = streamed
-                heard = leveled
-                heardWords = session.confirmedWords + session.tailWords
-            } else {
-                let vad = try await ensureVad()
-                guard let speech = try await vad.trimmed(leveled) else {
-                    throw DictationError.noSpeech
-                }
-                let pass = try await gate.transcribeDetailed(
-                    speech, language: language, prompt: session.prompt
-                )
-                raw = pass.text
-                heardWords = pass.words
-                heard = speech
+            // Распознавание одним проходом по обрезанной записи. Потокового пути больше
+            // нет и не нужно: он существовал, потому что Whisper считала девятисекундную
+            // запись четыре секунды, а Parakeet ту же — за десятые доли.
+            let vad = try await ensureVad()
+            guard let speech = try await vad.trimmed(leveled) else {
+                throw DictationError.noSpeech
             }
-            // Сломанные куски — те, где распознаватель шёл неуверенно несколько слов подряд
-            // (см. `Uncertainty`). Ими решаются сразу два вопроса: что сказать человеку и
-            // стоит ли платить за сверку соседним языком.
-            let shaky = Uncertainty.runs(in: heardWords)
-            // Единственное место, где текст диктовки уже собран целиком, — здесь. Проверка
-            // соседнего языка обязана стоять именно тут: внутри распознавания она видела бы
-            // только хвост длинной диктовки (см. `WhisperEngine.reconsideringNeighbour`).
-            //
-            // И только когда есть что перечитывать. Проверка стоит лишнего полного прохода
-            // плюс трети секунды на каждый кусок — раньше это платила КАЖДАЯ диктовка, в том
-            // числе чистейший русский, где перечитывать нечего (замерено: 2,6 с против 4,9 с
-            // на девятисекундной записи). Пословная уверенность бесплатна и закрывает ворота
-            // там, где ломаться нечему.
-            let checked = shaky.isEmpty
-                ? NeighbourPass(text: raw)
-                : await gate.reconsideringNeighbour(
-                    raw, samples: heard, language: language, prompt: session.prompt
-                )
-            var text = ReplacementEngine.apply(checked.text, entries: entries)
+            let raw = try await gate.transcribe(
+                speech, language: language, prompt: session.prompt
+            )
+            var text = ReplacementEngine.apply(raw, entries: entries)
             var degradations: [String] = []
-            // О беде говорим вслух и АДРЕСНО. Гладкая фраза опаснее явного мусора: мусор
-            // человек видит и переговаривает, а складную — принимает на веру, даже если
-            // распознавание потеряло в ней отрицание. Безадресное «фраза перечитана» этой
-            // работы не делает: искать, куда смотреть, всё равно приходится самому.
-            if let alarm = Uncertainty.alarm(runs: shaky, reread: checked.phrases) {
-                degradations.append(alarm)
-            }
             var translation: String?
             var cleanupFailed = false
-            let skipsGPT = ShortDictation.skipsGPT(
-                text: text,
-                enabled: settings.skipGPTForShort,
-                wordLimit: settings.shortDictationWordLimit,
-                translating: wantsTranslation,
-                engine: settings.recognitionEngine
-            )
 
-            if settings.gptEnabled, !skipsGPT {
+            // Через чистку идёт КАЖДАЯ диктовка: латиницу английским названиям возвращает
+            // только она, и на однословном «дэплой» её пропуск виден ярче всего.
+            if settings.gptEnabled {
                 processingState = .cleaning
                 publish()
                 do {
@@ -1182,11 +984,7 @@ public final class DictationController: ObservableObject {
                         language: language,
                         config: wantsTranslation ? settings.translateGPTConfig : settings.gptConfig,
                         translateToEnglish: wantsTranslation,
-                        restoreUkrainianInserts: settings.restoreUkrainianInserts,
-                        // Чистка обязана знать, кто слушал: у Parakeet латиницы на выходе
-                        // не бывает вовсе, и это меняет разбор странного слова.
-                        engine: settings.recognitionEngine,
-                        keepsNeighbourLanguage: settings.catchesNeighbourLanguage
+                        mixesUkrainian: settings.mixesUkrainian
                     )
                     if wantsTranslation {
                         translation = processed
@@ -1195,9 +993,14 @@ public final class DictationController: ObservableObject {
                     }
                 } catch {
                     // Слой 3 не обязателен: отдаём результат слоя 2 и говорим об этом.
-                    // При переводе тем же вызовом теряется и чистка — говорим об обоих.
-                    // Перевод к этому моменту уже сделан моделью — теряется только чистка.
-                    degradations.append("без AI-чистки: \(error.localizedDescription)")
+                    // На переводе тем же вызовом теряется не чистка, а сам перевод — и в поле
+                    // уедет русский текст. Сказать «без AI-чистки» там значило бы соврать
+                    // о главном.
+                    degradations.append(
+                        wantsTranslation
+                            ? "перевода нет: \(error.localizedDescription)"
+                            : "без AI-чистки: \(error.localizedDescription)"
+                    )
                     logger.error("GPT-слой не отработал: \(error.localizedDescription, privacy: .public)")
                     // Текст слоя 2 всё равно уедет в поле — терять его нельзя. Но чистку
                     // можно попробовать ещё раз: осечка тут почти всегда сетевая, и второй
@@ -1206,20 +1009,11 @@ public final class DictationController: ObservableObject {
                     cleanupFailed = true
                 }
             } else if wantsTranslation {
-                degradations.append("без перевода")
-            }
-
-            // GPT перевод не сделал — переводит сама модель. Качество у GPT выше, поэтому
-            // он и остаётся первым; но перевод просили клавишей, и молча отдать русский
-            // текст вместо английского нельзя. Стоит это одного лишнего прохода по записи
-            // и только в том случае, когда GPT недоступен.
-            if wantsTranslation, translation == nil {
-                if let local = await localTranslation(of: leveled, session: session, language: language) {
-                    translation = local
-                    degradations.append("перевод без ChatGPT — качество ниже")
-                } else {
-                    degradations.append("перевод не удался")
-                }
+                // Переводить больше нечем. Раньше запасным путём была сама модель
+                // распознавания: Whisper умела отдавать английский задачей декодера.
+                // Parakeet так не умеет — и делать вид, что перевод «просто не удался»,
+                // нечестно: человек нажал правый ⌥ и обязан узнать, что именно включить.
+                degradations.append("перевод делает ChatGPT — включите AI-чистку в настройках")
             }
 
             // Пустой ответ модели `cleanup` отсекает сам, но вставлять пустоту нельзя ни при
@@ -1328,45 +1122,6 @@ public final class DictationController: ObservableObject {
         return "речь не обнаружена — запись сохранена, распознайте заново в «Истории…»"
     }
 
-    /// Финал по потоковому пути: подтверждённая фоном часть уже распознана, осталось
-    /// декодировать хвост от `confirmedEndSample` (с нахлёстом назад) и склеить.
-    ///
-    /// `nil` — путь неприменим или не дал результата; вызывающий код идёт обычным полным
-    /// проходом. Это железное правило: ускорение не имеет права стать риском для текста.
-    private func streamedTranscript(_ session: DictationSession, samples: [Float]) async -> String? {
-        guard !session.rollingFailed,                            // фоновый проход падал
-              !session.languageSwitched,                         // язык переключали на записи
-              samples.count >= Self.streamingMinSamples,         // диктовка короче 6 с
-              session.confirmedEndSample > 0,                    // подтверждать нечего
-              !session.confirmedText.isEmpty,
-              session.confirmedEndSample < samples.count
-        else { return nil }
-
-        do {
-            let start = max(0, session.confirmedEndSample - Self.tailOverlap)
-            // Буфер целиком не обрезаем: подтверждённые сегменты уже без ведущей тишины —
-            // её отрезали таймкоды Whisper. Тем же гейтом снимаем тишину по краям хвоста.
-            let vad = try await ensureVad()
-            guard let tail = try await vad.trimmed(Array(samples[start...])) else { return nil }
-
-            let tailPass = try await gate.transcribeDetailed(
-                tail,
-                language: session.language,
-                prompt: session.prompt
-            )
-            let tailText = tailPass.text
-            // Пустой хвост — не «там была тишина», а признак того, что проход не удался
-            // (например, окно короче внутреннего `windowClipTime` WhisperKit). Слова терять
-            // нельзя, поэтому откатываемся на полный проход.
-            guard !tailText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-            session.tailWords = tailPass.words
-            return StreamingMerge.merge(confirmed: session.confirmedText, tail: tailText)
-        } catch {
-            logger.error("Потоковая финализация не удалась: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
 
     // MARK: - Последняя диктовка (действия меню)
 
@@ -1593,31 +1348,6 @@ public final class DictationController: ObservableObject {
         }
     }
 
-    /// Перевод силами самой модели: у Whisper это вторая задача декодера, не второй вызов
-    /// сети. Нужен ровно тогда, когда GPT недоступен, — и тем и ценен, что работает без
-    /// сети и без входа в ChatGPT.
-    private func localTranslation(
-        of leveled: [Float],
-        session: DictationSession,
-        language: Language
-    ) async -> String? {
-        do {
-            let vad = try await ensureVad()
-            guard let speech = try await vad.trimmed(leveled) else { return nil }
-            let english = try await gate.transcribe(
-                speech,
-                language: language,
-                prompt: session.prompt,
-                translating: true
-            )
-            let trimmed = english.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        } catch {
-            logger.error("перевод моделью не удался: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
     /// Повторить чистку, которая не удалась. Текст слоя 2 к этому моменту уже в поле —
     /// повтор либо заменяет его на чистый, либо (если поле стало чужим) кладёт результат
     /// в буфер обмена.
@@ -1636,9 +1366,7 @@ public final class DictationController: ObservableObject {
                 language: retry.language,
                 config: retry.translating ? settings.translateGPTConfig : settings.gptConfig,
                 translateToEnglish: retry.translating,
-                restoreUkrainianInserts: settings.restoreUkrainianInserts,
-                engine: settings.recognitionEngine,
-                keepsNeighbourLanguage: settings.catchesNeighbourLanguage
+                mixesUkrainian: settings.mixesUkrainian
             )
         } catch {
             logger.error("Повтор чистки не удался: \(error.localizedDescription, privacy: .public)")
@@ -1847,15 +1575,14 @@ public final class DictationController: ObservableObject {
     }
 
     /// Распознаёт сохранённую запись заново и возвращает текст (он же уезжает в историю).
-    /// Модели `largeModel` может не быть на диске — тогда бросает, а качать её или нет,
-    /// решает вызывающий: это 2,9 ГБ.
-    public func retranscribe(item: HistoryItem, mode: RetranscribeMode) async throws -> String {
+    ///
+    /// Выбирать модель на повторе больше не из чего — она одна. Смысл повтора от этого
+    /// не пропал: в первый раз запись могла обрезаться воротами речи или уехать в ошибку,
+    /// а здесь она отдаётся модели целиком, вместе с тишиной.
+    public func retranscribe(item: HistoryItem) async throws -> String {
         guard let audio = item.audio else { throw RecordingStoreError.missing }
         let samples = try recordings.samples(named: audio)
         let language = item.language
-        // Вариант модели и язык распознавания — разные вещи: large-v3 на повторе берётся
-        // для того же языка, а не вместе с чужим.
-        let variant = mode == .largeModel ? WhisperModel.large : language.whisperModel
 
         processingState = .transcribing
         publish()
@@ -1865,18 +1592,15 @@ public final class DictationController: ObservableObject {
             scheduleIdle(after: Self.insertedLinger)
         }
 
-        try await gate.prepare(variant: variant, language: language) { [weak self] modelState in
+        try await gate.prepare(language: language) { [weak self] modelState in
             Task { @MainActor in self?.apply(modelState) }
         }
         // Ворота речи не зовём вовсе: на повторе честнее отдать модели всё, включая тишину,
         // чем во второй раз недосчитаться. Уровень поднимаем — это ровно то, чего тихой
-        // записи не хватало в первый раз. Промпта нет: замер показал, что именно он и есть
-        // главный вор слов (см. `WhisperEngine.maxPromptTokens`), а словарь всё равно
-        // отработает слоем 2.
+        // записи не хватало в первый раз.
         let raw = try await gate.transcribe(
             AudioNormalizer.normalized(samples),
             language: language,
-            variant: variant,
             prompt: ""
         )
         let text = ReplacementEngine.apply(raw, entries: dictionary.entries)

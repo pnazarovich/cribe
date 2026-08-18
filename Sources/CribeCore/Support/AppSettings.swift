@@ -1,6 +1,15 @@
 import Combine
 import Foundation
 
+/// Что показывает капсула, пока идёт запись.
+public enum PillStyle: String, Codable, CaseIterable, Sendable {
+    /// Столбики уровня. Ничего не стоит: уровень и так меряется для автостопа.
+    case wave
+    /// Бегущая строка распознанного. Красивее и честнее (видно, что услышано), но стоит
+    /// прохода распознавания примерно раз в секунду — поэтому спрашиваем, а не включаем всем.
+    case words
+}
+
 /// Чем запускается диктовка: «голым» правым ⌘ или своим шорткатом.
 public enum HotkeyMode: String, Codable, CaseIterable, Sendable {
     case rightCommand
@@ -12,9 +21,6 @@ public enum HotkeyMode: String, Codable, CaseIterable, Sendable {
 public final class AppSettings: ObservableObject {
     public static let shared = AppSettings()
 
-    /// Модель перевода по умолчанию.
-    public static let defaultTranslateModel = "gpt-5.6-terra"
-
     /// Усилие рассуждения на чистке.
     ///
     /// Было `medium` — из соображения «чистка живой речи не разметка текста». Замер этого
@@ -23,7 +29,7 @@ public final class AppSettings: ObservableObject {
     /// и лишнюю квоту за неразличимое качество незачем.
     public static let defaultCleanupEffort = "low"
 
-    /// Усилие рассуждения на переводе. Ещё выше: тот же вызов и чистит, и переводит,
+    /// Усилие рассуждения на переводе. Выше: тот же вызов и чистит, и переводит,
     /// и ошибка перевода стоит дороже пропущенной запятой.
     public static let defaultTranslateEffort = "high"
 
@@ -31,21 +37,17 @@ public final class AppSettings: ObservableObject {
         static let language = "language"
         static let gptEnabled = "gptEnabled"
         static let gptMode = "gptMode"
-        static let gptModel = "gptModel"
-        static let gptEffort = "gptEffort"
-        static let translateModel = "translateModel"
-        static let translateEffort = "translateEffort"
         static let inputDeviceUID = "inputDeviceUID"
         static let translateToEnglish = "translateToEnglish"
         static let soundsEnabled = "soundsEnabled"
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
-        static let skipGPTForShort = "skipGPTForShort"
-        static let restoreUkrainianInserts = "restoreUkrainianInserts"
-        static let catchesNeighbourLanguage = "catchesNeighbourLanguage"
-        static let shortDictationWordLimit = "shortDictationWordLimit"
+        static let mixesUkrainian = "mixesUkrainian"
+        static let pillStyle = "pillStyle"
+        /// Прежний ключ той же галочки: с него читается значение при первом запуске новой
+        /// версии, иначе выбор человека молча сбросился бы на дефолт.
+        static let legacyRestoreUkrainian = "restoreUkrainianInserts"
         static let learnsFromEdits = "learnsFromEdits"
-        static let recognitionEngine = "recognitionEngine"
         static let cardsWhenNoField = "cardsWhenNoField"
         static let keptRecordings = "keptRecordings"
         static let dictationsStarted = "dictationsStarted"
@@ -66,29 +68,18 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(gptMode.rawValue, forKey: Key.gptMode) }
     }
 
-    @Published public var gptModel: String {
-        didSet { defaults.set(gptModel, forKey: Key.gptModel) }
-    }
-
-    /// "none" | "minimal" | "low" | "medium" | "high"
-    @Published public var gptEffort: String {
-        didSet { defaults.set(gptEffort, forKey: Key.gptEffort) }
-    }
-
     /// Диктовка вставляется переводом на английский (GPT-слой переводит вместо простой чистки).
     @Published public var translateToEnglish: Bool {
         didSet { defaults.set(translateToEnglish, forKey: Key.translateToEnglish) }
     }
 
-    /// Модель для перевода — своя: чистке хватает быстрой модели, а перевод (тот же вызов
-    /// чистит и переводит) выигрывает от модели покрупнее.
-    @Published public var translateModel: String {
-        didSet { defaults.set(translateModel, forKey: Key.translateModel) }
-    }
-
-    /// Усилие рассуждения на переводе; шкала та же, что у `gptEffort`.
-    @Published public var translateEffort: String {
-        didSet { defaults.set(translateEffort, forKey: Key.translateEffort) }
+    /// Волна или бегущая строка слов в капсуле записи.
+    ///
+    /// По умолчанию волна. Слова требуют повторных проходов распознавания по хвосту записи
+    /// (см. `DictationController.livePreview`) — на ноутбуке без розетки это заметно, и
+    /// платить за украшение без спроса нельзя.
+    @Published public var pillStyle: PillStyle {
+        didSet { defaults.set(pillStyle.rawValue, forKey: Key.pillStyle) }
     }
 
     /// Чаймы старта и окончания записи.
@@ -102,25 +93,18 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(autoStopEnabled, forKey: Key.autoStopEnabled) }
     }
 
-    /// Короткая диктовка идёт мимо GPT-слоя: на «ок» или «да, давай» чистка ничего не меняет,
-    /// зато стоит целый круг к модели. Перевода это не касается — он делается тем же вызовом.
-    @Published public var skipGPTForShort: Bool {
-        didSet { defaults.set(skipGPTForShort, forKey: Key.skipGPTForShort) }
-    }
-
-    /// Русская диктовка с украинскими вставками: чистка возвращает украинским словам,
-    /// которые распознавание записало на слух по-русски, украинское написание. Работает
-    /// только на русских сессиях и только на чистке — на переводе текст уедет в английский.
-    @Published public var restoreUkrainianInserts: Bool {
-        didSet { defaults.set(restoreUkrainianInserts, forKey: Key.restoreUkrainianInserts) }
-    }
-
-    /// Перечитывать ли фразы, которые звучат не на языке сессии. Русская диктовка
-    /// с украинской фразой внутри выходит фонетическим мусором, и спасти её может только
-    /// повторное чтение этой фразы украинской моделью (см. `SecondOpinion`). Стоит времени,
-    /// поэтому спрашиваем, а не включаем всем.
-    @Published public var catchesNeighbourLanguage: Bool {
-        didSet { defaults.set(catchesNeighbourLanguage, forKey: Key.catchesNeighbourLanguage) }
+    /// Человек мешает русский с украинским в одной диктовке.
+    ///
+    /// Галочка правит один слой — чистку, — но с двух сторон сразу, потому что беда у
+    /// смешанной речи двусторонняя. Украинское слово, услышанное верно, чистка иначе
+    /// переписывает по-русски («ще раз» → «ещё раз»); украинское слово, записанное
+    /// распознаванием на слух по-русски («требо» вместо «треба»), иначе таким и остаётся.
+    /// Обе половины включаются одним намерением человека, поэтому и тумблер один.
+    ///
+    /// Выключено — диктовка считается одноязычной, и случайное украинское слово в тексте
+    /// человеку не нужно.
+    @Published public var mixesUkrainian: Bool {
+        didSet { defaults.set(mixesUkrainian, forKey: Key.mixesUkrainian) }
     }
 
     /// Учиться ли на правках: следить пятнадцать секунд за вставленным текстом и, найдя
@@ -133,24 +117,6 @@ public final class AppSettings: ObservableObject {
     /// вручную.
     @Published public var learnsFromEdits: Bool {
         didSet { defaults.set(learnsFromEdits, forKey: Key.learnsFromEdits) }
-    }
-
-    /// Чем слушать речь.
-    ///
-    /// Идеальной модели среди трёх нет — замерено на своих же записях. Быстрая turbo на
-    /// фразе «проверь вебхук в Постмане, пересобери вебпак» услышала «в пост, но не
-    /// пересобери»: слепила имя сервиса с частицей отрицания и перевернула смысл. Полная
-    /// large-v3 ту же запись разобрала верно, но она вдвое медленнее, а на чистой речи
-    /// не отличается от turbo вовсе. Parakeet быстрее обеих вдесятеро и точнее их в
-    /// падежах, но каждое латинское слово пишет кириллицей — и держится на GPT-чистке,
-    /// которая возвращает названиям латиницу.
-    @Published public var recognitionEngine: RecognitionEngine {
-        didSet { defaults.set(recognitionEngine.rawValue, forKey: Key.recognitionEngine) }
-    }
-
-    /// Граница «короткой» диктовки в словах.
-    @Published public var shortDictationWordLimit: Int {
-        didSet { defaults.set(shortDictationWordLimit, forKey: Key.shortDictationWordLimit) }
     }
 
     /// Поля ввода в активном приложении нет — показать текст карточкой у нижнего левого угла
@@ -193,37 +159,36 @@ public final class AppSettings: ObservableObject {
         set { defaults.set(newValue, forKey: Key.parallelHintShown) }
     }
 
+    /// Модель и усилие человек не выбирает: выбор был, и замер его закрыл. 210 прогонов
+    /// по 17 проверкам на 10 живых записях дали победителя без спорных мест — terra на `low`
+    /// оказалась и самой быстрой (медиана 2,5 с), и не хуже всех остальных по качеству,
+    /// а «экономная» luna была одновременно медленнее (3,9 с) и хуже. Держать в настройках
+    /// выбор, у которого один правильный ответ, — значит предлагать человеку ошибиться.
     public var gptConfig: GPTConfig {
-        GPTConfig(mode: gptMode, model: gptModel, effort: gptEffort)
+        GPTConfig(mode: gptMode, model: nil, effort: Self.defaultCleanupEffort)
     }
 
-    /// Конфигурация переводящего вызова: доступ общий, модель и усилие — свои.
+    /// Конфигурация переводящего вызова: модель та же, усилие выше — переводит тот же вызов,
+    /// и ошибка перевода стоит дороже пропущенной запятой.
     public var translateGPTConfig: GPTConfig {
-        GPTConfig(mode: gptMode, model: translateModel, effort: translateEffort)
+        GPTConfig(mode: gptMode, model: nil, effort: Self.defaultTranslateEffort)
     }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         language = defaults.string(forKey: Key.language).flatMap(Language.init(rawValue:)) ?? .ru
         gptEnabled = defaults.object(forKey: Key.gptEnabled) as? Bool ?? true
-        let mode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
-        gptMode = mode
-        gptModel = defaults.string(forKey: Key.gptModel) ?? GPTConfig.defaultModel(for: mode)
-        gptEffort = defaults.string(forKey: Key.gptEffort) ?? Self.defaultCleanupEffort
+        gptMode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
-        // Дефолт перевода не зависит от режима доступа: terra есть у обоих бэкендов и на
-        // переводе надёжнее быстрой модели, которой обычно хватает для одной лишь чистки.
-        translateModel = defaults.string(forKey: Key.translateModel) ?? Self.defaultTranslateModel
-        translateEffort = defaults.string(forKey: Key.translateEffort) ?? Self.defaultTranslateEffort
+        pillStyle = defaults.string(forKey: Key.pillStyle).flatMap(PillStyle.init(rawValue:)) ?? .wave
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
-        skipGPTForShort = defaults.object(forKey: Key.skipGPTForShort) as? Bool ?? true
-        restoreUkrainianInserts = defaults.object(forKey: Key.restoreUkrainianInserts) as? Bool ?? true
-        catchesNeighbourLanguage = defaults.object(forKey: Key.catchesNeighbourLanguage) as? Bool ?? false
-        shortDictationWordLimit = defaults.object(forKey: Key.shortDictationWordLimit) as? Int ?? 8
+        // Дефолт `true`, и он же достаётся тем, кто обновился: прежняя галочка про украинские
+        // вставки тоже стояла по умолчанию, а вторая её половина раньше жила отдельно.
+        mixesUkrainian = defaults.object(forKey: Key.mixesUkrainian) as? Bool
+            ?? defaults.object(forKey: Key.legacyRestoreUkrainian) as? Bool
+            ?? true
         learnsFromEdits = defaults.object(forKey: Key.learnsFromEdits) as? Bool ?? true
-        recognitionEngine = defaults.string(forKey: Key.recognitionEngine)
-            .flatMap(RecognitionEngine.init(rawValue:)) ?? .fast
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)

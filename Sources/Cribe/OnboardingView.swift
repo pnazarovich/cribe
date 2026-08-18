@@ -10,7 +10,6 @@ import CribeCore
 /// выполняются в системных окнах и в чужом браузере, вернуться к любому надо в любой
 /// момент, а видеть, сколько осталось, — всё время.
 struct OnboardingView: View {
-    let engine: WhisperEngine
     @ObservedObject var settings: AppSettings
     /// Зовётся при появлении окна: флаг первого запуска гасит факт показа, а не намерение.
     let onShown: () -> Void
@@ -21,9 +20,9 @@ struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSettings) private var openSettings
 
-    /// Общий на всё приложение: тот же объект показывает модели в настройках, и загрузка,
+    /// Общий на всё приложение: то же состояние показывают настройки, и загрузка,
     /// начатая здесь, не обрывается закрытым окном.
-    @ObservedObject private var downloader = ModelDownloader.shared
+    @ObservedObject private var install = ModelInstall.shared
     @ObservedObject private var accessibility = HUDAccessibility.shared
     @StateObject private var signIn = CodexSignInModel()
 
@@ -39,22 +38,19 @@ struct OnboardingView: View {
     private static let microphoneSettingsURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
     )
+    /// Прямой ссылки на раздел Security у ChatGPT нет — ведём на общие настройки.
+    private static let chatGPTSecurityURL = URL(string: "https://chatgpt.com/#settings")
 
     private var progress: OnboardingProgress {
         OnboardingProgress(
             micGranted: micStatus == .authorized,
             accessibilityGranted: accessibilityGranted,
-            modelInstalled: Language.allCases.contains { isInstalled($0) },
+            modelInstalled: install.isReady,
             // Ключ OpenAI — такая же настроенность, как и вход в ChatGPT: шаг закрывают оба.
             gptAuthorized: signIn.isAuthorized || apiKeyPresent,
             modelsSkipped: modelsSkipped,
             aiSkipped: aiSkipped
         )
-    }
-
-    private func isInstalled(_ language: Language) -> Bool {
-        if case .installed = downloader.state(of: language) { return true }
-        return false
     }
 
     var body: some View {
@@ -80,9 +76,9 @@ struct OnboardingView: View {
         .glassWindow()
         .onAppear {
             onShown()
-            // Состояние моделей читается с диска: скачанный язык обязан стоять
-            // установленным с первого кадра, а не после нажатия на «Скачать».
-            downloader.refresh()
+            // Состояние модели читается с диска: скачанная обязана стоять установленной
+            // с первого кадра, а не после нажатия на «Скачать».
+            install.refresh()
         }
         // Разрешения выдаются в системных окнах, а вход в ChatGPT — в браузере:
         // состояние подтягиваем опросом.
@@ -247,56 +243,49 @@ struct OnboardingView: View {
     @ViewBuilder
     private var modelsBody: some View {
         caption(
-            "Модели качаются по отдельности: нужен только русский — украинские "
-                + "\(ModelBundle.bundle(for: .uk).sizeText) скачивать незачем. У русского "
-                + "и English модель общая. Загрузка разовая, дальше распознавание идёт "
-                + "без интернета."
+            "Одна модель на все три языка — Parakeet TDT v3 от NVIDIA. Загрузка разовая, "
+                + "дальше распознавание идёт прямо на этом компьютере, без интернета."
         )
-        ForEach(ModelBundle.all) { bundle in
-            modelRow(bundle)
-        }
-        HStack(spacing: 10) {
-            Button("Позже") { modelsSkipped = true }
-            caption("Первая диктовка скачает нужную модель сама.")
-        }
-        .font(.callout)
-    }
-
-    /// Строка одной модели: слева языки и вес, справа — то единственное, что с ней сейчас
-    /// можно сделать. Кнопка модели языка диктовки выделена: с неё первый запуск и начнётся.
-    @ViewBuilder
-    private func modelRow(_ bundle: ModelBundle) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(bundle.displayName)
-                Text(bundle.sizeText).font(.caption).foregroundStyle(.secondary)
+                Text("Parakeet TDT v3")
+                Text("≈" + Self.size(ModelInstall.approximateBytes))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .frame(width: 150, alignment: .leading)
 
-            switch downloader.state(of: bundle) {
+            switch install.state {
             case .missing, .failed:
-                Button("Скачать") {
-                    Task { await downloader.download(bundle, engine: engine) }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(bundle.languages.contains(settings.language) ? Color.accentColor : Color.secondary)
+                Button("Скачать") { install.download() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                 Spacer()
             case .downloading(let fraction):
                 ProgressView(value: fraction)
                 Text("\(Int(fraction * 100)) %")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Button("Отмена") { downloader.cancel(bundle) }
-            case .installed(let bytes):
-                Label(Self.size(bytes), systemImage: "checkmark.circle.fill")
+            case .preparing:
+                ProgressView().controlSize(.small)
+                Text("Подготовка под Neural Engine…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            case .ready:
+                Label("Готова", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Spacer()
             }
         }
-        if case .failed(let message) = downloader.state(of: bundle) {
+        if case .failed(let message) = install.state {
             Text(message).font(.caption).foregroundStyle(.red)
         }
+        HStack(spacing: 10) {
+            Button("Позже") { modelsSkipped = true }
+            caption("Первая диктовка скачает модель сама.")
+        }
+        .font(.callout)
     }
 
     private static func size(_ bytes: Int64) -> String {
@@ -314,6 +303,7 @@ struct OnboardingView: View {
 
         if let session = signIn.session {
             VStack(alignment: .leading, spacing: 8) {
+                deviceCodeWarning
                 caption("Введите этот код на странице подтверждения:")
                 HStack(spacing: 10) {
                     Text(session.userCode)
@@ -337,6 +327,7 @@ struct OnboardingView: View {
                 }
             }
         } else {
+            deviceCodeWarning
             Button("Подключить ChatGPT") { signIn.start() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -350,6 +341,38 @@ struct OnboardingView: View {
         if let message = signIn.message {
             Text(message).font(.caption).foregroundStyle(.red)
         }
+    }
+
+    /// Вход по коду устройства в ChatGPT выключен по умолчанию, и без этой галочки код
+    /// просто не подтверждается — страница принимает его и молчит. Со стороны это выглядит
+    /// как «приложение не работает», поэтому предупреждаем ДО того, как человек начнёт
+    /// вводить код, а не после. У рабочих аккаунтов галочку включает администратор.
+    @ViewBuilder
+    private var deviceCodeWarning: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                "Сначала включите вход по коду в самом ChatGPT",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.callout.weight(.medium))
+            .foregroundStyle(.orange)
+
+            caption(
+                "chatgpt.com → аватар → Settings → Security → «Enable device code "
+                    + "authorization». По умолчанию она выключена, и без неё код "
+                    + "не подтвердится. В рабочем аккаунте её включает администратор."
+            )
+            if let url = Self.chatGPTSecurityURL {
+                Link("Открыть настройки ChatGPT", destination: url)
+                    .font(.callout)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+        )
     }
 
     // MARK: - Готово
@@ -366,6 +389,18 @@ struct OnboardingView: View {
         } else {
             caption("ChatGPT можно подключить позже: «Настройки… → AI».")
         }
+
+        // Выбор внешнего вида показываем здесь, а не в настройках: словами он не объясняется,
+        // а увидев пример один раз, человек больше к этому вопросу не вернётся.
+        Divider().padding(.vertical, 2)
+        Text("Что показывать, пока идёт запись")
+            .font(.callout.weight(.medium))
+        PillStyleChooser(selection: $settings.pillStyle)
+        caption(
+            "Бегущая строка показывает слова по мере речи — приложение для этого перечитывает "
+                + "последние секунды записи примерно раз в секунду. Батарея расходуется "
+                + "заметнее, поэтому по умолчанию волна. Переключается в «Настройки… → Общие»."
+        )
 
         // Единственная настройка на этом экране — и она здесь потому, что читает поле ввода
         // и отправляет прочитанное наружу. О таком человек должен узнать не из журнала.

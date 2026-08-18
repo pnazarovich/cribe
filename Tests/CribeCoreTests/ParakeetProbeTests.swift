@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import CribeCore
 
@@ -14,7 +15,7 @@ final class ParakeetProbeTests: XCTestCase {
 
     /// Весь путь движка: подготовка (с состояниями), проход, отказ от перевода.
     func testTranscribesRealRecording() async throws {
-        let samples = try LongAudioProbeTests.fixture()
+        let samples = try Self.fixture()
         let engine = ParakeetEngine()
 
         let states = StateLog()
@@ -24,7 +25,7 @@ final class ParakeetProbeTests: XCTestCase {
 
         let pass = Date()
         let text = try await engine.transcribe(samples, language: .ru, prompt: "")
-        note("PROBE: проход \(String(format: "%.2f", Date().timeIntervalSince(pass))) c, слов \(ShortDictation.wordCount(text))")
+        note("PROBE: проход \(String(format: "%.2f", Date().timeIntervalSince(pass))) c, слов \(text.split(separator: " ").count)")
         note("PROBE:   \(text)")
 
         XCTAssertFalse(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Parakeet вернул пустоту")
@@ -61,4 +62,43 @@ final class ParakeetProbeTests: XCTestCase {
             return "состояний \(states.count)"
         }
     }
+
+    /// Запись для пробы приходит переменной окружения: своих фикстур у пробы нет —
+    /// проверять движок имеет смысл только на живой речи.
+    private static func fixture() throws -> [Float] {
+        guard let path = ProcessInfo.processInfo.environment["CRIBE_PROBE_WAV"] else {
+            throw XCTSkip("нет CRIBE_PROBE_WAV")
+        }
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: AudioCaptureFormat.sampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+        let capacity = AVAudioFrameCount(
+            Double(file.length) * format.sampleRate / file.processingFormat.sampleRate + 4096
+        )
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity)!
+        let converter = AVAudioConverter(from: file.processingFormat, to: format)!
+        var done = false
+        var error: NSError?
+        converter.convert(to: buffer, error: &error) { _, status in
+            if done {
+                status.pointee = .endOfStream
+                return nil
+            }
+            let input = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat,
+                frameCapacity: AVAudioFrameCount(file.length)
+            )!
+            try? file.read(into: input)
+            done = true
+            status.pointee = .haveData
+            return input
+        }
+        if let error { throw error }
+        return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+    }
+
 }

@@ -8,41 +8,21 @@ private final class RetranscribeSpy: TranscriptionEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var received: [Float] = []
     private var receivedPrompt: String?
-    private var receivedVariant: String?
-    private var preparedVariant: String?
+    private var receivedLanguage: Language?
 
     var samples: [Float] { lock.withLock { received } }
     var prompt: String? { lock.withLock { receivedPrompt } }
-    var variant: String? { lock.withLock { receivedVariant } }
-    var prepared: String? { lock.withLock { preparedVariant } }
+    var language: Language? { lock.withLock { receivedLanguage } }
 
     func prepare(language: Language, onState: @escaping @Sendable (ASRModelState) -> Void) async throws {
         onState(.ready)
     }
 
-    func prepare(
-        variant: String,
-        language: Language,
-        onState: @escaping @Sendable (ASRModelState) -> Void
-    ) async throws {
-        lock.withLock { preparedVariant = variant }
-        onState(.ready)
-    }
-
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String {
-        try await transcribe(samples, language: language, variant: language.whisperModel, prompt: prompt)
-    }
-
-    func transcribe(
-        _ samples: [Float],
-        language: Language,
-        variant: String,
-        prompt: String
-    ) async throws -> String {
         lock.withLock {
             received = samples
             receivedPrompt = prompt
-            receivedVariant = variant
+            receivedLanguage = language
         }
         return "разобрано заново"
     }
@@ -91,11 +71,11 @@ final class RetranscribeTests: XCTestCase {
         let controller = makeController(engine: spy)
         let item = try saveRecording(seconds: 3, language: .ru)
 
-        let text = try await controller.retranscribe(item: item, mode: .samePlainPass)
+        let text = try await controller.retranscribe(item: item)
 
         XCTAssertEqual(text, "разобрано заново")
-        XCTAssertEqual(spy.prompt, "", "словарный промпт на повторе не нужен")
-        XCTAssertEqual(spy.variant, Language.ru.whisperModel, "модель по умолчанию — та же")
+        XCTAssertEqual(spy.prompt, "", "подсказки у распознавания нет по устройству")
+        XCTAssertEqual(spy.language, .ru, "язык берётся из записи, а не из настроек")
         // Ворота речи не звали: буфер дошёл до движка целиком.
         XCTAssertEqual(spy.samples.count, AudioCaptureFormat.samples(seconds: 3))
     }
@@ -106,22 +86,9 @@ final class RetranscribeTests: XCTestCase {
         let controller = makeController(engine: spy)
         let item = try saveRecording(seconds: 3, language: .ru, peak: 0.05)
 
-        _ = try await controller.retranscribe(item: item, mode: .samePlainPass)
+        _ = try await controller.retranscribe(item: item)
 
         XCTAssertEqual(AudioNormalizer.peak(spy.samples), AudioNormalizer.targetPeak, accuracy: 0.05)
-    }
-
-    /// Большая модель берётся для того же языка, а не вместе с чужим: русскую диктовку
-    /// нельзя разбирать украинским декодером только потому, что модель называется large-v3.
-    func testLargeModelKeepsTheLanguage() async throws {
-        let spy = RetranscribeSpy()
-        let controller = makeController(engine: spy)
-        let item = try saveRecording(seconds: 3, language: .ru)
-
-        _ = try await controller.retranscribe(item: item, mode: .largeModel)
-
-        XCTAssertEqual(spy.variant, WhisperModel.large)
-        XCTAssertEqual(spy.prepared, WhisperModel.large)
     }
 
     /// Новый текст уезжает в буфер обмена и заменяет старый в истории — второй строки
@@ -134,7 +101,7 @@ final class RetranscribeTests: XCTestCase {
         let history = HistoryStore.shared
         let before = history.items.count
 
-        _ = try await controller.retranscribe(item: item, mode: .samePlainPass)
+        _ = try await controller.retranscribe(item: item)
 
         XCTAssertEqual(copies.copied, ["разобрано заново"])
         XCTAssertEqual(history.items.count, before, "повтор не заводит вторую строку")
@@ -147,7 +114,7 @@ final class RetranscribeTests: XCTestCase {
         let item = HistoryItem(text: "", language: .ru, audio: "нет-такой.wav", seconds: 40)
 
         do {
-            _ = try await controller.retranscribe(item: item, mode: .samePlainPass)
+            _ = try await controller.retranscribe(item: item)
             XCTFail("повтор без записи обязан упасть")
         } catch {
             XCTAssertTrue(error is RecordingStoreError)

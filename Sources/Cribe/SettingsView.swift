@@ -46,7 +46,6 @@ struct SettingsView: View {
     /// Список моделей и вход в ChatGPT живут выше панелей: панель раздела пересоздаётся на
     /// каждом переключении, а загруженный список и идущий device-code этого пережить
     /// обязаны — иначе вход обрывался бы щелчком по соседней строке.
-    @StateObject private var models = ModelListModel()
     @StateObject private var codex = CodexAuthModel()
 
     private var pane: SettingsPane { selection ?? .general }
@@ -108,7 +107,7 @@ struct SettingsView: View {
     private var detail: some View {
         switch pane {
         case .general: GeneralPane(settings: settings)
-        case .ai: AIPane(settings: settings, models: models, codex: codex)
+        case .ai: AIPane(settings: settings, codex: codex)
         case .dictionary: DictionaryPane(url: dictionaryURL, settings: settings)
         case .about: AboutPane()
         }
@@ -120,8 +119,9 @@ struct SettingsView: View {
 private struct GeneralPane: View {
     @ObservedObject var settings: AppSettings
 
-    /// Загрузчик один на приложение: настройки и онбординг показывают одно состояние.
-    @ObservedObject private var downloader = ModelDownloader.shared
+    /// Состояние модели одно на приложение: настройки, онбординг и экран обновления
+    /// показывают одну и ту же загрузку.
+    @ObservedObject private var install = ModelInstall.shared
 
     /// Тумблер автопроверки ходит прямо в Sparkle — своего флага у настроек нет.
     @ObservedObject private var updates = UpdateController.shared
@@ -132,6 +132,8 @@ private struct GeneralPane: View {
     /// Сколько записей лежит на диске прямо сейчас: обещание «предсказуемый объём» стоит
     /// ровно столько, сколько его видно.
     @State private var recordingBytes = RecordingStore.shared.bytesOnDisk()
+    /// Веса Whisper, оставшиеся от прежних версий. Ноль — строки нет вовсе.
+    @State private var legacyBytes = LegacyWhisperCache.shared.bytesOnDisk()
 
     var body: some View {
         Form {
@@ -175,49 +177,8 @@ private struct GeneralPane: View {
 
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
 
-                Picker("Слушать:", selection: $settings.recognitionEngine) {
-                    Text("Быстро (Whisper turbo)").tag(RecognitionEngine.fast)
-                    Text("Точно (Whisper large)").tag(RecognitionEngine.precise)
-                    Text("Parakeet + AI-чистка").tag(RecognitionEngine.parakeet)
-                }
-                switch settings.recognitionEngine {
-                case .fast:
-                    EmptyView()
-                case .precise:
-                    if !ModelStore.shared.isInstalled(variant: WhisperModel.large) {
-                        caption("Нужна модель «Українська» — она же большая; скачайте её ниже.")
-                    }
-                case .parakeet:
-                    if !settings.gptEnabled {
-                        caption("Без AI-чистки Parakeet оставит английские названия кириллицей.")
-                    }
-                }
-
-                // Один переключатель, но у движков он делает разное — потому что и беда
-                // у них разная. Whisper слушает запись одним языком и украинскую вставку
-                // коверкает: ей нужно ВТОРОЕ МНЕНИЕ — перечитать фразу украинской моделью,
-                // а для этого модель должна лежать на диске. Parakeet многоязычный и пишет
-                // украинское слово верно сам; перечитывать нечего, и та же галочка значит
-                // «не русифицируй услышанное» — это правило чистки, и модель ей не нужна.
-                let neighbour = settings.language.neighbour
-                let parakeet = settings.recognitionEngine == .parakeet
-                let ready = neighbour.map {
-                    parakeet || ModelStore.shared.isInstalled(variant: $0.whisperModel)
-                }
-                if let neighbour, let ready {
-                    Toggle(
-                        "Ловить фразы на языке «\(neighbour.displayName)»",
-                        isOn: $settings.catchesNeighbourLanguage
-                    )
-                    .disabled(!ready)
-                    if !ready {
-                        caption("Нужна модель «\(neighbour.displayName)» — скачайте её ниже.")
-                    } else if parakeet {
-                        caption(
-                            "С Parakeet перечитывать не нужно — он слышит украинские слова верно "
-                                + "сам. Галочка говорит AI-чистке не переписывать их по-русски."
-                        )
-                    }
+                if settings.language != .en {
+                    Toggle("Мешаю русский и українську в одной диктовке", isOn: $settings.mixesUkrainian)
                 }
             } header: {
                 Text("Распознавание")
@@ -225,46 +186,30 @@ private struct GeneralPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     caption("Язык диктовки форсируется: распознавание его не угадывает.")
                     caption(
-                        "«Точно» слушает большой моделью вместо быстрой. На чистой речи разницы "
-                            + "нет, а на трудной она решает: быстрая модель способна слепить "
-                            + "название с частицей отрицания и перевернуть смысл. Цена — вдвое "
-                            + "дольше на каждой диктовке."
-                    )
-                    caption(
-                        "Parakeet — модель NVIDIA: вдесятеро быстрее обеих и точнее их в падежах, "
-                            + "но каждое английское слово пишет кириллицей. Латиницу возвращает "
-                            + "AI-чистка, поэтому с Parakeet через неё идёт каждая диктовка, даже "
-                            + "однословная. Модель качается при первой диктовке (~600 МБ)."
-                    )
-                    caption(
-                        "Украинская фраза внутри русской диктовки выходит фонетическим мусором: "
-                            + "распознавание слушает всю запись одним языком. С ловлей приложение "
-                            + "перечитывает такие фразы украинской моделью и говорит, что "
-                            + "перечитало, — но каждая диктовка становится на секунду-две дольше."
+                        "Смешанная речь: распознавание слышит украинские слова верно, а вот "
+                            + "AI-чистка без этой галочки переписывает их по-русски — «ще раз» "
+                            + "становится «ещё раз». С галочкой она их бережёт и заодно "
+                            + "возвращает украинское написание словам, которые распознавание "
+                            + "записало на слух по-русски («требо» → «треба»). Выключите, если "
+                            + "диктуете на одном языке."
                     )
                 }
             }
 
             Section {
-                // Строка — модель, а не язык: русский и английский работают на одной,
-                // и двумя строками она обещала бы вторые полтора гигабайта, которых нет.
-                ForEach(ModelBundle.all) { bundle in
-                    // Движок в приложении один и живёт в `AppCore`: сцена настроек создаётся
-                    // без него, а выгружать прогретую модель перед удалением надо у того же.
-                    ModelDownloadRow(
-                        bundle: bundle,
-                        downloader: downloader,
-                        engine: AppCore.shared.engine
-                    )
+                ModelRow(install: install)
+                if legacyBytes > 0 {
+                    LegacyModelsRow(bytes: $legacyBytes)
                 }
             } header: {
-                Text("Модели распознавания")
+                Text("Модель распознавания")
             } footer: {
                 caption(
-                    "Каждая модель качается отдельно и один раз — она остаётся в Application "
-                        + "Support. Пока её нет, первая диктовка на этом языке начнётся с загрузки. "
-                        + "Русский и English работают на одной модели: второй раз она не качается "
-                        + "и удаляется сразу для обоих."
+                    "Parakeet TDT v3 от NVIDIA — одна многоязычная модель на все три языка. "
+                        + "Качается один раз (~600 МБ) и остаётся в кэше; дальше распознавание "
+                        + "идёт без интернета. Английские названия она пишет кириллицей — "
+                        + "латиницу им возвращает AI-чистка, поэтому через неё идёт каждая "
+                        + "диктовка, даже однословная."
                 )
             }
 
@@ -289,6 +234,19 @@ private struct GeneralPane: View {
                         + "Cribe → recordings, никуда не отправляется. Сейчас занято: "
                         + ByteCountFormatter.string(fromByteCount: recordingBytes, countStyle: .file)
                         + ". Одна запись — не длиннее пяти минут."
+                )
+            }
+
+            Section {
+                PillStyleChooser(selection: $settings.pillStyle)
+            } header: {
+                Text("Индикатор записи")
+            } footer: {
+                caption(
+                    "Бегущая строка показывает слова по мере речи — для этого приложение "
+                        + "перечитывает последние секунды записи примерно раз в секунду. Видно, "
+                        + "что распознавание услышало, но батарея расходуется заметнее, поэтому "
+                        + "по умолчанию — волна."
                 )
             }
 
@@ -334,8 +292,9 @@ private struct GeneralPane: View {
             // Разрешение выдают в системном окне — при возврате в настройки перечитываем.
             accessibilityGranted = TextInserter.hasAccessibility
             // Модель могла доехать мимо настроек — например, её дотянула первая диктовка.
-            downloader.refresh()
+            install.refresh()
             recordingBytes = RecordingStore.shared.bytesOnDisk()
+            legacyBytes = LegacyWhisperCache.shared.bytesOnDisk()
         }
         // Кольцо укоротили — лишние записи уходят сразу, а не после следующей диктовки:
         // «не хранить» должно означать «уже не хранится».
@@ -368,94 +327,36 @@ private struct GeneralPane: View {
     }
 }
 
-/// Строка одной модели: языки, которые на ней работают, её состояние и одна кнопка —
-/// «Скачать», «Отмена» или «Удалить». Удаление спрашивает подтверждение: это гигабайты,
-/// повторное скачивание, а на общей модели — сразу оба её языка.
-private struct ModelDownloadRow: View {
-    let bundle: ModelBundle
-    @ObservedObject var downloader: ModelDownloader
-    let engine: WhisperEngine
-
-    @State private var confirmingRemoval = false
-    @State private var removalError: String?
-
-    private var state: ModelDownloadState { downloader.state(of: bundle) }
+/// Единственная модель распознавания: её состояние и, если её ещё нет, кнопка «Скачать».
+/// Удалить её отсюда нельзя — без неё приложение не работает вовсе, и кнопка «Удалить»
+/// означала бы «сломать диктовку».
+private struct ModelRow: View {
+    @ObservedObject var install: ModelInstall
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 12) {
-                Text(bundle.displayName)
-                Spacer(minLength: 8)
-                status
-                action
+        HStack(spacing: 12) {
+            Text("Parakeet TDT v3")
+            Spacer(minLength: 8)
+            switch install.state {
+            case .missing:
+                Text("Не скачана · ≈" + Self.size(ModelInstall.approximateBytes))
+                    .foregroundStyle(.secondary)
+                Button("Скачать") { install.download() }
+            case let .downloading(fraction):
+                ProgressView(value: fraction).frame(width: 120)
+                Text(fraction.formatted(.percent.precision(.fractionLength(0))))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            case .preparing:
+                ProgressView().controlSize(.small)
+                Text("Подготовка…").foregroundStyle(.secondary)
+            case .ready:
+                Label("Готова", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case let .failed(message):
+                Text(message).foregroundStyle(.red).lineLimit(2)
+                Button("Ещё раз") { install.download() }
             }
-            if let removalError {
-                Text(removalError).font(.caption).foregroundStyle(.red)
-            }
-        }
-        .confirmationDialog(
-            "Удалить модель «\(bundle.displayName)»?",
-            isPresented: $confirmingRemoval,
-            titleVisibility: .visible
-        ) {
-            Button("Удалить", role: .destructive) { remove() }
-            Button("Отмена", role: .cancel) {}
-        } message: {
-            if case let .installed(bytes) = state {
-                // На общей модели удаление уносит оба языка сразу — это и есть то, что
-                // обязано быть сказано до нажатия, а не выясниться следующей диктовкой.
-                Text(
-                    bundle.languages.count > 1
-                        ? "Освободится \(Self.size(bytes)) — модель уйдёт сразу у языков "
-                            + "\(bundle.displayName). Скачать заново можно в любой момент."
-                        : "Освободится \(Self.size(bytes)). Скачать заново можно в любой момент."
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var status: some View {
-        switch state {
-        case .missing:
-            Text("Не скачана · ≈\(Self.size(ModelDownloader.approximateBytes(for: bundle)))")
-                .foregroundStyle(.secondary)
-        case let .downloading(fraction):
-            ProgressView(value: fraction)
-                .frame(width: 120)
-            Text(fraction.formatted(.percent.precision(.fractionLength(0))))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-        case let .installed(bytes):
-            Text("Установлена · \(Self.size(bytes))")
-                .foregroundStyle(.secondary)
-        case let .failed(message):
-            Text(message)
-                .foregroundStyle(.red)
-                .lineLimit(2)
-        }
-    }
-
-    @ViewBuilder
-    private var action: some View {
-        switch state {
-        case .missing, .failed:
-            Button("Скачать") {
-                Task { await downloader.download(bundle, engine: engine) }
-            }
-        case .downloading:
-            Button("Отмена") { downloader.cancel(bundle) }
-        case .installed:
-            Button("Удалить") { confirmingRemoval = true }
-        }
-    }
-
-    private func remove() {
-        do {
-            removalError = nil
-            try downloader.remove(bundle, engine: engine)
-        } catch {
-            removalError = error.localizedDescription
         }
     }
 
@@ -464,15 +365,63 @@ private struct ModelDownloadRow: View {
     }
 }
 
+/// Веса Whisper от прежних версий. Строка появляется, только если они и правда лежат
+/// на диске, и исчезает сразу после удаления: место освобождает человек, а не обновление.
+private struct LegacyModelsRow: View {
+    @Binding var bytes: Int64
+
+    @State private var confirming = false
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text("Старые модели Whisper")
+                Spacer(minLength: 8)
+                Text(bytes.formatted(.byteCount(style: .file)) + " — не нужны")
+                    .foregroundStyle(.secondary)
+                Button("Удалить") { confirming = true }
+            }
+            if let failure {
+                Text(failure).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Удалить старые модели Whisper?",
+            isPresented: $confirming,
+            titleVisibility: .visible
+        ) {
+            Button("Удалить", role: .destructive) { remove() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text(
+                "Освободится " + bytes.formatted(.byteCount(style: .file))
+                    + ". Распознавание идёт на Parakeet — эти веса больше не используются."
+            )
+        }
+    }
+
+    private func remove() {
+        do {
+            failure = nil
+            try LegacyWhisperCache.shared.remove()
+            bytes = 0
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+}
+
 // MARK: - AI
 
-/// Всё про GPT одним разделом: доступ к модели, чистка и перевод. Перевод жил отдельно,
-/// пока у него был свой тумблер; без тумблера остались две пары «модель + усилие», и держать
-/// ради второй пары отдельный раздел — значит прятать её от глаз. Пары не смешиваются:
-/// у каждой свой заголовок, а карточки рекомендаций стоят внутри своей секции.
+/// Всё про GPT одним разделом: доступ к модели, чистка и перевод.
+///
+/// Выбора модели и усилия здесь больше нет. Он был, и замер его закрыл: 210 прогонов
+/// по 17 проверкам на десяти живых записях дали одного победителя без спорных мест, а
+/// «экономный» вариант оказался и медленнее, и хуже. Настройка, у которой один правильный
+/// ответ, — это приглашение ошибиться, и её место в коде, а не в окне.
 private struct AIPane: View {
     @ObservedObject var settings: AppSettings
-    @ObservedObject var models: ModelListModel
     @ObservedObject var codex: CodexAuthModel
 
     @State private var apiKey = ""
@@ -492,10 +441,7 @@ private struct AIPane: View {
                     Text("Аккаунт ChatGPT").tag(GPTAuthMode.codex)
                     Text("API-ключ OpenAI").tag(GPTAuthMode.apiKey)
                 }
-                .onChange(of: settings.gptMode) { _, mode in
-                    // Списки моделей у бэкендов разные: старый выбор в новом режиме не существует.
-                    models.clear()
-                    settings.gptModel = GPTConfig.defaultModel(for: mode)
+                .onChange(of: settings.gptMode) { _, _ in
                     // Уход в режим API-ключа прячет блок входа — поллинг за ним не оставляем.
                     codex.cancel()
                 }
@@ -516,62 +462,21 @@ private struct AIPane: View {
 
             Section {
                 Toggle("AI-чистка (GPT)", isOn: $settings.gptEnabled)
-                Toggle("Короткие диктовки — без GPT", isOn: $settings.skipGPTForShort)
-                if settings.skipGPTForShort {
-                    Stepper(
-                        "до \(settings.shortDictationWordLimit) слов",
-                        value: $settings.shortDictationWordLimit,
-                        in: 1...30
-                    )
-                }
-                Toggle("Возвращать украинские слова в русской диктовке", isOn: $settings.restoreUkrainianInserts)
-                ModelRow(models: models, selection: $settings.gptModel, config: settings.gptConfig)
-                EffortPicker(selection: $settings.gptEffort)
-                RecommendationCards(
-                    mode: settings.gptMode,
-                    model: $settings.gptModel,
-                    effort: $settings.gptEffort
-                )
             } header: {
                 Text("Чистка текста")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     caption(
-                        "GPT расставляет знаки, убирает слова-паразиты и держит термины словаря. "
-                            + "На «ок» и «да, давай» чистить нечего — целый круг к модели там лишний."
+                        "GPT расставляет знаки, убирает слова-паразиты, держит термины словаря "
+                            + "и возвращает латиницу английским названиям — распознавание пишет "
+                            + "их кириллицей. Поэтому через чистку идёт каждая диктовка, даже "
+                            + "однословная."
                     )
                     caption(
-                        "Украинские вставки распознавание пишет на слух по-русски («требо» вместо "
-                            + "«треба»); чистка возвращает им украинское написание, когда уверена. "
-                            + "Работает только при включённой AI-чистке и только на русских "
-                            + "диктовках — на переводе правым ⌥ не применяется."
+                        "Перевод правым ⌥ делает она же: выключенная чистка — это и выключенный "
+                            + "перевод. Постоянный перевод включается в меню строки состояния."
                     )
-                    caption(ModelRecommendations.disclaimer)
-                }
-            }
-
-            Section {
-                ModelRow(
-                    models: models,
-                    selection: $settings.translateModel,
-                    config: settings.gptConfig
-                )
-                EffortPicker(selection: $settings.translateEffort)
-                RecommendationCards(
-                    mode: settings.gptMode,
-                    model: $settings.translateModel,
-                    effort: $settings.translateEffort
-                )
-            } header: {
-                Text("Перевод на английский")
-            } footer: {
-                VStack(alignment: .leading, spacing: 4) {
-                    caption(
-                        "Тот же вызов и чистит, и переводит — модель покрупнее здесь окупается. "
-                            + "Постоянный перевод включается в меню строки состояния, "
-                            + "разовый — правым ⌥."
-                    )
-                    caption(ModelRecommendations.disclaimer)
+                    caption("Модель — \(GPTConfig.defaultModel): выбрана замером, менять её не нужно.")
                 }
             }
         }
@@ -628,6 +533,20 @@ private struct AIPane: View {
         saveAPIKey()
     }
 
+    /// Вход по коду устройства в ChatGPT выключен по умолчанию: страница принимает код
+    /// и молча ничего не делает. Со стороны это неотличимо от сломанного приложения,
+    /// поэтому говорим об этом до ввода кода, а не после.
+    private var deviceCodeNote: some View {
+        Text(
+            "Сначала включите в ChatGPT: аватар → Settings → Security → «Enable device "
+                + "code authorization». По умолчанию выключено; в рабочем аккаунте включает "
+                + "администратор."
+        )
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     // MARK: Аккаунт ChatGPT
 
     @ViewBuilder
@@ -641,6 +560,7 @@ private struct AIPane: View {
             }
         } else if let session = codex.session {
             VStack(alignment: .leading, spacing: 8) {
+                deviceCodeNote
                 Text("Код подтверждения:").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(session.userCode)
@@ -664,6 +584,7 @@ private struct AIPane: View {
                 }
             }
         } else {
+            deviceCodeNote
             Button("Авторизоваться") { codex.start() }
         }
 
@@ -845,139 +766,6 @@ private func caption(_ text: String) -> some View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-}
-
-/// Список моделей бэкенда: один на обе пары «модель + усилие» и живущий выше панелей,
-/// чтобы загруженный список переживал переключение разделов.
-@MainActor
-private final class ModelListModel: ObservableObject {
-    @Published private(set) var models: [String] = []
-    @Published private(set) var isLoading = false
-
-    func refresh(config: GPTConfig) async {
-        isLoading = true
-        defer { isLoading = false }
-        models = (try? await GPTClient(config: config).listModels()) ?? []
-    }
-
-    func clear() {
-        models = []
-    }
-
-    /// Сохранённая модель может отсутствовать в свежем списке — иначе пикер показал бы пустоту.
-    func options(selected: String) -> [String] {
-        models.contains(selected) ? models : [selected] + models
-    }
-}
-
-/// Пикер модели с кнопкой обновления списка.
-private struct ModelRow: View {
-    @ObservedObject var models: ModelListModel
-    @Binding var selection: String
-    let config: GPTConfig
-
-    var body: some View {
-        HStack {
-            Picker("Модель:", selection: $selection) {
-                ForEach(models.options(selected: selection), id: \.self) { Text($0).tag($0) }
-            }
-            if models.isLoading {
-                ProgressView().controlSize(.small)
-            } else {
-                Button {
-                    Task { await models.refresh(config: config) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Обновить список моделей")
-            }
-        }
-    }
-}
-
-/// Порядок как в спеке; Codex-бэкенд нормализует `none`/`minimal` в `low` сам.
-private struct EffortPicker: View {
-    @Binding var selection: String
-
-    private static let efforts = ["none", "minimal", "low", "medium", "high"]
-
-    var body: some View {
-        Picker("Усилие рассуждения:", selection: $selection) {
-            ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
-        }
-    }
-}
-
-/// Рекомендации тремя карточками в ряд: ⚡ / ⚖️ / 💎. Щелчок по карточке ставит и модель,
-/// и усилие — пара всегда применяется целиком, порознь она ничего не значит.
-/// Строки пересобираются из режима доступа: у режимов разные усилия и пояснения. Таблица
-/// одна и та же и для чистки, и для перевода — ведёт она ту пару, которую ей передали.
-private struct RecommendationCards: View {
-    let mode: GPTAuthMode
-    @Binding var model: String
-    @Binding var effort: String
-
-    private static let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            ForEach(ModelRecommendations.list(for: mode)) { recommendation in
-                card(recommendation)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func card(_ recommendation: ModelRecommendation) -> some View {
-        let isSelected = model == recommendation.model
-
-        return Button {
-            model = recommendation.model
-            effort = recommendation.effort
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(recommendation.tier.emoji)
-                    Text(recommendation.tier.title).font(.callout)
-                    Spacer(minLength: 0)
-                    // Выбранной модели кнопка не нужна — вместо неё галочка.
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
-                Text(recommendation.model)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                Text(recommendation.note)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            // Карточка лежит внутри стеклянной плашки секции, поэтому заливка и кант —
-            // системные полупрозрачные, а не проценты от `.primary`: за ними обои, и на
-            // светлых пятипроцентная заливка исчезала бы вовсе. Радиус 6 — фиксированный,
-            // как у любого чипа в середине плашки: концентричность тут нечему считать.
-            .background(Self.shape.fill(isSelected ? AnyShapeStyle(.tint.opacity(0.16))
-                                                   : AnyShapeStyle(.quaternary)))
-            .overlay(
-                Self.shape.strokeBorder(
-                    isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator)
-                )
-            )
-            .contentShape(Self.shape)
-        }
-        .buttonStyle(.plain)
-        .help(
-            isSelected
-                ? "Уже выбрана"
-                : "Выбрать \(recommendation.model), усилие \(recommendation.effort)"
-        )
-    }
 }
 
 /// Device-code flow: старт, ожидание подтверждения, статус. Держит одну задачу поллинга.
