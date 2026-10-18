@@ -40,28 +40,73 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).learnsFromEdits)
     }
 
-    /// Смешанная речь ожидается по умолчанию: приложение делают двуязычные люди для
-    /// двуязычных. Выключённый тумблер переживает перезапуск (дефолт `true`, поэтому
-    /// `bool(forKey:)` не отличил бы «выключен» от «не задан»).
-    func testMixesUkrainianDefaultsOnAndPersists() {
-        XCTAssertTrue(AppSettings(defaults: defaults).mixesUkrainian)
+    // MARK: - Набор языков
 
-        AppSettings(defaults: defaults).mixesUkrainian = false
-        XCTAssertFalse(AppSettings(defaults: defaults).mixesUkrainian)
+    /// Прежние «русский + галочка “мешаю”» (а галочка стояла по умолчанию) — это ровно
+    /// «русский и украинский». У обновившегося чистка ведёт себя точно как раньше.
+    func testLanguagesMigrateFromSingleLanguageAndMixing() {
+        defaults.set("ru", forKey: "language")
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru, .uk], "галочка по умолчанию стояла")
+
+        defaults.set(false, forKey: "mixesUkrainian")
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru])
+
+        defaults.set("uk", forKey: "language")
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.uk])
+
+        // Украинский с галочкой — всё равно один украинский: на украинскую чистку галочка
+        // не влияла, а «оба» сделали бы основным русский.
+        defaults.set(true, forKey: "mixesUkrainian")
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.uk])
+
+        defaults.set("en", forKey: "language")
+        defaults.set(true, forKey: "mixesUkrainian")
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.en], "английскому мешать не с чем")
     }
 
-    /// Галочка собрана из двух прежних, и выбор человека обязан её пережить: тот, кто
-    /// выключил возврат украинских вставок, не должен получить его обратно обновлением.
-    func testMixesUkrainianInheritsTheOldKey() {
+    /// Ещё более старый ключ той же галочки тоже переносится.
+    func testLegacyMixingKeyStillMigrates() {
+        defaults.set("ru", forKey: "language")
         defaults.set(false, forKey: "restoreUkrainianInserts")
-        XCTAssertFalse(AppSettings(defaults: defaults).mixesUkrainian)
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru])
     }
 
-    /// Своё значение сильнее унаследованного: человек мог передумать уже в новой версии.
-    func testOwnKeyWinsOverTheOldOne() {
+    /// Новичку — русский с украинским, как и прежнее умолчание.
+    func testDefaultLanguagesForNewcomers() {
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru, .uk])
+    }
+
+    func testLanguagesPersist() {
+        let settings = AppSettings(defaults: defaults)
+        settings.set(.en, enabled: true)
+        settings.set(.uk, enabled: false)
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru, .en])
+    }
+
+    /// Последний флажок не снимается: без языка диктовать не на чем.
+    func testLastLanguageCannotBeUnchecked() {
+        let settings = AppSettings(defaults: defaults)
+        settings.language = .uk
+        settings.set(.uk, enabled: false)
+        XCTAssertEqual(settings.languages, [.uk])
+    }
+
+    /// Смешанная речь — это два отмеченных флажка, а не отдельная галочка.
+    func testMixingIsBothFlags() {
+        let settings = AppSettings(defaults: defaults)
+        settings.language = .ru
+        XCTAssertFalse(settings.mixesUkrainian)
+        settings.set(.uk, enabled: true)
+        XCTAssertTrue(settings.mixesUkrainian)
+    }
+
+    /// Своё значение прежней галочки сильнее самого старого ключа: человек мог передумать
+    /// уже в версии с одной галочкой.
+    func testOwnMixingKeyWinsOverTheOldestOne() {
+        defaults.set("ru", forKey: "language")
         defaults.set(false, forKey: "restoreUkrainianInserts")
         defaults.set(true, forKey: "mixesUkrainian")
-        XCTAssertTrue(AppSettings(defaults: defaults).mixesUkrainian)
+        XCTAssertEqual(AppSettings(defaults: defaults).languages, [.ru, .uk])
     }
 
     /// Карточки включены по умолчанию, а выключённый тумблер переживает перезапуск

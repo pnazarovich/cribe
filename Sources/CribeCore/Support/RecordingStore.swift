@@ -38,6 +38,8 @@ public final class RecordingStore: @unchecked Sendable {
 
     private let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Recordings")
     private let fileManager = FileManager.default
+    private let stampLock = NSLock()
+    private var lastStamp = 0
 
     public init(folder: URL = RecordingStore.defaultFolder) {
         self.folder = folder
@@ -58,7 +60,7 @@ public final class RecordingStore: @unchecked Sendable {
         // Имя начинается временем в миллисекундах фиксированной ширины — по нему же идёт
         // сортировка кольца. Хвост случайный: две диктовки подряд могут лечь в одну
         // миллисекунду, и вторая затёрла бы первую.
-        let name = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8)).wav"
+        let name = "\(nextStamp())-\(UUID().uuidString.prefix(8)).wav"
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
             try WavEncoder.encode(kept).write(to: folder.appendingPathComponent(name), options: .atomic)
@@ -116,6 +118,8 @@ public final class RecordingStore: @unchecked Sendable {
 
     /// Файлы записей, свежие первыми. Имя — время создания в миллисекундах, поэтому
     /// сортировка по имени и есть сортировка по свежести, и лишнего похода к атрибутам нет.
+    ///
+    /// Верно это ровно настолько, насколько метки в именах строго растут — см. `nextStamp`.
     private func files() -> [URL] {
         let contents = (try? fileManager.contentsOfDirectory(
             at: folder,
@@ -124,6 +128,21 @@ public final class RecordingStore: @unchecked Sendable {
         return contents
             .filter { $0.pathExtension == "wav" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+}
+
+extension RecordingStore {
+    /// Миллисекунды для имени — строго больше прежних.
+    ///
+    /// Две записи в одну миллисекунду в жизни не случаются, а вот в прогоне тестов под
+    /// нагрузкой — случались. Тогда порядок двух имён решал случайный хвост UUID, вытеснение
+    /// «самой старой» уносило не ту, и тест кольца падал через раз. Метка, которая не умеет
+    /// стоять на месте, делает порядок имён порядком записей всегда.
+    func nextStamp(now: Date = Date()) -> Int {
+        stampLock.lock()
+        defer { stampLock.unlock() }
+        lastStamp = max(Int(now.timeIntervalSince1970 * 1000), lastStamp + 1)
+        return lastStamp
     }
 }
 

@@ -49,6 +49,9 @@ public final class AppSettings: ObservableObject {
         static let soundsEnabled = "soundsEnabled"
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
+        static let languages = "languages"
+        /// Прежний один язык и прежняя галочка «мешаю русский и українську». Только читаются —
+        /// при первом запуске версии с набором языков из них собирается набор.
         static let mixesUkrainian = "mixesUkrainian"
         static let pillStyle = "pillStyle"
         /// Прежний ключ той же галочки: с него читается значение при первом запуске новой
@@ -63,8 +66,27 @@ public final class AppSettings: ObservableObject {
 
     private let defaults: UserDefaults
 
-    @Published public var language: Language {
-        didSet { defaults.set(language.rawValue, forKey: Key.language) }
+    /// На каких языках человек диктует. Никогда не пуст: снимать флажки — через
+    /// `set(_:enabled:)`, который последний снять не даёт.
+    @Published public private(set) var languages: Set<Language> {
+        didSet { defaults.set(Language.ordered.filter(languages.contains).map(\.rawValue), forKey: Key.languages) }
+    }
+
+    /// Отметить или снять язык. Последний снять нельзя: диктовать совсем без языка не на чем,
+    /// и флажок просто не снимается.
+    public func set(_ language: Language, enabled: Bool) {
+        var next = languages
+        if enabled { next.insert(language) } else { next.remove(language) }
+        guard !next.isEmpty, next != languages else { return }
+        languages = next
+    }
+
+    /// Один язык — там, где текста ещё нет и выбрать по нему нельзя: прогрев модели, перевод
+    /// чужого текста с карточки. Присвоение оставляет отмеченным только его — так работает
+    /// переключение языка хоткеем.
+    public var language: Language {
+        get { Language.ordered.first(where: languages.contains) ?? .ru }
+        set { languages = [newValue] }
     }
 
     @Published public var gptEnabled: Bool {
@@ -109,19 +131,16 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(autoStopEnabled, forKey: Key.autoStopEnabled) }
     }
 
-    /// Человек мешает русский с украинским в одной диктовке.
+    /// Человек мешает русский с украинским в одной диктовке — то есть отмечены оба.
     ///
-    /// Галочка правит один слой — чистку, — но с двух сторон сразу, потому что беда у
-    /// смешанной речи двусторонняя. Украинское слово, услышанное верно, чистка иначе
-    /// переписывает по-русски («ще раз» → «ещё раз»); украинское слово, записанное
-    /// распознаванием на слух по-русски («требо» вместо «треба»), иначе таким и остаётся.
-    /// Обе половины включаются одним намерением человека, поэтому и тумблер один.
+    /// Правит один слой — чистку, — но с двух сторон сразу, потому что беда у смешанной
+    /// речи двусторонняя. Украинское слово, услышанное верно, чистка иначе переписывает
+    /// по-русски («ще раз» → «ещё раз»); украинское слово, записанное распознаванием на слух
+    /// по-русски («требо» вместо «треба»), иначе таким и остаётся.
     ///
-    /// Выключено — диктовка считается одноязычной, и случайное украинское слово в тексте
-    /// человеку не нужно.
-    @Published public var mixesUkrainian: Bool {
-        didSet { defaults.set(mixesUkrainian, forKey: Key.mixesUkrainian) }
-    }
+    /// Раньше это была отдельная галочка рядом с выбором одного языка. С набором языков
+    /// она стала тем же самым намерением, сказанным вторым флажком, и отдельно не живёт.
+    public var mixesUkrainian: Bool { languages.contains(.ru) && languages.contains(.uk) }
 
     /// Учиться ли на правках: следить пятнадцать секунд за вставленным текстом и, найдя
     /// исправление ошибки распознавания, предлагать запомнить пару.
@@ -192,7 +211,7 @@ public final class AppSettings: ObservableObject {
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        language = defaults.string(forKey: Key.language).flatMap(Language.init(rawValue:)) ?? .ru
+        languages = Self.storedLanguages(in: defaults)
         gptEnabled = defaults.object(forKey: Key.gptEnabled) as? Bool ?? true
         gptMode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)
@@ -202,16 +221,37 @@ public final class AppSettings: ObservableObject {
         pillStyle = defaults.string(forKey: Key.pillStyle).flatMap(PillStyle.init(rawValue:)) ?? .wave
         soundsEnabled = defaults.object(forKey: Key.soundsEnabled) as? Bool ?? true
         autoStopEnabled = defaults.object(forKey: Key.autoStopEnabled) as? Bool ?? false
-        // Дефолт `true`, и он же достаётся тем, кто обновился: прежняя галочка про украинские
-        // вставки тоже стояла по умолчанию, а вторая её половина раньше жила отдельно.
-        mixesUkrainian = defaults.object(forKey: Key.mixesUkrainian) as? Bool
-            ?? defaults.object(forKey: Key.legacyRestoreUkrainian) as? Bool
-            ?? true
         learnsFromEdits = defaults.object(forKey: Key.learnsFromEdits) as? Bool ?? true
         cardsWhenNoField = defaults.object(forKey: Key.cardsWhenNoField) as? Bool ?? true
         keptRecordings = defaults.object(forKey: Key.keptRecordings) as? Int ?? 3
         dictationHotkeyMode = defaults.string(forKey: Key.dictationHotkeyMode)
             .flatMap(HotkeyMode.init(rawValue:)) ?? .rightCommand
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID)
+    }
+
+    /// Набор языков с диска, а без него — собранный из прежних настроек.
+    ///
+    /// Прежде был один язык и галочка «мешаю русский и українську», по умолчанию включённая.
+    /// Русский с галочкой — это ровно «оба», без неё — один русский. Украинский — всегда
+    /// один украинский: галочка на украинскую чистку не влияла вовсе (её читала только
+    /// русская ветка промпта), и стоять она там могла лишь потому, что стояла у всех.
+    /// Превратить её в «оба» значило бы сделать основным русский — и короткое «Дякую,
+    /// гаразд» чистилось бы по-русски. Так у того, кто обновился, чистка ведёт себя как раньше.
+    static func storedLanguages(in defaults: UserDefaults) -> Set<Language> {
+        if let stored = defaults.array(forKey: Key.languages) as? [String] {
+            let parsed = Set(stored.compactMap(Language.init(rawValue:)))
+            if !parsed.isEmpty { return parsed }
+        }
+        let single = defaults.string(forKey: Key.language).flatMap(Language.init(rawValue:)) ?? .ru
+        // Дефолт `true`: прежняя галочка про украинские вставки тоже стояла по умолчанию,
+        // а её самая старая половина жила под другим ключом.
+        let mixes = defaults.object(forKey: Key.mixesUkrainian) as? Bool
+            ?? defaults.object(forKey: Key.legacyRestoreUkrainian) as? Bool
+            ?? true
+        switch single {
+        case .en: return [.en]
+        case .ru: return mixes ? [.ru, .uk] : [.ru]
+        case .uk: return [.uk]
+        }
     }
 }

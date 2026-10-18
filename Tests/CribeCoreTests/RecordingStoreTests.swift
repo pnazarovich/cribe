@@ -42,6 +42,17 @@ final class RecordingStoreTests: XCTestCase {
         }
     }
 
+    /// Метка в имени строго растёт, даже если часы не сдвинулись: две записи в одну
+    /// миллисекунду упорядочивались случайным хвостом имени, и кольцо вытесняло не ту.
+    func testStampsStrictlyIncreaseWithinOneMillisecond() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = store.nextStamp(now: now)
+        let second = store.nextStamp(now: now)
+        let third = store.nextStamp(now: now)
+        XCTAssertLessThan(first, second)
+        XCTAssertLessThan(second, third)
+    }
+
     /// Двум диктовкам подряд нужны разные файлы: имя по одной лишь метке времени
     /// схлопнуло бы их в один, и предыдущая запись пропала бы без всякого кольца.
     func testTwoRecordingsInARowDoNotCollide() throws {

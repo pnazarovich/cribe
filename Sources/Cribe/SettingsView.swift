@@ -170,29 +170,28 @@ private struct GeneralPane: View {
             }
 
             Section {
-                Picker("Язык:", selection: $settings.language) {
-                    ForEach(Language.allCases, id: \.self) { language in
-                        Text(language.displayName).tag(language)
+                LabeledContent("Языки:") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Language.ordered, id: \.self) { language in
+                            Toggle(language.displayName, isOn: settings.isEnabled(language))
+                        }
                     }
                 }
 
                 Toggle("Автостоп по тишине (2 с)", isOn: $settings.autoStopEnabled)
-
-                if settings.language != .en {
-                    Toggle("Мешаю русский и українську в одной диктовке", isOn: $settings.mixesUkrainian)
-                }
             } header: {
                 Text("Распознавание")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    caption("Язык диктовки форсируется: распознавание его не угадывает.")
                     caption(
-                        "Смешанная речь: распознавание слышит украинские слова верно, а вот "
-                            + "AI-чистка без этой галочки переписывает их по-русски — «ще раз» "
-                            + "становится «ещё раз». С галочкой она их бережёт и заодно "
-                            + "возвращает украинское написание словам, которые распознавание "
-                            + "записало на слух по-русски («требо» → «треба»). Выключите, если "
-                            + "диктуете на одном языке."
+                        "Отметьте все языки, на которых диктуете. Распознавание само слышит, "
+                            + "какой звучит; язык для AI-чистки берётся по готовому тексту."
+                    )
+                    caption(
+                        "Русский вместе с украинским — это смешанная речь: AI-чистка бережёт "
+                            + "украинские слова в русской фразе (без второго флажка «ще раз» "
+                            + "стало бы «ещё раз») и возвращает украинское написание тем, что "
+                            + "распознавание записало на слух по-русски («требо» → «треба»)."
                     )
                 }
             }
@@ -485,7 +484,9 @@ private struct AIPane: View {
                         "Перевод правым ⌥ делает она же: выключенная чистка — это и выключенный "
                             + "перевод. Постоянный перевод включается в меню строки состояния."
                     )
-                    if settings.translationTarget.matches(settings.language) {
+                    // Предупреждаем, только когда переводить нечего ВООБЩЕ: при «русский +
+                    // украинский» и цели «русский» украинские диктовки переводятся, и это польза.
+                    if settings.languages.allSatisfy({ settings.translationTarget.matches($0) }) {
                         caption(
                             "Язык перевода сейчас совпадает с языком диктовки — переводить "
                                 + "нечего, и правый ⌥ работает как обычная диктовка."

@@ -247,7 +247,8 @@ final class DictationControllerTests: XCTestCase {
             if case .preparingModel = controller.state { return true }
             return false
         }
-        XCTAssertEqual(controller.activeSessionLanguage, .ru)
+        // Новичку отмечены русский с украинским — как прежние «русский + смешанная речь».
+        XCTAssertEqual(controller.activeSessionLanguages, [.ru, .uk])
 
         controller.toggle()  // второй хоткей — отмена
         engine.release()
@@ -258,7 +259,7 @@ final class DictationControllerTests: XCTestCase {
         }
         // Именно `.idle`: старт записи (или ошибка вместо него) означал бы, что отмена не сработала.
         XCTAssertEqual(controller.state, .idle)
-        XCTAssertNil(controller.activeSessionLanguage)
+        XCTAssertNil(controller.activeSessionLanguages)
     }
 
     /// Правый ⌥ назначает переводом всю сессию: флаг сессии встаёт сразу на старте,
@@ -458,7 +459,7 @@ final class DictationControllerTests: XCTestCase {
         // Вспышка гаснет сама — без ошибки и без второй сессии.
         try await wait(for: "возврат в простой") { controller.state == .idle }
         XCTAssertNil(controller.lastOriginal)
-        XCTAssertNil(controller.activeSessionLanguage)
+        XCTAssertNil(controller.activeSessionLanguages)
     }
 
     /// Esc на загрузке модели отменяет сессию так же, как второй хоткей, но мигает
@@ -477,7 +478,7 @@ final class DictationControllerTests: XCTestCase {
         engine.release()
         try await wait(for: "вспышку отмены") { controller.state == .cancelled }
         try await wait(for: "возврат в простой") { controller.state == .idle }
-        XCTAssertNil(controller.activeSessionLanguage)
+        XCTAssertNil(controller.activeSessionLanguages)
     }
 
     /// Esc, нажатый пока конвейер уже считает, диктовку НЕ отменяет: записанное почти

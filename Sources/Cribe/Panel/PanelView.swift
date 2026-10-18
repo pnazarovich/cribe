@@ -18,8 +18,8 @@ struct PanelView: View {
             if presentation.isVisible {
                 PanelPill(
                     state: presentation.state,
-                    // Язык идущей сессии, а не настройки: переключение на живой записи её не меняет.
-                    language: controller.activeSessionLanguage ?? settings.language,
+                    // Языки идущей сессии, а не настройки: переключение на живой записи её не меняет.
+                    languages: controller.activeSessionLanguages ?? settings.languages,
                     // Перевод сессии, а не настройки: правый ⌥ переводит вопреки выключенному
                     // тумблеру. Без переопределения (nil) всё как раньше — по тумблеру.
                     translateToEnglish: controller.activeSessionTranslate ?? settings.translateToEnglish,
@@ -89,7 +89,7 @@ extension AnyTransition {
 /// сама `Capsule()`; вложенные скругления концентрические: 22 минус отступ от края.
 struct PanelPill: View {
     let state: DictationState
-    let language: Language
+    let languages: Set<Language>
     let translateToEnglish: Bool
     var translationTarget: TranslationTarget = .en
     /// Сколько диктовок записано и ещё не доехало. Ноль по умолчанию: так пилюлю собирают
@@ -293,7 +293,8 @@ struct PanelPill: View {
             // Живого текста в панели нет: только индикатор, язык, метка перевода и эквалайзер.
             HStack(spacing: 8) {
                 RecordingDot(reduceMotion: accessibility.reduceMotion)
-                Text(Self.flag(language))
+                // Все отмеченные флаги рядом: «🇷🇺🇺🇦» и есть «русский с украинским».
+                Text(Language.ordered.filter(languages.contains).map(Self.flag).joined())
                 if translateToEnglish {
                     TranslationBadge(target: translationTarget)
                 }

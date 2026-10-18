@@ -208,7 +208,11 @@ private final class DictationSession {
 
     // MARK: Снято на старте — дальше не меняется
 
-    let language: Language
+    /// Языки, отмеченные на старте записи. Какой из них звучал, выясняется только по
+    /// готовому тексту (см. `Language.resolve`).
+    let languages: Set<Language>
+    /// Что сказать распознаванию, пока текста нет (см. `Language.recognition`).
+    var recognitionLanguage: Language { Language.recognition(for: languages) }
     /// Перевод, назначенный хоткеем (правый ⌥); nil — решает настройка.
     let translating: Bool?
     /// Промпт диктовки. Parakeet подсказку игнорирует (входа для неё у него нет), но поле
@@ -230,8 +234,8 @@ private final class DictationSession {
     /// стоит в очереди, микрофон успевает записать следующую и ответил бы уже про неё.
     var capturedSilence = false
 
-    init(language: Language, translating: Bool?) {
-        self.language = language
+    init(languages: Set<Language>, translating: Bool?) {
+        self.languages = languages
         self.translating = translating
     }
 
@@ -291,11 +295,11 @@ public final class DictationController: ObservableObject {
     @Published public private(set) var lastOriginal: String?
     /// Английский перевод последней диктовки: вставленный или сделанный по запросу из меню.
     @Published public private(set) var lastTranslation: String?
-    /// Язык диктовки, которую панель сейчас называет: живой записи, если она есть, иначе
-    /// первой в очереди обработки. Переключение языка на живой записи меняет настройку,
-    /// но не саму диктовку — UI показывает отсюда, чтобы флаг не врал про то, чем на самом
-    /// деле распознаётся речь. `nil` — дел нет, показываем `settings.language`.
-    @Published public private(set) var activeSessionLanguage: Language?
+    /// Языки диктовки, которую сейчас называет пилюля: записывающейся или следующей
+    /// в очереди. Переключение языков во время записи меняет следующую диктовку, а не эту,
+    /// и пилюля не имеет права показывать то, на чём на самом деле не распознаётся речь.
+    /// `nil` — дел нет, показываем `settings.languages`.
+    @Published public private(set) var activeSessionLanguages: Set<Language>?
     /// Перевод, назначенный этой диктовке хоткеем (правый ⌥), — он сильнее настройки.
     /// `nil` — переопределения нет, решает `settings.translateToEnglish` (в том числе прямо
     /// на стопе: обычную сессию тумблер меню меняет и на живой записи).
@@ -480,11 +484,11 @@ public final class DictationController: ObservableObject {
     }
 
     public func switchLanguage() {
-        // Язык уже идущей записи от этого не меняется — см. `activeSessionLanguage`.
-        // По кругу в порядке `Language.allCases`: русский → украинский → English → русский.
-        // Один и тот же порядок в меню, в настройках и под хоткеем — иначе третий язык
-        // превратил бы шорткат в лотерею.
-        let all = Language.allCases
+        // Языки уже идущей записи от этого не меняются — см. `activeSessionLanguages`.
+        // По кругу по одному языку: русский → украинский → English → русский. Хоткей —
+        // быстрый способ сказать «сейчас только этот»; сочетание отмечается флажками в меню.
+        // Начинаем со следующего за первым отмеченным, в том же порядке, что и в меню.
+        let all = Language.ordered
         let index = all.firstIndex(of: settings.language) ?? 0
         settings.language = all[(index + 1) % all.count]
     }
@@ -558,13 +562,13 @@ public final class DictationController: ObservableObject {
         micReleaseTask = nil
         prewarmGPT()
 
-        let session = DictationSession(language: settings.language, translating: translating)
+        let session = DictationSession(languages: settings.languages, translating: translating)
         recording = session
         publish()
         Task {
             defer { isStarting = false }
             do {
-                try await gate.prepare(language: session.language) { [weak self] modelState in
+                try await gate.prepare(language: session.recognitionLanguage) { [weak self] modelState in
                     Task { @MainActor in self?.apply(modelState) }
                 }
                 // Пока грузилась модель, хоткей нажали второй раз — сессия отменена.
@@ -647,7 +651,7 @@ public final class DictationController: ObservableObject {
         }
 
         startVadLoop(stream: stream, vad: vad)
-        startLivePreview(language: session.language)
+        startLivePreview(language: session.recognitionLanguage)
         offerParallelHintIfDue()
     }
 
@@ -939,7 +943,6 @@ public final class DictationController: ObservableObject {
     /// до экрана — дело очереди: только она знает, стоит ли за этой диктовкой следующая.
     private func process(_ session: DictationSession) async -> (state: DictationState, linger: TimeInterval) {
         let samples = session.samples
-        let language = session.language
         // Бэкап уходит в фон и не ждётся: кодирование и запись WAV длинной диктовки —
         // это сотни миллисекунд ровно перед распознаванием, то есть чистая задержка.
         // На диск ложится исходная запись, без подъёма уровня: архив обязан быть тем,
@@ -962,8 +965,12 @@ public final class DictationController: ObservableObject {
                 throw DictationError.noSpeech
             }
             let raw = try await gate.transcribe(
-                speech, language: language, prompt: session.prompt
+                speech, language: session.recognitionLanguage, prompt: session.prompt
             )
+            // Язык диктовки — по тому, что услышано. Отмечен один — он и есть; отмечено
+            // несколько — решают буквы самого текста. Дальше от этого языка зависят правила
+            // чистки, словарь, запись в истории и то, есть ли что переводить.
+            let language = Language.resolve(raw, among: session.languages)
             var text = ReplacementEngine.apply(raw, entries: entries)
             var degradations: [String] = []
             var translation: String?
@@ -1096,7 +1103,9 @@ public final class DictationController: ObservableObject {
             // Пустая строка в истории существует ровно затем, чтобы к звуку вела дверь.
             let saved = await backup.value
             if let saved {
-                history.addFailed(language: language, audio: saved.name, seconds: saved.seconds)
+                // Текста нет — и судить о языке не по чему. Пишем тот, что сказали бы
+                // распознаванию: повторное распознавание из истории возьмёт ровно его.
+                history.addFailed(language: session.recognitionLanguage, audio: saved.name, seconds: saved.seconds)
             }
             let text = message(for: error, recorded: saved != nil, silence: session.capturedSilence)
             return (.error(text), Self.errorLinger)
@@ -1420,13 +1429,13 @@ public final class DictationController: ObservableObject {
         pendingCount = pending.count
         // Флаг языка и метка перевода — про ту диктовку, которую пилюля сейчас называет.
         if let recording {
-            activeSessionLanguage = recording.language
+            activeSessionLanguages = recording.languages
             activeSessionTranslate = recording.translating
         } else if let next = pending.first {
-            activeSessionLanguage = next.language
+            activeSessionLanguages = next.languages
             activeSessionTranslate = next.translatesToEnglish
         } else {
-            activeSessionLanguage = nil
+            activeSessionLanguages = nil
             activeSessionTranslate = nil
         }
     }

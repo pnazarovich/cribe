@@ -29,13 +29,13 @@ final class PillWidthTests: XCTestCase {
         let long = "зайди по SSH на VPS проверь webhooks и nginx потом задеплой на Vercel и посмотри логи"
         let pill = PanelPill(
             state: .recording(live: long, level: 0.3),
-            language: .ru,
+            languages: [.ru],
             translateToEnglish: false,
             style: .words
         )
         let short = PanelPill(
             state: .recording(live: "проверь webhooks и nginx", level: 0.3),
-            language: .ru,
+            languages: [.ru],
             translateToEnglish: false,
             style: .words
         )
@@ -57,7 +57,7 @@ final class PillWidthTests: XCTestCase {
     func testPillWithWaveStaysNarrow() throws {
         let pill = PanelPill(
             state: .recording(live: "", level: 0.3),
-            language: .ru,
+            languages: [.ru],
             translateToEnglish: false,
             style: .wave
         )
@@ -87,9 +87,9 @@ final class PillWidthTests: XCTestCase {
         try XCTSkipIf(ProcessInfo.processInfo.environment["CRIBE_DUMP_PILL"] == nil)
         let long = "зайди по SSH на VPS проверь webhooks и nginx потом задеплой на Vercel и посмотри логи"
         for (name, pill) in [
-            ("pill-words", PanelPill(state: .recording(live: long, level: 0.3), language: .ru,
+            ("pill-words", PanelPill(state: .recording(live: long, level: 0.3), languages: [.ru],
                                      translateToEnglish: false, style: .words)),
-            ("pill-wave", PanelPill(state: .recording(live: "", level: 0.3), language: .ru,
+            ("pill-wave", PanelPill(state: .recording(live: "", level: 0.3), languages: [.ru],
                                     translateToEnglish: false, style: .wave)),
         ] {
             let renderer = ImageRenderer(content: pill.frame(width: 380, height: 120).background(.black))

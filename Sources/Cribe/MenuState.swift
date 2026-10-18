@@ -23,16 +23,18 @@ final class MenuState: ObservableObject {
     init(controller: DictationController, settings: AppSettings) {
         // Статус зависит и от состояния, и от языка с переводом — иначе строка «Готов ·
         // Русский» не менялась бы вслед за переключением языка в этом же меню.
-        let status = Publishers.CombineLatest3(
+        let status = Publishers.CombineLatest4(
             controller.$state,
-            settings.$language,
-            settings.$translateToEnglish
+            settings.$languages,
+            settings.$translateToEnglish,
+            settings.$translationTarget
         )
-        .map { state, language, translating in
+        .map { state, languages, translating, target in
             MenuStatusText.line(
                 state: state,
-                language: controller.activeSessionLanguage ?? language,
-                translating: controller.activeSessionTranslate ?? translating
+                languages: controller.activeSessionLanguages ?? languages,
+                translating: controller.activeSessionTranslate ?? translating,
+                target: target
             )
         }
         .removeDuplicates()
@@ -48,14 +50,23 @@ final class MenuState: ObservableObject {
 
 /// Слова статуса отдельно от вью: их проверяют тесты, и они же должны совпадать с капсулой.
 enum MenuStatusText {
-    static func line(state: DictationState, language: Language, translating: Bool) -> String {
+    static func line(
+        state: DictationState,
+        languages: Set<Language>,
+        translating: Bool,
+        target: TranslationTarget = .en
+    ) -> String {
+        let named = Language.displayName(of: languages)
         switch state {
-        case .idle: return "Готов · \(language.displayName)"
+        case .idle: return "Готов · \(named)"
         case .preparingModel(.downloading(let progress)): return "Качаю модель… \(Int(progress * 100))%"
         case .preparingModel(.warming): return "Готовлю модель…"
         // Уровень намеренно не участвует: строка на записи не меняется вовсе, и подписчики
         // меню на потоке метра не просыпаются.
-        case .recording: return "● Идёт запись · \(language.displayName)\(translating ? " → EN" : "")"
+        // Код цели, а не вписанное «EN»: с выбором языка перевода строка писала «→ EN»
+        // и тогда, когда диктовка уходила на польский.
+        case .recording:
+            return "● Идёт запись · \(named)\(translating ? " → \(target.rawValue.uppercased())" : "")"
         case .transcribing: return "Распознаю…"
         // Тем же словом, что и капсула: переводящая диктовка не чистится, а переводится.
         case .cleaning: return translating ? "🌐 Перевожу…" : "✨ Чищу…"

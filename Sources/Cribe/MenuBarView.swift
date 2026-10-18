@@ -46,11 +46,14 @@ struct MenuBarView: View {
 
         Divider()
 
-        // Язык и микрофон — то, что меняют посреди работы. Дальше от верха им не место.
-        Picker("Язык", selection: $settings.language) {
-            ForEach(Language.allCases, id: \.self) { language in
-                Text(language.displayName).tag(language)
-            }
+        // Языки и микрофон — то, что меняют посреди работы. Дальше от верха им не место.
+        //
+        // Флажки прямо в меню, а не подменю «Язык»: за ним надо было наводиться, а выбрать
+        // можно было только один. Теперь отмечается любое сочетание — распознавание само
+        // слышит, какой язык звучит, а чистка берёт язык по готовому тексту. Последний
+        // флажок не снимается: без языка диктовать не на чем.
+        ForEach(Language.ordered, id: \.self) { language in
+            Toggle(language.displayName, isOn: settings.isEnabled(language))
         }
 
         MicrophoneMenu(settings: settings)
@@ -234,5 +237,16 @@ private struct MicrophoneMenu: View {
     /// невыбранных строк держит колонку ровной.
     private static func title(_ name: String, selected: Bool) -> String {
         (selected ? "✓ " : "    ") + name
+    }
+}
+
+extension AppSettings {
+    /// Флажок языка: отмечен ли он, и отметить/снять через `set(_:enabled:)`, который
+    /// не даст снять последний.
+    func isEnabled(_ language: Language) -> Binding<Bool> {
+        Binding(
+            get: { self.languages.contains(language) },
+            set: { self.set(language, enabled: $0) }
+        )
     }
 }

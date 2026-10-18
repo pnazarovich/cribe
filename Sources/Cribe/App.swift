@@ -73,7 +73,8 @@ final class AppCore: ObservableObject {
                 try await PostProcessor.cleanup(
                     text: text,
                     entries: dictionary.entries,
-                    language: settings.language,
+                    // Язык чужого текста с карточки — по самому тексту, как и у диктовки.
+                    language: Language.resolve(text, among: settings.languages),
                     config: settings.translateGPTConfig,
                     translateTo: settings.translationTarget
                 )
