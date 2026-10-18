@@ -75,13 +75,14 @@ final class AppSettingsTests: XCTestCase {
 
     /// Модель человек не выбирает — она одна и у чистки, и у перевода. Отличаются они
     /// усилием: замер показал, что чистке хватает `low` (те же 51/51 при медиане 2,48 с
-    /// против 2,82 с у `medium`), а переводу оставлен `high` — цена ошибки там выше.
+    /// против 2,82 с у `medium`), а переводу — `medium`: выше, чем чистке, потому что цена ошибки там выше, но не
+    /// `high` — на `gpt-6-sol` он вдвое медленнее без выигрыша в переводе (замер 2026-10-18).
     func testCleanupAndTranslateShareModelButNotEffort() {
         let settings = AppSettings(defaults: defaults)
         XCTAssertEqual(settings.gptConfig.model, GPTConfig.defaultModel)
         XCTAssertEqual(settings.translateGPTConfig.model, GPTConfig.defaultModel)
         XCTAssertEqual(settings.gptConfig.effort, "low")
-        XCTAssertEqual(settings.translateGPTConfig.effort, "high")
+        XCTAssertEqual(settings.translateGPTConfig.effort, "medium")
     }
 
     /// Режим доступа общий: вход в ChatGPT один, и перевод не ходит мимо него.

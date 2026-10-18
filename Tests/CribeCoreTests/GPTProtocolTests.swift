@@ -280,9 +280,9 @@ final class GPTProtocolTests: XCTestCase {
 
     /// Модель одна на оба бэкенда и выбрана замером, а не режимом доступа.
     func testDefaultModelIsTheMeasuredWinner() {
-        XCTAssertEqual(GPTConfig.defaultModel, "gpt-5.6-terra")
-        XCTAssertEqual(GPTConfig(mode: .codex).model, "gpt-5.6-terra")
-        XCTAssertEqual(GPTConfig(mode: .apiKey).model, "gpt-5.6-terra")
+        XCTAssertEqual(GPTConfig.defaultModel, "gpt-6-sol")
+        XCTAssertEqual(GPTConfig(mode: .codex).model, "gpt-6-sol")
+        XCTAssertEqual(GPTConfig(mode: .apiKey).model, "gpt-6-sol")
         XCTAssertEqual(GPTConfig.defaultEffort, "low")
     }
 

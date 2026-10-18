@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import OSLog
 
 public enum PostProcessorError: LocalizedError, Sendable {
     case timedOut
@@ -309,12 +311,22 @@ public enum PostProcessor {
         }
     }
 
+    /// Сколько ждём ОДНУ попытку.
+    ///
+    /// Раньше срок был один на всё — 10 секунд, — и перевод упирался в него сам по себе:
+    /// замер 2026-10-18 на длинной диктовке с переводом (усилие `high`) дал 5,2–9,0 с,
+    /// три вызова из четырёх у самой отметки. Чистка на тех же текстах укладывалась
+    /// в 1,2–7,8 с, ей 10 секунд хватает с запасом.
+    static func attemptDeadline(translating: Bool) -> TimeInterval {
+        translating ? 25 : 10
+    }
+
     public static func cleanup(
         text: String,
         entries: [DictionaryEntry],
         language: Language,
         config: GPTConfig,
-        timeout: TimeInterval = 10,
+        timeout: TimeInterval? = nil,
         translateTo: TranslationTarget? = nil,
         mixesUkrainian: Bool = false
     ) async throws -> String {
@@ -324,13 +336,142 @@ public enum PostProcessor {
             translateTo: translateTo,
             mixesUkrainian: mixesUkrainian
         )
-        let client = GPTClient(config: config)
+        let translating = translateTo.map { !$0.matches(language) } ?? false
+        let deadline = timeout ?? attemptDeadline(translating: translating)
+        let key = cacheKey(instructions: instructions, model: config.model, effort: config.effort)
+        let purpose = translating ? "перевод" : "чистка"
 
-        let result = try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { try await client.respond(instructions: instructions, input: text) }
+        return try await withRetries(deadline: deadline) { attempt in
+            let started = ContinuousClock.now
+            let firstText = FirstTextMark()
+            do {
+                let answer = try await race(deadline: deadline) {
+                    try await GPTClient(config: config).respond(
+                        instructions: instructions,
+                        input: text,
+                        cacheKey: key,
+                        onFirstText: { firstText.mark() }
+                    )
+                }
+                let cleaned = withPlainDashes(answer.trimmingCharacters(in: .whitespacesAndNewlines))
+                // Пустой ответ — такой же сбой, как оборванный: внутри попытки, чтобы его
+                // тоже можно было повторить.
+                guard !cleaned.isEmpty else { throw GPTClientError.empty }
+                logAttempt(purpose, attempt, since: started, firstText: firstText, outcome: "ok")
+                return cleaned
+            } catch {
+                logAttempt(purpose, attempt, since: started, firstText: firstText, outcome: error.localizedDescription)
+                throw error
+            }
+        }
+    }
+
+    /// Повторы — как у официального клиента Codex, но в бюджете диктовки.
+    ///
+    /// Без повторов осечкой оборачивалась каждая проходящая ошибка сервера, и человек жал
+    /// «ещё раз» руками примерно на каждой пятой диктовке. Официальный клиент Codex тех же
+    /// ошибок не показывает вовсе: он молча повторяет запрос до четырёх раз, а поток — до
+    /// пяти, и ждёт ответа до пяти минут. С 9 октября 2026 у Codex идут ошибки «модель
+    /// перегружена» (HTTP 503), и у части аккаунтов они доходили до 80% запросов.
+    ///
+    /// Пять минут диктовка ждать не может, поэтому бюджет — два срока попытки: первая
+    /// попытка, упёршаяся в срок, оставляет место ровно для одной полноценной второй,
+    /// а быстрые отказы (503 приходит сразу) успевают повториться и третий раз. Пауза
+    /// между попытками — 200 мс с удвоением, как у официального клиента.
+    static func withRetries<T: Sendable>(
+        attempts: Int = 3,
+        deadline: TimeInterval,
+        pause: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        _ body: @Sendable (Int) async throws -> T
+    ) async throws -> T {
+        let budget = Duration.milliseconds(Int64(deadline * 2_000))
+        let started = ContinuousClock.now
+        var attempt = 1
+        while true {
+            do {
+                return try await body(attempt)
+            } catch {
+                let backoff = Duration.milliseconds(200 << (attempt - 1))
+                guard attempt < attempts,
+                      isRetryable(error),
+                      started.duration(to: .now) + backoff < budget
+                else { throw error }
+                try await pause(backoff)
+                attempt += 1
+            }
+        }
+    }
+
+    /// Стоит ли повторять — те же правила, что у официального клиента Codex.
+    ///
+    /// Повторяем то, что лечится повтором: сеть, ответы 5xx, оборванный поток, истёкший
+    /// срок, пустой ответ и большинство кадров `response.failed`. Не повторяем то, что
+    /// повтор не вылечит, а только потратит: исчерпанный лимит аккаунта, ошибку в самом
+    /// запросе, отказ авторизации и ответ, оборванный самой моделью.
+    static func isRetryable(_ error: Error) -> Bool {
+        switch error {
+        case is CancellationError:
+            return false
+        case PostProcessorError.timedOut:
+            return true
+        case let error as URLError:
+            return error.code != .cancelled
+        case let error as GPTClientError:
+            switch error {
+            case .empty:
+                return true
+            case .missingAPIKey:
+                return false
+            case .http(let status, let body):
+                if status == 429 { return !isAllowance(body) }
+                return status >= 500 || status == 408 || status == 409 || status == 425
+            case .stream(let message, let code):
+                if let code, code == "incomplete" || code.hasPrefix("invalid") || isAllowance(code) {
+                    return false
+                }
+                return !isAllowance(message)
+            }
+        default:
+            // Авторизация Codex и всё незнакомое: повтор тут не поможет, а скроет причину.
+            return false
+        }
+    }
+
+    /// Исчерпан лимит аккаунта — это не сбой, а предел: повтор его не снимет.
+    private static func isAllowance(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return lowered.contains("usage_limit") || lowered.contains("usage limit")
+            || lowered.contains("quota")
+    }
+
+    /// Ключ кэша промпта: один и тот же для одинаковой подсказки, модели и усилия.
+    ///
+    /// Из самой подсказки, а не случайный: так он переживает перезапуск и сам меняется,
+    /// когда меняется подсказка (словарь, язык, цель перевода). Модель и усилие — в ключе,
+    /// потому что смена усилия кэш всё равно не переносит, и чистке с переводом нужны
+    /// разные ключи. Вид UUID — потому что тем же значением уходит заголовок `session-id`,
+    /// а официальный клиент шлёт туда именно UUID.
+    static func cacheKey(instructions: String, model: String, effort: String) -> String {
+        let digest = Array(SHA256.hash(data: Data("\(model)|\(effort)|\(instructions)".utf8)))
+        let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        let parts = [0..<8, 8..<12, 12..<16, 16..<20, 20..<32].map { range in
+            let start = hex.index(hex.startIndex, offsetBy: range.lowerBound)
+            let end = hex.index(hex.startIndex, offsetBy: range.upperBound)
+            return String(hex[start..<end])
+        }
+        return parts.joined(separator: "-")
+    }
+
+    /// Одна попытка наперегонки со сроком.
+    static func race<T: Sendable>(
+        deadline: TimeInterval,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
             group.addTask {
                 // Клампим: отрицательный/NaN/огромный таймаут иначе роняет UInt64-конверсию.
-                let seconds = min(max(0, timeout), 600)
+                let seconds = min(max(0, deadline), 600)
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw PostProcessorError.timedOut
             }
@@ -338,10 +479,30 @@ public enum PostProcessor {
             group.cancelAll()
             return first
         }
+    }
 
-        let cleaned = withPlainDashes(result.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !cleaned.isEmpty else { throw GPTClientError.empty }
-        return cleaned
+    private static let logger = Logger(subsystem: "online.nazarovych.cribe", category: "GPT")
+
+    /// Строка на каждую попытку — уровнем `.notice`, то есть на диск.
+    ///
+    /// Без неё «примерно каждая пятая» нечем было проверить: причина неудачи жила только
+    /// в плашке на экране, а в журнал ложилась одна строка без времени и номера попытки.
+    /// Текст диктовки сюда не попадает — только время, исход и номер попытки.
+    private static func logAttempt(
+        _ purpose: String,
+        _ attempt: Int,
+        since started: ContinuousClock.Instant,
+        firstText: FirstTextMark,
+        outcome: String
+    ) {
+        let total = started.duration(to: .now).milliseconds
+        let first = firstText.instant.map { "\(started.duration(to: $0).milliseconds) мс" } ?? "—"
+        logger.notice(
+            """
+            GPT \(purpose, privacy: .public), попытка \(attempt): \(outcome, privacy: .public); \
+            всего \(total) мс, первый текст \(first, privacy: .public)
+            """
+        )
     }
 
     /// Длинное и среднее тире — обычным дефисом.
@@ -356,5 +517,31 @@ public enum PostProcessor {
     static func withPlainDashes(_ text: String) -> String {
         text.replacingOccurrences(of: "—", with: "-")
             .replacingOccurrences(of: "–", with: "-")
+    }
+}
+
+/// Когда приехал первый кусок текста ответа. Пишется из потока ответа, читается после
+/// него — отсюда замок.
+final class FirstTextMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var at: ContinuousClock.Instant?
+
+    func mark() {
+        lock.lock()
+        if at == nil { at = .now }
+        lock.unlock()
+    }
+
+    var instant: ContinuousClock.Instant? {
+        lock.lock()
+        defer { lock.unlock() }
+        return at
+    }
+}
+
+private extension Duration {
+    var milliseconds: Int64 {
+        let parts = components
+        return parts.seconds * 1_000 + parts.attoseconds / 1_000_000_000_000_000
     }
 }

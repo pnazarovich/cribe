@@ -49,13 +49,18 @@ struct ModelUpdateView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 CrabMark(size: 36)
-                Text("Новое распознавание")
+                Text(ParakeetEngine.hasPreviousVersion ? "Обновлённое распознавание" : "Новое распознавание")
                     .font(.title.weight(.semibold))
             }
             Text(
-                "Cribe перешёл на модель Parakeet от NVIDIA. Она слышит точнее — особенно "
-                    + "падежи и окончания — и работает вдесятеро быстрее прежней: диктовка "
-                    + "обрабатывается за доли секунды вместо нескольких секунд."
+                ParakeetEngine.hasPreviousVersion
+                    ? "\(ParakeetEngine.displayName) — дообученная версия прежней модели. Ошибок "
+                        + "меньше, особенно в украинском, а английские названия она теперь часто "
+                        + "пишет латиницей сама. Скорость та же."
+                    : "Cribe перешёл на \(ParakeetEngine.displayName) — модель на основе Parakeet "
+                        + "от NVIDIA. Она слышит точнее — особенно падежи и окончания — и работает "
+                        + "вдесятеро быстрее прежней: диктовка обрабатывается за доли секунды "
+                        + "вместо нескольких секунд."
             )
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

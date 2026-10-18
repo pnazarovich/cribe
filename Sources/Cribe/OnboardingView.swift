@@ -243,12 +243,13 @@ struct OnboardingView: View {
     @ViewBuilder
     private var modelsBody: some View {
         caption(
-            "Одна модель на все три языка — Parakeet TDT v3 от NVIDIA. Загрузка разовая, "
+            "Одна модель на все три языка — \(ParakeetEngine.displayName), на основе Parakeet "
+                + "от NVIDIA. Загрузка разовая, "
                 + "дальше распознавание идёт прямо на этом компьютере, без интернета."
         )
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("Parakeet TDT v3")
+                Text(ParakeetEngine.displayName)
                 Text("≈" + Self.size(ModelInstall.approximateBytes))
                     .font(.caption)
                     .foregroundStyle(.secondary)

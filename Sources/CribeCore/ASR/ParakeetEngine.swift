@@ -2,17 +2,17 @@ import FluidAudio
 import Foundation
 import OSLog
 
-/// Распознавание на Parakeet TDT v3 (NVIDIA) через FluidAudio.
+/// Распознавание на Parakeet Ultra через FluidAudio.
 ///
-/// **Чем берёт.** Другая архитектура и другой размер: 0,6 млрд параметров против 0,8 у
-/// turbo, и вдесятеро быстрее. Замер на живой записи: 0,4 c против 4,3 c у turbo и 8,3 c
-/// у large-v3, вместе с загрузкой модели. Пунктуацию и заглавные ставит сам.
+/// **Чем берёт.** Ultra — дообученный Parakeet TDT 0.6B v3 (NVIDIA): та же архитектура,
+/// токенизатор и скорость на Neural Engine, другие веса. На FLEURS ошибок меньше на 12–14%
+/// по-русски и на 17–20% по-украински (два независимых стенда). Замер на 18 записях
+/// владельца 2026-10-18: 5,9% против 7,3% у v3 — вместе со снятием подсказки письменности
+/// (см. `scriptHint`). Пунктуацию и заглавные ставит сам.
 ///
-/// **Чем платит.** Латинские слова он записывает кириллицей — «Гитхаб», «пул реквест»,
-/// «крайб». Это не мелочь, а его устройство: обучали на европейских языках каждый в своём
-/// алфавите. Поэтому GPT-слой с ним не роскошь, а часть движка — только он возвращает
-/// названиям латиницу (см. `PostProcessor`), и короткие диктовки мимо него не пускаются
-/// (см. `ShortDictation`).
+/// **Чем платит.** Часть английских названий всё равно пишет кириллицей, на слух
+/// («гип ресерч»). Латиницу остальным возвращает GPT-слой (см. `PostProcessor`), и короткие
+/// диктовки мимо него не пускаются (см. `ShortDictation`).
 ///
 /// **Чего не умеет.** Подсказки словарём (у CTC/TDT нет входа для промпта — словарь
 /// работает только вторым слоем), перевода задачей декодера, сегментов с таймкодами
@@ -24,14 +24,28 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "online.nazarovych.cribe.parakeet")
     private var manager: AsrManager?
     private var loading: Task<AsrManager, Error>?
+    private let progress = ProgressFanout()
+
+    /// Какие веса грузит приложение.
+    public static let defaultVersion: AsrModelVersion = .ultra
+
+    /// Как модель называется в интерфейсе.
+    public static let displayName = "Parakeet Ultra"
 
     public init() {}
 
     /// Лежат ли файлы модели на диске. Нужно прогреву при запуске ровно затем же, зачем
     /// и у Whisper: `prepare` без файлов полез бы их качать, а полгигабайта в фоне без
     /// спроса не качают.
-    public static var isInstalled: Bool {
-        AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)
+    public static var isInstalled: Bool { installed(defaultVersion) }
+
+    /// Лежат ли веса прежней версии (v3) — то есть обновляется ли человек с Parakeet,
+    /// а не с Whisper. Окну обновления это меняет весь рассказ: «перешли на Parakeet»
+    /// тому, кто на нём уже сидел, было бы неправдой.
+    public static var hasPreviousVersion: Bool { installed(.v3) }
+
+    static func installed(_ version: AsrModelVersion) -> Bool {
+        AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: version), version: version)
     }
 
     /// Модель одна на все языки — она многоязычная, и `language` тут не выбирает вес,
@@ -54,36 +68,44 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     /// Прогретый менеджер. Параллельные вызовы склеиваются в одну загрузку: модель весит
     /// сотни мегабайт, и качать её дважды незачем.
     private func ready(onState: (@Sendable (ASRModelState) -> Void)? = nil) async throws -> AsrManager {
+        // Подписка — до того, как решаем, начинать загрузку или присоединиться к идущей:
+        // так и начавший, и присоединившийся получают одни и те же доли.
+        let catchUp = progress.join(onState)
         let task: Task<AsrManager, Error> = queue.sync {
             if let loading { return loading }
             let started = Task<AsrManager, Error> {
                 // Именно многоязычный набор: у «unified»-варианта модель английская,
                 // и русская запись возвращается пустой строкой.
-                let models = try await AsrModels.downloadAndLoad(version: .v3) { progress in
+                let models = try await AsrModels.downloadAndLoad(version: Self.defaultVersion) { progress in
                     switch progress.phase {
                     case .listing, .downloading:
-                        onState?(.downloading(progress.fractionCompleted))
+                        self.progress.send(.downloading(progress.fractionCompleted))
                     case .compiling:
                         // Компиляция под ANE — уже не сеть: показывать её долей скачанного
                         // значило бы врать полосой, которая стоит на месте.
-                        onState?(.loading)
+                        self.progress.send(.loading)
                     }
                 }
                 let manager = AsrManager()
                 try await manager.loadModels(models)
-                Self.logger.notice("Parakeet TDT v3 готов")
+                Self.logger.notice("\(Self.displayName, privacy: .public) готов")
                 return manager
             }
             loading = started
             return started
         }
+        // Присоединившемуся к идущей загрузке — сразу последнее известное состояние,
+        // а не ноль до следующей доли.
+        if let catchUp { onState?(catchUp) }
         do {
             let manager = try await task.value
             queue.sync { self.manager = manager }
+            progress.reset()
             return manager
         } catch {
             // Неудачную загрузку не кэшируем: следующая диктовка вправе попробовать снова.
             queue.sync { loading = nil }
+            progress.reset()
             throw error
         }
     }
@@ -96,8 +118,9 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         let result = try await manager.transcribe(
             samples,
             decoderState: &state,
-            // Тип берётся из подписи: имя `Language` тут занято нашим.
-            language: .init(rawValue: language.rawValue)
+            // Тип берётся из подписи: имя `Language` тут занято нашим, а `FluidAudio.Language`
+            // не назвать — модуль перекрыт одноимённой структурой.
+            language: Self.scriptHint(for: language).flatMap { .init(rawValue: $0) }
         )
         return result.text
     }
@@ -112,5 +135,62 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     ) async throws -> String {
         guard !translating else { throw TranscriptionEngineError.translationUnsupported }
         return try await transcribe(samples, language: language, prompt: prompt)
+    }
+
+    /// Какую письменность разрешить декодеру — для русского и украинского никакую.
+    ///
+    /// Параметр `language` у FluidAudio не выбирает веса — модель одна на все языки, —
+    /// а включает фильтр письменности: на каждом шаге декодер берёт лучший токен из тех,
+    /// чей алфавит совпадает с языком. Кириллическая ветка фильтра явно отбрасывает любой
+    /// токен с латинскими буквами. Мы передавали язык с первого дня — и сами запрещали
+    /// модели латиницу: «Гитхаб» вместо GitHub считалось её устройством, а было нашей
+    /// настройкой.
+    ///
+    /// Замер 2026-10-18 на 18 записях владельца: без подсказки 7 английских названий из 15
+    /// пришли латиницей прямо из распознавания (с подсказкой — ни одного), а ложной латиницы
+    /// в русских словах — ноль. Синтетический украинский дал то же самое. Английской сессии
+    /// подсказку оставляем: там фильтр отсекает кириллицу, ради чего и написан.
+    static func scriptHint(for language: Language) -> String? {
+        language.isCyrillic ? nil : language.rawValue
+    }
+}
+
+/// Прогресс одной загрузки — всем, кто её ждёт.
+///
+/// Загрузку модели склеивают: второй желающий не качает заново, а ждёт уже идущую. Раньше
+/// прогресс при этом получал только тот, кто её начал. При обновлении первым её начинает
+/// окно обновления, и диктовка, нажатая в это время, весь download и всю компиляцию
+/// показывала «Качаю модель… 0%» — как зависание, при том что в окне процент рос.
+///
+/// Слушателей зовём вне замка: они ставят обновление интерфейса в очередь и могут
+/// дёрнуть движок обратно — под замком это была бы взаимная блокировка.
+final class ProgressFanout: @unchecked Sendable {
+    private let lock = NSLock()
+    private var listeners: [@Sendable (ASRModelState) -> Void] = []
+    private var last: ASRModelState?
+
+    /// Подписаться. Возвращает последнее известное состояние — чтобы присоединившийся
+    /// к идущей загрузке не стоял на нуле до следующей доли.
+    func join(_ listener: (@Sendable (ASRModelState) -> Void)?) -> ASRModelState? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let listener { listeners.append(listener) }
+        return last
+    }
+
+    func send(_ state: ASRModelState) {
+        lock.lock()
+        last = state
+        let targets = listeners
+        lock.unlock()
+        targets.forEach { $0(state) }
+    }
+
+    /// Загрузка кончилась — удачно или нет. Следующая начнётся с чистого листа.
+    func reset() {
+        lock.lock()
+        listeners.removeAll()
+        last = nil
+        lock.unlock()
     }
 }

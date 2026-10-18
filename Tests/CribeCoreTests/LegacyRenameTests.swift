@@ -66,7 +66,9 @@ final class LegacyRenameTests: XCTestCase {
         XCTAssertTrue(LegacyRename.migrateDefaults(from: oldDomain, into: defaults))
         XCTAssertEqual(defaults.string(forKey: "language"), "uk")
         XCTAssertEqual(defaults.integer(forKey: "keptRecordings"), 5)
-        XCTAssertNil(defaults.persistentDomain(forName: oldDomain))
+        // «Исчез» — значит пуст. До macOS 27 удалённый домен читался как `nil`, на macOS 27
+        // он читается пустым словарём; ни одного старого значения в нём нет ни там, ни там.
+        XCTAssertTrue(defaults.persistentDomain(forName: oldDomain)?.isEmpty ?? true)
     }
 
     /// Значение, уже записанное под новым именем, старое не перебивает.
