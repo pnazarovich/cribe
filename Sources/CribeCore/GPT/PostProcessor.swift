@@ -346,7 +346,8 @@ public enum PostProcessor {
             let firstText = FirstTextMark()
             do {
                 let answer = try await race(deadline: deadline) {
-                    try await GPTClient(config: config).respond(
+                    try await respondFallingBackFromFast(
+                        config: config,
                         instructions: instructions,
                         input: text,
                         cacheKey: key,
@@ -399,6 +400,53 @@ public enum PostProcessor {
                 try await pause(backoff)
                 attempt += 1
             }
+        }
+    }
+
+    /// Один запрос — в режиме Fast, если сервер его принимает, иначе в обычном.
+    ///
+    /// Fast включён у владельца и у него работает, но приложение стоит и у других людей,
+    /// а доступен ли режим на любом тарифе ChatGPT — нигде не сказано. Отклони его сервер,
+    /// чистка падала бы у них на каждой диктовке. Поэтому отказ, похожий на отказ именно
+    /// в Fast, тут же повторяется без него, и до перезапуска Fast больше не просим —
+    /// чтобы не платить лишним запросом за каждую диктовку.
+    static func respondFallingBackFromFast(
+        config: GPTConfig,
+        instructions: String,
+        input: String,
+        cacheKey: String,
+        onFirstText: @escaping @Sendable () -> Void
+    ) async throws -> String {
+        var tiered = config
+        if FastRefusal.shared.isRefused { tiered.serviceTier = nil }
+        do {
+            return try await GPTClient(config: tiered).respond(
+                instructions: instructions, input: input, cacheKey: cacheKey, onFirstText: onFirstText
+            )
+        } catch where tiered.serviceTier != nil && refusesFast(error) {
+            FastRefusal.shared.refuse()
+            logger.notice("GPT: сервер отклонил режим Fast — дальше без него: \(error.localizedDescription, privacy: .public)")
+            var plain = tiered
+            plain.serviceTier = nil
+            return try await GPTClient(config: plain).respond(
+                instructions: instructions, input: input, cacheKey: cacheKey, onFirstText: onFirstText
+            )
+        }
+    }
+
+    /// Похоже ли на отказ именно в Fast: повтором не лечится, и это не лимит аккаунта,
+    /// не авторизация и не ответ, оборванный самой моделью. Ошибиться тут в сторону
+    /// «отказ» дёшево — дальше просто без Fast, то есть как было до него.
+    static func refusesFast(_ error: Error) -> Bool {
+        guard !isRetryable(error), let error = error as? GPTClientError else { return false }
+        switch error {
+        case .http(let status, let body):
+            return status != 401 && !isAllowance(body)
+        case .stream(let message, let code):
+            if code == "incomplete" || code.map(isAllowance) == true { return false }
+            return !isAllowance(message)
+        case .empty, .missingAPIKey:
+            return false
         }
     }
 
@@ -543,5 +591,24 @@ private extension Duration {
     var milliseconds: Int64 {
         let parts = components
         return parts.seconds * 1_000 + parts.attoseconds / 1_000_000_000_000_000
+    }
+}
+
+/// Отклонял ли сервер режим Fast в этом запуске.
+final class FastRefusal: @unchecked Sendable {
+    static let shared = FastRefusal()
+    private let lock = NSLock()
+    private var refused = false
+
+    var isRefused: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return refused
+    }
+
+    func refuse() {
+        lock.lock()
+        refused = true
+        lock.unlock()
     }
 }

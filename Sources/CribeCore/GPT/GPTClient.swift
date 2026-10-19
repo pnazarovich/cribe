@@ -12,6 +12,9 @@ public struct GPTConfig: Sendable {
     public var model: String
     /// "none" | "minimal" | "low" | "medium" | "high"
     public var effort: String
+    /// Уровень обслуживания: `nil` — обычный, `"priority"` — режим Fast официального
+    /// клиента Codex (быстрее, но расходует больше лимита).
+    public var serviceTier: String? = nil
 
     public static let defaultEffort = "low"
 
@@ -99,7 +102,8 @@ enum GPTProtocol {
         input: String,
         effort: String,
         mode: GPTAuthMode,
-        promptCacheKey: String? = nil
+        promptCacheKey: String? = nil,
+        serviceTier: String? = nil
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -118,6 +122,7 @@ enum GPTProtocol {
         // сервер решает, куда положить разобранный префикс промпта. Без него наш промпт
         // в 14 КБ каждый раз разбирался заново.
         if let promptCacheKey { body["prompt_cache_key"] = promptCacheKey }
+        if let serviceTier { body["service_tier"] = serviceTier }
         // `none` означает «без reasoning вовсе» — тогда обоих полей в теле быть не должно.
         let effort = normalizedEffort(effort, mode: mode)
         if effort != "none", supportsReasoning(model: model, mode: mode) {
@@ -295,7 +300,8 @@ public actor GPTClient {
             input: input,
             effort: config.effort,
             mode: config.mode,
-            promptCacheKey: cacheKey
+            promptCacheKey: cacheKey,
+            serviceTier: config.serviceTier
         ))
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)

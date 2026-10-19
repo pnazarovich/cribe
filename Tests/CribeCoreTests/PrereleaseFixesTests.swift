@@ -82,6 +82,57 @@ final class PrereleaseFixesTests: XCTestCase {
     }
 }
 
+/// Режим Fast для чистки через вход ChatGPT.
+final class FastCleanupTests: XCTestCase {
+
+    /// Через вход ChatGPT чистка и перевод идут в режиме Fast: при той же модели ожидание
+    /// первого слова падает с ~5 с до ~1,2 с.
+    func testCodexPathUsesFastTier() {
+        let defaults = UserDefaults(suiteName: "FastCleanupTests-\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults)
+        settings.gptMode = .codex
+        XCTAssertEqual(settings.gptConfig.serviceTier, "priority")
+        XCTAssertEqual(settings.translateGPTConfig.serviceTier, "priority")
+    }
+
+    /// С API-ключом — нет: там Fast вдвое дороже деньгами, а платить чужим ключом без спроса
+    /// незачем.
+    func testAPIKeyPathStaysStandard() {
+        let defaults = UserDefaults(suiteName: "FastCleanupTests-\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults)
+        settings.gptMode = .apiKey
+        XCTAssertNil(settings.gptConfig.serviceTier)
+        XCTAssertNil(settings.translateGPTConfig.serviceTier)
+    }
+
+    /// Отказ, после которого стоит попробовать без Fast. Приложение стоит не только у
+    /// владельца, а доступен ли Fast на любом тарифе ChatGPT — нигде не сказано.
+    func testWhatLooksLikeRefusingFast() {
+        XCTAssertTrue(PostProcessor.refusesFast(GPTClientError.http(400, "Unsupported service_tier: priority")))
+        XCTAssertTrue(PostProcessor.refusesFast(GPTClientError.stream("Fast mode is not available on your plan", code: "invalid_request_error")))
+
+        // Проходящие сбои лечатся обычным повтором, а не отказом от Fast.
+        XCTAssertFalse(PostProcessor.refusesFast(GPTClientError.http(503, "at capacity")))
+        XCTAssertFalse(PostProcessor.refusesFast(PostProcessorError.timedOut))
+        // Лимит и авторизация без Fast лучше не станут.
+        XCTAssertFalse(PostProcessor.refusesFast(GPTClientError.http(429, "usage_limit_reached")))
+        XCTAssertFalse(PostProcessor.refusesFast(GPTClientError.stream("usage limit", code: "usage_limit_reached")))
+        XCTAssertFalse(PostProcessor.refusesFast(GPTClientError.http(401, "Unauthorized")))
+        // Оборванный моделью ответ — не про уровень обслуживания.
+        XCTAssertFalse(PostProcessor.refusesFast(GPTClientError.stream("ответ оборван", code: "incomplete")))
+    }
+
+    /// Уровень уходит в тело запроса, а без него поля нет вовсе.
+    func testServiceTierGoesIntoTheRequest() {
+        let fast = GPTProtocol.requestBody(
+            model: "gpt-6-sol", instructions: "i", input: "t", effort: "low", mode: .codex, serviceTier: "priority"
+        )
+        XCTAssertEqual(fast["service_tier"] as? String, "priority")
+        let standard = GPTProtocol.requestBody(model: "gpt-6-sol", instructions: "i", input: "t", effort: "low", mode: .codex)
+        XCTAssertNil(standard["service_tier"])
+    }
+}
+
 private final class Box: @unchecked Sendable {
     private let lock = NSLock()
     private var states: [ASRModelState] = []

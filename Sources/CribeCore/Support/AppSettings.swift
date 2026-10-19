@@ -200,13 +200,32 @@ public final class AppSettings: ObservableObject {
     /// а «экономная» luna была одновременно медленнее (3,9 с) и хуже. Держать в настройках
     /// выбор, у которого один правильный ответ, — значит предлагать человеку ошибиться.
     public var gptConfig: GPTConfig {
-        GPTConfig(mode: gptMode, model: nil, effort: Self.defaultCleanupEffort)
+        var config = GPTConfig(mode: gptMode, model: nil, effort: Self.defaultCleanupEffort)
+        config.serviceTier = Self.serviceTier(for: gptMode)
+        return config
     }
 
     /// Конфигурация переводящего вызова: модель та же, усилие выше — переводит тот же вызов,
     /// и ошибка перевода стоит дороже пропущенной запятой.
     public var translateGPTConfig: GPTConfig {
-        GPTConfig(mode: gptMode, model: nil, effort: Self.defaultTranslateEffort)
+        var config = GPTConfig(mode: gptMode, model: nil, effort: Self.defaultTranslateEffort)
+        config.serviceTier = Self.serviceTier(for: gptMode)
+        return config
+    }
+
+    /// Режим Fast — на пути через вход ChatGPT, и только там.
+    ///
+    /// Чистка ждала не генерации, а первого слова: по 19 живым диктовкам 0.5.0 медиана
+    /// 4,6 с, из них 93% — молчание сервера до первого слова. Замер 2026-10-19 вперемешку,
+    /// с паузами как между диктовками: `gpt-6-sol` 5,2 с, с Fast — 1,5 с (худший 1,9 с)
+    /// при той же модели и том же качестве. Цена — лимит ChatGPT расходуется быстрее
+    /// (по данным официального клиента Codex — примерно в 2,5 раза), и владелец её выбрал.
+    /// Прогрев промпта перед запросом не помог вовсе — с ним вышло 6,7 с.
+    ///
+    /// С API-ключом не включаем: там Fast вдвое дороже деньгами, а без него и так быстро,
+    /// и платить за это без спроса чужим ключом незачем.
+    static func serviceTier(for mode: GPTAuthMode) -> String? {
+        mode == .codex ? "priority" : nil
     }
 
     public init(defaults: UserDefaults = .standard) {
