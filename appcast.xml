@@ -425,6 +425,30 @@
                  type="application/octet-stream"
                  sparkle:edSignature="suaGk17T8toW25VH10LAu+vzUOpTGGFEJMTcxYp5vYU6QaJmkDIFde1ktUL0ux3XFxxI32SitjyNgFSir3QEDg==" length="16818988" />
     </item>
+    <item>
+      <title>0.5.1</title>
+      <pubDate>Mon, 19 Oct 2026 17:42:17 +0200</pubDate>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Чистка втрое быстрее</h3>
+<p>AI-чистка и перевод теперь идут в режиме Fast — том же, что «/fast» в Codex. Модель та же,</p>
+<p>качество то же, но ответ приходит примерно за полторы секунды вместо пяти: почти всё это</p>
+<p>время раньше уходило на ожидание первого слова от сервера.</p>
+<ul>
+<li>Работает при входе через ChatGPT. Режим Fast расходует лимит ChatGPT быстрее обычного.</li>
+<li>Если ваш тариф ChatGPT режим Fast не поддерживает, Cribe это заметит и сам перейдёт</li>
+</ul>
+<p>  на обычный режим — чистка не сломается.</p>
+<ul>
+<li>С API-ключом OpenAI ничего не меняется: там Fast вдвое дороже, а без него и так быстро.</li>
+</ul>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.5.1/Cribe-0.5.1.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="Xl0Urv9n/8lL+uSvxmL2+g90fIJMmyiT+XEyJ25ZPwSU4LTPQkWCw5rwcrO3AM1BsIkjfnV1gvlJ7z4qH2HTCg==" length="16823282" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
