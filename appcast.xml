@@ -449,6 +449,24 @@
                  type="application/octet-stream"
                  sparkle:edSignature="Xl0Urv9n/8lL+uSvxmL2+g90fIJMmyiT+XEyJ25ZPwSU4LTPQkWCw5rwcrO3AM1BsIkjfnV1gvlJ7z4qH2HTCg==" length="16823282" />
     </item>
+    <item>
+      <title>0.5.2</title>
+      <pubDate>Tue, 20 Oct 2026 16:11:43 +0200</pubDate>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.5.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Esc отменяет диктовку — и только её</h3>
+<p>Раньше Esc во время записи отменял диктовку и вдобавок уходил в открытое приложение.</p>
+<p>Если вы диктовали в Claude Code или другой инструмент, где Esc что-то прерывает, вместе</p>
+<p>с диктовкой прерывалась и его работа.</p>
+<p>Теперь, пока идёт запись, Cribe забирает Esc себе целиком. Вне записи Esc работает</p>
+<p>как обычно.</p>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.5.2/Cribe-0.5.2.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="PP3D0/ERa/UK+lBv326whOa3vabhmDbQC8DCQm+Qgur4m8XyGRJ3CrhMtXg8z92gXA6PNrP3ZZ7zxL85C96aAw==" length="16825456" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
