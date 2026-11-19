@@ -467,6 +467,36 @@
                  type="application/octet-stream"
                  sparkle:edSignature="PP3D0/ERa/UK+lBv326whOa3vabhmDbQC8DCQm+Qgur4m8XyGRJ3CrhMtXg8z92gXA6PNrP3ZZ7zxL85C96aAw==" length="16825456" />
     </item>
+    <item>
+      <title>0.6.0</title>
+      <pubDate>Fri, 20 Nov 2026 00:11:17 +0100</pubDate>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<h3>Вставка в Claude и ChatGPT, левые клавиши, GigaAM для русского</h3>
+<h3>Текст снова вставляется в Claude, ChatGPT и другие приложения на Electron</h3>
+<p>В части приложений — Claude, ChatGPT, Codex, Slack — текст не вставлялся в поле, а уходил</p>
+<p>в карточку слева внизу. Такие приложения не сообщают системе, где курсор, пока их об этом</p>
+<p>не попросят, и Cribe решал, что поля нет. Теперь он просит их об этом в начале записи.</p>
+<h3>Левые ⌘ и ⌥</h3>
+<p>В настройках, «Кнопка записи», можно выбрать «Левый ⌘»: левый ⌘ — диктовка, левый ⌥ —</p>
+<p>диктовка с переводом. Как и с правыми, срабатывает только голое нажатие — ⌘C и другие</p>
+<p>сочетания диктовку не запускают.</p>
+<h3>GigaAM v3 — второй движок для русского</h3>
+<p>В настройках, «Модель распознавания» → «Движок», можно выбрать GigaAM v3 от Сбера. На чистом</p>
+<p>русском он точнее: полнее пунктуация, на месте «ё». Работает, только когда из языков отмечен</p>
+<p>один русский: украинского он не знает, а английские названия пишет кириллицей. Модель</p>
+<p>скачается при выборе (около 440 МБ); пока она качается, диктовки идут через Parakeet.</p>
+<h3>Выгрузка модели в простое</h3>
+<p>«Модель распознавания» → «Выгружать в простое»: через 5, 15 минут или час. По умолчанию</p>
+<p>выключено — загруженная модель занимает в памяти Cribe около 60 МБ, так что выигрыш заметен</p>
+<p>в основном на компьютерах с малым объёмом памяти.</p>
+      ]]></description>
+      <enclosure url="https://github.com/pnazarovich/cribe/releases/download/v0.6.0/Cribe-0.6.0.zip"
+                 type="application/octet-stream"
+                 sparkle:edSignature="AfLBqJRIwMJRA9des09yvPpqA93CS5RW2w16uZ5HItjHU5xINZc6kZiQaca7RfRdTpvDfK8c8XeYVW5lL3f7Bw==" length="16921354" />
+    </item>
     <!-- NEW-ITEM-ANCHOR: сюда release.sh вставляет свежий <item>. Строку не трогать. -->
   </channel>
 </rss>
