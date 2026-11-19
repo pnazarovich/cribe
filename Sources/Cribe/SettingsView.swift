@@ -122,6 +122,7 @@ private struct GeneralPane: View {
     /// Состояние модели одно на приложение: настройки, онбординг и экран обновления
     /// показывают одну и ту же загрузку.
     @ObservedObject private var install = ModelInstall.shared
+    @ObservedObject private var gigaamInstall = ModelInstall.gigaam
 
     /// Тумблер автопроверки ходит прямо в Sparkle — своего флага у настроек нет.
     @ObservedObject private var updates = UpdateController.shared
@@ -140,11 +141,12 @@ private struct GeneralPane: View {
             Section {
                 Picker("Кнопка записи:", selection: $settings.dictationHotkeyMode) {
                     Text("Правый ⌘").tag(HotkeyMode.rightCommand)
+                    Text("Левый ⌘").tag(HotkeyMode.leftCommand)
                     Text("Свой шорткат").tag(HotkeyMode.custom)
                 }
 
                 switch settings.dictationHotkeyMode {
-                case .rightCommand:
+                case .rightCommand, .leftCommand:
                     EmptyView()
                 case .custom:
                     KeyboardShortcuts.Recorder("Диктовка:", name: .toggleDictation)
@@ -156,12 +158,13 @@ private struct GeneralPane: View {
                 Text("Запись")
             } footer: {
                 switch settings.dictationHotkeyMode {
-                case .rightCommand:
+                case .rightCommand, .leftCommand:
+                    let key = (settings.dictationHotkeyMode.translationKey ?? "⌥").capitalizedFirst
                     caption(
                         accessibilityGranted
-                            ? "Правый ⌥ — диктовка с переводом на \(settings.translationTarget.afterOn). "
+                            ? "\(key) — диктовка с переводом на \(settings.translationTarget.afterOn). "
                                 + "Esc отменяет запись."
-                            : "Правый ⌥ — диктовка с переводом на \(settings.translationTarget.afterOn). "
+                            : "\(key) — диктовка с переводом на \(settings.translationTarget.afterOn). "
                                 + "Нужно разрешение Accessibility."
                     )
                 case .custom:
@@ -197,7 +200,38 @@ private struct GeneralPane: View {
             }
 
             Section {
+                Picker("Движок:", selection: $settings.recognitionEngine) {
+                    Text(ParakeetEngine.displayName + " — RU, UK, EN").tag(RecognitionEngineChoice.parakeet)
+                    Text(GigaAMEngine.displayName + " — только русский").tag(RecognitionEngineChoice.gigaam)
+                }
+                .onChange(of: settings.recognitionEngine) { _, choice in
+                    // Выбрали GigaAM — сразу качаем: до готовности диктовки идут через Parakeet.
+                    // Передумали — загрузку останавливаем и модель выгружаем из памяти.
+                    if choice == .gigaam {
+                        gigaamInstall.download()
+                    } else {
+                        gigaamInstall.cancel()
+                        AppCore.shared.gigaam.unload()
+                    }
+                }
                 ModelRow(install: install)
+                if settings.recognitionEngine == .gigaam {
+                    ModelRow(install: gigaamInstall, title: GigaAMEngine.displayName)
+                } else if gigaamInstall.state == .ready {
+                    // GigaAM больше не выбран, а на диске лежит почти гигабайт — даём убрать.
+                    HStack {
+                        Text(GigaAMEngine.displayName + " · скачан, не используется")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Удалить") { gigaamInstall.remove(at: GigaAMEngine.modelDirectory) }
+                    }
+                }
+                Picker("Выгружать в простое:", selection: $settings.unloadModelAfterMinutes) {
+                    Text("Никогда").tag(Int?.none)
+                    Text("Через 5 минут").tag(Int?.some(5))
+                    Text("Через 15 минут").tag(Int?.some(15))
+                    Text("Через час").tag(Int?.some(60))
+                }
                 if legacyBytes > 0 {
                     LegacyModelsRow(bytes: $legacyBytes)
                 }
@@ -211,6 +245,21 @@ private struct GeneralPane: View {
                         + "английских названий она пишет латиницей сама, остальным латиницу "
                         + "возвращает AI-чистка — поэтому через неё идёт каждая диктовка, "
                         + "даже однословная."
+                )
+                if settings.recognitionEngine == .gigaam {
+                    caption(
+                        settings.languages == [.ru]
+                            ? "GigaAM точнее на чистом русском, но английские названия пишет "
+                                + "кириллицей на слух — латиницу им вернёт AI-чистка. Пока модель "
+                                + "качается, диктовки идут через Parakeet."
+                            : "GigaAM знает только русский, поэтому работает, когда из языков "
+                                + "отмечен один русский. Сейчас отмечено больше — распознаёт Parakeet."
+                    )
+                }
+                caption(
+                    "Выгрузка в простое бережёт память на компьютерах, где её мало. Обычно "
+                        + "выигрыш невелик: загруженная модель занимает в памяти Cribe около "
+                        + "60 МБ, а первая диктовка после выгрузки начнётся на долю секунды позже."
                 )
             }
 
@@ -333,14 +382,15 @@ private struct GeneralPane: View {
 /// означала бы «сломать диктовку».
 private struct ModelRow: View {
     @ObservedObject var install: ModelInstall
+    var title = ParakeetEngine.displayName
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(ParakeetEngine.displayName)
+            Text(title)
             Spacer(minLength: 8)
             switch install.state {
             case .missing:
-                Text("Не скачана · ≈" + Self.size(ModelInstall.approximateBytes))
+                Text("Не скачана · ≈" + Self.size(install.approximateBytes))
                     .foregroundStyle(.secondary)
                 Button("Скачать") { install.download() }
             case let .downloading(fraction):
@@ -846,4 +896,9 @@ private final class CodexAuthModel: ObservableObject {
     private static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
+}
+
+private extension String {
+    /// «левый ⌥» → «Левый ⌥» — для начала предложения.
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

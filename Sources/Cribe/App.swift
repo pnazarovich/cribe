@@ -31,6 +31,9 @@ final class AppCore: ObservableObject {
     let history = HistoryStore.shared
     let learner = EditLearner.shared
     let engine = ParakeetEngine()
+    let gigaam = GigaAMEngine()
+    /// Конвейер видит один движок; какой из двух распознаёт — решает маршрутизатор.
+    let router: RecognitionRouter
     let dictionary = UserDictionary(url: UserDictionary.defaultURL)
     let controller: DictationController
     /// Свёрнутый до двух величин срез конвейера для меню — чтобы поток уровня микрофона
@@ -90,6 +93,8 @@ final class AppCore: ObservableObject {
     private var cards: CardStackController?
     private var rightCommandTap: ModifierKeyTap?
     private var rightOptionTap: ModifierKeyTap?
+    private var leftCommandTap: ModifierKeyTap?
+    private var leftOptionTap: ModifierKeyTap?
     private var escTap: KeyDownTap?
     private var hotkeyModeSubscription: AnyCancellable?
     private var escTapSubscription: AnyCancellable?
@@ -101,7 +106,10 @@ final class AppCore: ObservableObject {
     private let logger = Logger(subsystem: "online.nazarovych.cribe", category: "Hotkey")
 
     private init() {
-        let controller = DictationController(engine: engine, dictionary: dictionary, settings: settings)
+        // Из локальных копий, а не через `self`: до конца инициализации свойства читать нельзя.
+        let router = RecognitionRouter(parakeet: engine, gigaam: gigaam, settings: settings)
+        self.router = router
+        let controller = DictationController(engine: router, dictionary: dictionary, settings: settings)
         self.controller = controller
         menu = MenuState(controller: controller, settings: settings)
         let seenOnboarding = UserDefaults.standard.bool(forKey: Self.onboardingKey)
@@ -123,8 +131,9 @@ final class AppCore: ObservableObject {
     /// глотаем: это прогрев, а не работа, и настоящая диктовка сообщит о беде сама.
     private func warmUpModel() {
         guard ParakeetEngine.isInstalled else { return }
-        let engine = self.engine
-        let language = settings.language
+        // Через маршрутизатор: прогревать надо тот движок, которым пойдёт первая диктовка.
+        let engine = self.router
+        let language = Language.recognition(for: settings.languages)
         Task.detached(priority: .utility) {
             try? await engine.prepare(language: language) { _ in }
         }
@@ -212,6 +221,18 @@ final class AppCore: ObservableObject {
             deviceFlag: ModifierTapDetector.rightOptionFlag,
             blockingFlags: ModifierTapDetector.rightCommandFlag
         ) { [controller] in controller.toggle(translating: true) }
+        // Та же пара слева. Голый тап левым ⌘ не конфликтует с ⌘C и прочими сочетаниями:
+        // любая клавиша между нажатием и отпусканием тап отменяет (см. `ModifierTapDetector`).
+        leftCommandTap = ModifierKeyTap(
+            keyCode: ModifierTapDetector.leftCommandKeyCode,
+            deviceFlag: ModifierTapDetector.leftCommandFlag,
+            blockingFlags: ModifierTapDetector.leftOptionFlag
+        ) { [controller] in controller.toggle() }
+        leftOptionTap = ModifierKeyTap(
+            keyCode: ModifierTapDetector.leftOptionKeyCode,
+            deviceFlag: ModifierTapDetector.leftOptionFlag,
+            blockingFlags: ModifierTapDetector.leftCommandFlag
+        ) { [controller] in controller.toggle(translating: true) }
         // `@Published` отдаёт текущее значение при подписке — режим применится и на старте.
         hotkeyModeSubscription = settings.$dictationHotkeyMode
             .receive(on: DispatchQueue.main)
@@ -270,19 +291,20 @@ final class AppCore: ObservableObject {
     }
 
     private func applyHotkeyMode(_ mode: HotkeyMode) {
-        guard let rightCommandTap, let rightOptionTap else { return }
-        switch mode {
-        case .rightCommand:
-            // Оба тапа поднимаем всегда: `&&` пропустил бы второй вызов, а состояния тапов
-            // должны совпадать. Разрешение у них общее — падают и поднимаются они вместе.
-            let commandStarted = rightCommandTap.start()
-            let optionStarted = rightOptionTap.start()
-            logTapState(started: commandStarted && optionStarted)
-        case .custom:
-            rightCommandTap.stop()
-            rightOptionTap.stop()
+        guard let rightCommandTap, let rightOptionTap, let leftCommandTap, let leftOptionTap else { return }
+        let (active, idle) = mode == .leftCommand
+            ? ([leftCommandTap, leftOptionTap], [rightCommandTap, rightOptionTap])
+            : ([rightCommandTap, rightOptionTap], [leftCommandTap, leftOptionTap])
+        idle.forEach { $0.stop() }
+        guard mode.usesModifiers else {
+            active.forEach { $0.stop() }
             loggedTapState = nil
+            return
         }
+        // Оба тапа пары поднимаем всегда: `allSatisfy` пропустил бы второй вызов, а состояния
+        // тапов должны совпадать. Разрешение у них общее — падают и поднимаются они вместе.
+        let started = active.map { $0.start() }
+        logTapState(started: !started.contains(false))
     }
 
     /// Единственная запись о хоткее в журнале: без неё «правый ⌘ не работает» неотличимо от

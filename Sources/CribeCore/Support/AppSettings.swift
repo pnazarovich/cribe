@@ -13,7 +13,31 @@ public enum PillStyle: String, Codable, CaseIterable, Sendable {
 /// Чем запускается диктовка: «голым» правым ⌘ или своим шорткатом.
 public enum HotkeyMode: String, Codable, CaseIterable, Sendable {
     case rightCommand
+    /// Левые ⌘ и ⌥ — по просьбе с GitHub (issue #1, #3): на части клавиатур правых
+    /// модификаторов нет или до них неудобно тянуться.
+    case leftCommand
     case custom
+
+    /// Модификаторы ли это, а не свой шорткат.
+    public var usesModifiers: Bool { self != .custom }
+
+    /// Как назвать клавишу диктовки в подсказках: «правый ⌘», «левый ⌘».
+    public var dictationKey: String? {
+        switch self {
+        case .rightCommand: return "правый ⌘"
+        case .leftCommand: return "левый ⌘"
+        case .custom: return nil
+        }
+    }
+
+    /// И клавишу перевода: «правый ⌥», «левый ⌥».
+    public var translationKey: String? {
+        switch self {
+        case .rightCommand: return "правый ⌥"
+        case .leftCommand: return "левый ⌥"
+        case .custom: return nil
+        }
+    }
 }
 
 /// Настройки приложения поверх UserDefaults. Каждое поле пишется на диск при изменении,
@@ -50,6 +74,8 @@ public final class AppSettings: ObservableObject {
         static let autoStopEnabled = "autoStopEnabled"
         static let dictationHotkeyMode = "dictationHotkeyMode"
         static let languages = "languages"
+        static let unloadModelAfterMinutes = "unloadModelAfterMinutes"
+        static let recognitionEngine = "recognitionEngine"
         /// Прежний один язык и прежняя галочка «мешаю русский и українську». Только читаются —
         /// при первом запуске версии с набором языков из них собирается набор.
         static let mixesUkrainian = "mixesUkrainian"
@@ -104,6 +130,24 @@ public final class AppSettings: ObservableObject {
     /// а неудобство настоящее.
     @Published public var translateToEnglish: Bool {
         didSet { defaults.set(translateToEnglish, forKey: Key.translateToEnglish) }
+    }
+
+    /// Движок распознавания. GigaAM работает, только когда отмечен один русский
+    /// (см. `RecognitionRouter`).
+    @Published public var recognitionEngine: RecognitionEngineChoice {
+        didSet { defaults.set(recognitionEngine.rawValue, forKey: Key.recognitionEngine) }
+    }
+
+    /// Через сколько минут простоя выгружать модель из памяти; `nil` — не выгружать.
+    /// Просьба с GitHub (issue #2). Выключено по умолчанию — см. `scheduleUnload`.
+    @Published public var unloadModelAfterMinutes: Int? {
+        didSet {
+            if let unloadModelAfterMinutes {
+                defaults.set(unloadModelAfterMinutes, forKey: Key.unloadModelAfterMinutes)
+            } else {
+                defaults.removeObject(forKey: Key.unloadModelAfterMinutes)
+            }
+        }
     }
 
     /// На какой язык переводит правый ⌥.
@@ -231,6 +275,9 @@ public final class AppSettings: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         languages = Self.storedLanguages(in: defaults)
+        recognitionEngine = defaults.string(forKey: Key.recognitionEngine)
+            .flatMap(RecognitionEngineChoice.init(rawValue:)) ?? .parakeet
+        unloadModelAfterMinutes = (defaults.object(forKey: Key.unloadModelAfterMinutes) as? Int).flatMap { $0 > 0 ? $0 : nil }
         gptEnabled = defaults.object(forKey: Key.gptEnabled) as? Bool ?? true
         gptMode = defaults.string(forKey: Key.gptMode).flatMap(GPTAuthMode.init(rawValue:)) ?? .codex
         translateToEnglish = defaults.bool(forKey: Key.translateToEnglish)

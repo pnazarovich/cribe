@@ -381,7 +381,7 @@ struct OnboardingView: View {
 
     @ViewBuilder
     private var readyBody: some View {
-        Text("Нажмите правый ⌘ и говорите. Нажали ещё раз — текст в поле с курсором.")
+        Text("Нажмите \(settings.dictationHotkeyMode.dictationKey ?? "хоткей диктовки") и говорите. Нажали ещё раз — текст в поле с курсором.")
             .fixedSize(horizontal: false, vertical: true)
         if !progress.modelInstalled {
             caption("Модели ещё нет — первая диктовка скачает её, это займёт несколько минут.")

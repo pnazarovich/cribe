@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -63,11 +64,36 @@ public enum FocusedFieldDetector {
     /// на секунду с лишним. Дедлайн проверяется перед КАЖДЫМ запросом, включая самый первый,
     /// поэтому потолок ожидания — дедлайн плюс таймаут одного последнего запроса, а не
     /// сумма всех пяти. Просрочка — это `.unavailable`, то есть обычный Cmd-V.
-    private static let overallDeadline: TimeInterval = 0.3
+    private static let overallDeadline: TimeInterval = 0.5
 
     /// Вердикт по живой системе. Блокирующий вызов (ходит в чужой процесс) — звать с фона.
     public static func current() -> FocusVerdict {
         classify(systemProbe())
+    }
+
+    /// Попросить приложение впереди открыть дерево доступности. Звать в начале записи:
+    /// к моменту, когда текст будет готов, дерево успеет построиться.
+    ///
+    /// Приложения на Electron и Chromium — Claude, ChatGPT, Codex, Slack, VS Code — строят
+    /// дерево доступности только по просьбе. Без неё системный вопрос «где фокус» получает
+    /// пустоту, детектор отвечал «поля нет», и текст уезжал в карточку. Журнал показал это
+    /// дословно: `фокус=notEditable роль=— впереди=com.anthropic.claudefordesktop → карточка`,
+    /// и так же у `com.openai.codex`. На машине автора то же приложение отвечало полем:
+    /// дерево там давно включил кто-то ещё, поэтому беда и была видна только у других людей.
+    ///
+    /// Просьба — атрибут `AXManualAccessibility`: его заводит Electron ровно для этого, а
+    /// нативные приложения отвечают «не поддерживаю» и ничего не меняют. Возвращает,
+    /// принял ли его кто-то, — то есть Chromium ли впереди.
+    @discardableResult
+    public static func openAccessibilityOfFrontmostApp() -> Bool {
+        guard AXIsProcessTrusted(),
+              let front = NSWorkspace.shared.frontmostApplication,
+              !refusesAccessibilityRequest(front.bundleIdentifier)
+        else { return false }
+        let pid = front.processIdentifier
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        return AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
     }
 
     /// Чистая функция: весь смысл детектора живёт здесь и целиком покрыт тестами.
@@ -115,6 +141,55 @@ public enum FocusedFieldDetector {
         }
     }
 
+    /// Редакторы семейства VS Code, которым просьбу о дереве НЕ шлём.
+    ///
+    /// На `AXManualAccessibility` Electron включает режим доступности на всё время жизни
+    /// процесса, а VS Code с настройкой по умолчанию (`editor.accessibilitySupport: auto`)
+    /// принимает это за экранного диктора и переводит редактор в режим для него: гаснет
+    /// перенос строк, меняется поведение. Ради одной диктовки ломать человеку редактор
+    /// нельзя. Поле в них находится и без просьбы, а если нет — это «не знаю», то есть
+    /// вставка: в редакторе фокус почти всегда в тексте.
+    static let editorsWithScreenReaderMode: Set<String> = [
+        "com.microsoft.VSCode",
+        "com.microsoft.VSCodeInsiders",
+        "com.todesktop.230313mzl4w4u92",  // Cursor
+        "com.exafunction.windsurf",
+        "com.vscodium",
+    ]
+
+    static func refusesAccessibilityRequest(_ bundleIdentifier: String?) -> Bool {
+        bundleIdentifier.map(editorsWithScreenReaderMode.contains) ?? false
+    }
+
+    /// Принял ли последнюю просьбу Chromium. Пишется и читается внутри одного опроса.
+    private nonisolated(unsafe) static var chromiumAnswered = false
+
+    /// Попросить приложение впереди открыть дерево и спросить его о фокусе напрямую.
+    /// Дереву нужны десятки миллисекунд: одна короткая пауза, и ещё один вопрос.
+    private static func focusAfterOpening(outOfTime: () -> Bool) -> CFTypeRef? {
+        // Редактору VS Code просьбу не шлём, но и «поля нет» ему не верим — см. выше.
+        if refusesAccessibilityRequest(NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+            chromiumAnswered = true
+            return nil
+        }
+        chromiumAnswered = openAccessibilityOfFrontmostApp()
+        guard chromiumAnswered,
+              let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        for attempt in 0..<2 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.08) }
+            if outOfTime() { return nil }
+            var focused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+               let focused {
+                return focused
+            }
+        }
+        return nil
+    }
+
     private static func systemProbe() -> FocusedElementProbe {
         // Разрешение то же, что у вставки: без него системный элемент отдаёт `.apiDisabled`,
         // но спрашивать систему ради заведомо неизвестного ответа незачем.
@@ -136,9 +211,17 @@ public enum FocusedFieldDetector {
         switch status {
         case .success:
             break
-        // Фокуса действительно нет: рабочий стол, окно без полей, картинка на весь экран.
+        // Фокуса нет — или приложение на Chromium ещё не открыло дерево доступности.
+        // Различаем: просим открыть и спрашиваем само приложение ещё раз.
         case .noValue, .attributeUnsupported:
-            return .noFocus
+            switch focusAfterOpening(outOfTime: outOfTime) {
+            case .some(let element): focused = element
+            // Chromium просьбу принял, а фокуса всё равно не назвал — дерево не успело
+            // построиться. Это «не знаю», а «не знаю» вставляется, а не уходит в карточку.
+            case .none where chromiumAnswered: return .unavailable
+            // Нативное приложение без фокуса: рабочий стол, окно без полей.
+            case .none: return .noFocus
+            }
         // Всё остальное (API выключен, приложение зависло, элемент протух) — не наше дело.
         default:
             return .unavailable

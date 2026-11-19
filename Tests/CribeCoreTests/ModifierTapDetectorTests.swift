@@ -111,4 +111,40 @@ final class ModifierTapDetectorTests: XCTestCase {
         detector.reset()
         XCTAssertFalse(detector.flagsChanged(keyCode: rcmd, flags: released, at: 0.1))
     }
+
+    // MARK: - Левые модификаторы (GitHub #1, #3)
+
+    /// Тап левым ⌘ срабатывает, а правый ⌘ детектор левого не будит — и наоборот:
+    /// device-бит различает стороны.
+    func testLeftCommandTapFiresAndRightDoesNot() {
+        var left = ModifierTapDetector(
+            keyCode: ModifierTapDetector.leftCommandKeyCode,
+            deviceFlag: ModifierTapDetector.leftCommandFlag
+        )
+        XCTAssertFalse(left.flagsChanged(keyCode: ModifierTapDetector.leftCommandKeyCode,
+                                         flags: ModifierTapDetector.leftCommandFlag, at: 0))
+        XCTAssertTrue(left.flagsChanged(keyCode: ModifierTapDetector.leftCommandKeyCode, flags: released, at: 0.1))
+
+        XCTAssertFalse(left.flagsChanged(keyCode: rcmd, flags: rcmdDown, at: 1))
+        XCTAssertFalse(left.flagsChanged(keyCode: rcmd, flags: released, at: 1.1))
+    }
+
+    /// ⌘C левым ⌘ — самый частый жест на Mac — диктовку не запускает.
+    func testLeftCommandChordDoesNotFire() {
+        var left = ModifierTapDetector(
+            keyCode: ModifierTapDetector.leftCommandKeyCode,
+            deviceFlag: ModifierTapDetector.leftCommandFlag
+        )
+        _ = left.flagsChanged(keyCode: ModifierTapDetector.leftCommandKeyCode,
+                              flags: ModifierTapDetector.leftCommandFlag, at: 0)
+        left.cancel()
+        XCTAssertFalse(left.flagsChanged(keyCode: ModifierTapDetector.leftCommandKeyCode, flags: released, at: 0.1))
+    }
+
+    func testHotkeyModeNamesItsKeys() {
+        XCTAssertEqual(HotkeyMode.leftCommand.dictationKey, "левый ⌘")
+        XCTAssertEqual(HotkeyMode.leftCommand.translationKey, "левый ⌥")
+        XCTAssertEqual(HotkeyMode.rightCommand.dictationKey, "правый ⌘")
+        XCTAssertNil(HotkeyMode.custom.dictationKey)
+    }
 }

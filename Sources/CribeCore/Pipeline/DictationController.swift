@@ -130,6 +130,13 @@ actor EngineGate {
         try await engine.prepare(language: language, onState: onState)
     }
 
+    /// Выгрузка — после того, как доехал последний проход цепочки: идущий проход модель
+    /// у себя из-под рук потерять не должен.
+    func unload() async {
+        _ = await inFlight?.value
+        engine.unload()
+    }
+
     /// Проход распознавания. Сериализован: модель одна, и лезть в неё двумя задачами сразу
     /// нельзя — при наложении диктовок это происходило бы постоянно.
     func transcribe(
@@ -389,6 +396,7 @@ public final class DictationController: ObservableObject {
     /// и сходится к тому, с каким запись пойдёт финальным проходом.
     private var livePreviewPeak: Float = 0
     private var idleTask: Task<Void, Never>?
+    private var unloadTask: Task<Void, Never>?
     private var micReleaseTask: Task<Void, Never>?
     private var deviceSubscription: AnyCancellable?
 
@@ -558,9 +566,16 @@ public final class DictationController: ObservableObject {
 
         idleTask?.cancel()
         idleTask = nil
+        unloadTask?.cancel()
+        unloadTask = nil
         micReleaseTask?.cancel()
         micReleaseTask = nil
         prewarmGPT()
+        // Пока человек говорит, приложение впереди успевает построить дерево доступности:
+        // без этого Electron-приложения (Claude, ChatGPT) не называли поле, и текст уезжал
+        // в карточку (см. `FocusedFieldDetector.openAccessibilityOfFrontmostApp`).
+        let delivery = self.delivery
+        Task.detached(priority: .utility) { delivery.prepareFocus() }
 
         let session = DictationSession(languages: settings.languages, translating: translating)
         recording = session
@@ -1539,6 +1554,27 @@ public final class DictationController: ObservableObject {
             self.flashState = nil
             self.publish()
             self.scheduleMicRelease()
+            self.scheduleUnload()
+        }
+    }
+
+    /// Выгрузить модель после долгого простоя, если человек этого хочет.
+    ///
+    /// Выключено по умолчанию, и вот почему (замер 2026-11-19 на M4 Pro). С загруженной
+    /// Ultra приложение занимает в памяти около 60 МБ: веса отображены с диска, а
+    /// скомпилированную модель держит системный процесс нейродвижка, а не Cribe. Обратная
+    /// загрузка из кэша — около 0,3 с, и их человек платит на первой диктовке после простоя.
+    /// Выигрыш есть на машинах с малой памятью, где система всё равно вытесняет отображённое.
+    private func scheduleUnload() {
+        unloadTask?.cancel()
+        guard let minutes = settings.unloadModelAfterMinutes else { return }
+        unloadTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Double(minutes) * 60 * 1_000_000_000))
+            // Настройку перечитываем: её могли выключить, пока таймер тикал.
+            guard !Task.isCancelled, let self, self.settings.unloadModelAfterMinutes != nil,
+                  self.recording == nil, self.pending.isEmpty, self.processingState == nil
+            else { return }
+            await self.gate.unload()
         }
     }
 

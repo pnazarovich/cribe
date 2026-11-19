@@ -38,6 +38,8 @@ public protocol TranscriptionEngine: AnyObject {
     /// движок вправе его игнорировать (у Parakeet входа для подсказки нет по устройству).
     func transcribe(_ samples: [Float], language: Language, prompt: String) async throws -> String
 
+    func unload()
+
     /// Тот же проход, но модель сразу отдаёт английский. Умеет не всякий движок — тот,
     /// кто не умеет, обязан бросить `translationUnsupported`, а не вернуть исходный язык
     /// под видом перевода.
@@ -50,6 +52,10 @@ public protocol TranscriptionEngine: AnyObject {
 }
 
 public extension TranscriptionEngine {
+    /// Выгрузить модель из памяти. Следующий `prepare` загрузит её снова — без скачивания.
+    /// По умолчанию — ничего: не всякому движку есть что выгружать.
+    func unload() {}
+
     /// Двойники в тестах перевод не изображают — им хватает обычного прохода.
     func transcribe(
         _ samples: [Float],

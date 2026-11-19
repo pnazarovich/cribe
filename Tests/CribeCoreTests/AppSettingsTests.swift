@@ -40,6 +40,16 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings(defaults: defaults).learnsFromEdits)
     }
 
+    /// Выгрузка модели в простое выключена, пока её не включили, и выбор переживает
+    /// перезапуск (GitHub #2).
+    func testUnloadIsOffByDefaultAndPersists() {
+        XCTAssertNil(AppSettings(defaults: defaults).unloadModelAfterMinutes)
+        AppSettings(defaults: defaults).unloadModelAfterMinutes = 15
+        XCTAssertEqual(AppSettings(defaults: defaults).unloadModelAfterMinutes, 15)
+        AppSettings(defaults: defaults).unloadModelAfterMinutes = nil
+        XCTAssertNil(AppSettings(defaults: defaults).unloadModelAfterMinutes)
+    }
+
     // MARK: - Набор языков
 
     /// Прежние «русский + галочка “мешаю”» (а галочка стояла по умолчанию) — это ровно

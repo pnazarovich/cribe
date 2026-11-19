@@ -3,9 +3,10 @@ import CribeCore
 import WhisperKit
 
 private let usage = """
-usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate] [--neighbour]
+usage: cribe-cli <audio-file> --lang ru|uk|en [--engine parakeet|gigaam] [--no-gpt] [--no-vad] [--translate] [--neighbour]
 
   --lang ru|uk|en  язык диктовки (обязателен)
+  --engine NAME  распознаватель: parakeet (по умолчанию) или gigaam (GigaAM v3, только ru)
   --no-gpt       без слоя 3 (GPT-чистки)
   --no-vad       без обрезки тишины
   --translate    вернуть английский перевод (переводит слой 3 — распознавание не умеет)
@@ -20,7 +21,7 @@ usage: cribe-cli <audio-file> --lang ru|uk|en [--no-gpt] [--no-vad] [--translate
 Стадии печатаются в stderr, финальный текст — в stdout.
 """
 
-/// Прогон конвейера над файлом, минуя запись и вставку: чтение → VAD → Parakeet → словарь → GPT.
+/// Прогон конвейера над файлом, минуя запись и вставку: чтение → VAD → Parakeet/GigaAM → словарь → GPT.
 @main
 struct CLI {
     static func main() async {
@@ -56,14 +57,22 @@ struct CLI {
             log("VAD: \(seconds(trimmed.count)) c речи")
         }
 
-        let engine = ParakeetEngine()
+        let engine: TranscriptionEngine
+        switch options.engine {
+        case .parakeet: engine = ParakeetEngine()
+        case .gigaam: engine = GigaAMEngine()
+        }
         let progress = ModelProgress()
-        log("Parakeet TDT v3 — подготовка…")
+        log("\(options.engine.displayName) — подготовка…")
+        let prepareClock = Date()
         try await engine.prepare(language: options.language) { progress.report($0) }
+        log("подготовка: \(elapsed(since: prepareClock)) c")
 
         log("распознавание…")
-        // Подсказки у Parakeet нет по устройству — словарь работает только слоями 2 и 3.
+        // Подсказки у Parakeet и GigaAM нет по устройству — словарь работает только слоями 2 и 3.
+        let recognizeClock = Date()
         let heard = try await engine.transcribe(speech, language: options.language, prompt: "")
+        log("распознавание: \(elapsed(since: recognizeClock)) c")
         log("слой 1: \(heard)")
 
         let entries = UserDictionary(url: UserDictionary.defaultURL).entries
@@ -102,11 +111,29 @@ struct CLI {
     private static func seconds(_ sampleCount: Int) -> String {
         String(format: "%.1f", Double(sampleCount) / 16_000)
     }
+
+    private static func elapsed(since start: Date) -> String {
+        String(format: "%.2f", Date().timeIntervalSince(start))
+    }
+}
+
+/// Какой распознаватель гонять — ради сравнения движков на одном файле.
+private enum EngineChoice: String {
+    case parakeet
+    case gigaam
+
+    var displayName: String {
+        switch self {
+        case .parakeet: return ParakeetEngine.displayName
+        case .gigaam: return GigaAMEngine.displayName
+        }
+    }
 }
 
 private struct Options {
     let path: String
     let language: CribeCore.Language
+    let engine: EngineChoice
     let useGPT: Bool
     let useVAD: Bool
     let translate: Bool
@@ -123,6 +150,7 @@ private struct Options {
     init(arguments: [String]) throws {
         var path: String?
         var language: CribeCore.Language?
+        var engine = EngineChoice.parakeet
         var useGPT = true
         var useVAD = true
         var translate = false
@@ -138,6 +166,11 @@ private struct Options {
                     throw CLIError("--lang требует значение ru, uk или en\n\n\(usage)")
                 }
                 language = parsed
+            case "--engine":
+                guard let value = rest.next(), let parsed = EngineChoice(rawValue: value) else {
+                    throw CLIError("--engine требует значение parakeet или gigaam\n\n\(usage)")
+                }
+                engine = parsed
             case "--no-gpt": useGPT = false
             case "--no-vad": useVAD = false
             case "--translate": translate = true
@@ -166,6 +199,7 @@ private struct Options {
 
         self.path = path
         self.language = language
+        self.engine = engine
         self.useGPT = useGPT
         self.useVAD = useVAD
         self.translate = translate

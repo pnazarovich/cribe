@@ -137,6 +137,24 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         return try await transcribe(samples, language: language, prompt: prompt)
     }
 
+    /// Выгрузить модель. Зовёт её только простой (см. `DictationController.scheduleUnload`):
+    /// на идущем проходе менеджер забрать нельзя.
+    public func unload() {
+        // Идущую загрузку не трогаем: к ней должны и дальше присоединяться, а не
+        // начинать вторую рядом.
+        let released: AsrManager? = queue.sync {
+            guard let loaded = manager else { return nil }
+            manager = nil
+            loading = nil
+            return loaded
+        }
+        guard let released else { return }
+        // Менеджер — актор: освобождаем его в его же изоляции. Ссылок на него у нас больше
+        // нет, следующий `prepare` поднимет новый.
+        Task { await released.cleanup() }
+        Self.logger.notice("\(Self.displayName, privacy: .public) выгружен из памяти")
+    }
+
     /// Какую письменность разрешить декодеру — для русского и украинского никакую.
     ///
     /// Параметр `language` у FluidAudio не выбирает веса — модель одна на все языки, —

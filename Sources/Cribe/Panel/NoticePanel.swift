@@ -209,7 +209,7 @@ enum NoticeText {
         case .parallelHint:
             // Про клавишу говорим ровно то, что у человека настроено: «жмите ⌘» при своём
             // шорткате было бы прямой ложью.
-            let key = hotkey == .rightCommand ? "правый ⌘" : "хоткей диктовки"
+            let key = hotkey.dictationKey ?? "хоткей диктовки"
             return "Не ждите обработки: нажмите \(key) и говорите дальше"
         case .result(let state):
             return resultLine(state)

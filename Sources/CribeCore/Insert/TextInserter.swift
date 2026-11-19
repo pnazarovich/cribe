@@ -111,19 +111,23 @@ public struct TextDelivery: Sendable {
     /// в чужое окно, и молчаливый дефолт превратил бы любой забывчивый тест в стрельбу
     /// по документу пользователя — ровно то, ради чего этот тип и существует.
     public var fieldText: @Sendable () -> String?
+    /// Подготовить приложение впереди к вопросу о фокусе — в начале записи.
+    public var prepareFocus: @Sendable () -> Void
 
     public init(
         focus: @escaping @Sendable () -> FocusVerdict,
         insert: @escaping @Sendable (String) -> InsertOutcome,
         copy: @escaping @Sendable (String) -> Void,
         replace: @escaping @Sendable (String) -> InsertOutcome,
-        fieldText: @escaping @Sendable () -> String?
+        fieldText: @escaping @Sendable () -> String?,
+        prepareFocus: @escaping @Sendable () -> Void = {}
     ) {
         self.focus = focus
         self.insert = insert
         self.copy = copy
         self.replace = replace
         self.fieldText = fieldText
+        self.prepareFocus = prepareFocus
     }
 
     public static let system = TextDelivery(
@@ -131,6 +135,7 @@ public struct TextDelivery: Sendable {
         insert: { TextInserter.insert($0) },
         copy: { TextInserter.copy($0) },
         replace: { TextInserter.replace($0) },
-        fieldText: { EditWatcher.fieldText() }
+        fieldText: { EditWatcher.fieldText() },
+        prepareFocus: { FocusedFieldDetector.openAccessibilityOfFrontmostApp() }
     )
 }
